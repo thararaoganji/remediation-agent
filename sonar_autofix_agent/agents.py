@@ -9,9 +9,14 @@ tool results. This keeps Principle #2 (orchestration never varies with
 language or issue count) actually true at the framework level, not just on
 paper: an LlmAgent could always decide to improvise, a BaseAgent can't.
 
+This module builds `pipeline_agent`, the deterministic Sonar remediation
+graph. It is not the package's `root_agent` — `intake.py` wraps it behind a
+conversational front door that gathers the repo location first; see
+`sonar_autofix_agent/__init__.py`.
+
 Composition (top to bottom):
 
-  root_agent (SequentialAgent)
+  pipeline_agent (SequentialAgent)
   ├── setup_step           (BaseAgent)  -- Phase I
   ├── fetch_prioritize_step(BaseAgent)  -- Phase II, called once + each outer iter
   └── outer_loop           (LoopAgent, max_iterations = MAX_OUTER_ITERATIONS)
@@ -158,13 +163,17 @@ class FileFixerStep(BaseAgent):
         yield Event(author=self.name, content=None)
 
 
-# The only LLM call in the entire graph.
-fix_llm_agent = LlmAgent(
-    name="fix_llm_agent",
-    model="gemini-2.5-pro",
-    instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
-    output_key=sk.PROPOSED_DIFF,
-)
+def _build_fix_llm_agent() -> LlmAgent:
+    """The only LLM call in the entire graph. A factory, not a module-level
+    singleton, because per_file_loop (which embeds this) is instantiated
+    twice (outer_loop and maintainability_expansion_loop) — ADK agents are
+    single-parent nodes, so each embedding needs its own instance."""
+    return LlmAgent(
+        name="fix_llm_agent",
+        model="gemini-2.5-pro",
+        instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
+        output_key=sk.PROPOSED_DIFF,
+    )
 
 
 class ApplyAndVerifyStep(BaseAgent):
@@ -270,11 +279,13 @@ checkpoint_pipeline = SequentialAgent(
     sub_agents=[RunFullVerifyStep(), TriggerAndReconcileScanStep()],
 )
 
-per_file_loop = LoopAgent(
-    name="per_file_loop",
-    sub_agents=[FileFixerStep(), fix_llm_agent, ApplyAndVerifyStep(), CheckpointGate()],
-    max_iterations=1000,  # real exit is FileFixerStep's escalate=True on empty queue
-)
+def _build_per_file_loop() -> LoopAgent:
+    """Factory, not a module-level singleton — see _build_fix_llm_agent()."""
+    return LoopAgent(
+        name="per_file_loop",
+        sub_agents=[FileFixerStep(), _build_fix_llm_agent(), ApplyAndVerifyStep(), CheckpointGate()],
+        max_iterations=1000,  # real exit is FileFixerStep's escalate=True on empty queue
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +308,7 @@ class OuterExitCheck(BaseAgent):
 
 outer_loop = LoopAgent(
     name="outer_loop",
-    sub_agents=[FetchPrioritizeStep(), per_file_loop, OuterExitCheck()],
+    sub_agents=[FetchPrioritizeStep(), _build_per_file_loop(), OuterExitCheck()],
     max_iterations=5,  # hard ceiling backing MAX_OUTER_ITERATIONS in state
 )
 
@@ -355,7 +366,7 @@ class MaintainabilityDebtCheckStep(BaseAgent):
 
 maintainability_expansion_loop = LoopAgent(
     name="maintainability_expansion_loop",
-    sub_agents=[MaintainabilityDebtCheckStep(), per_file_loop],
+    sub_agents=[MaintainabilityDebtCheckStep(), _build_per_file_loop()],
     max_iterations=4,
 )
 
@@ -410,7 +421,7 @@ class ReportStep(BaseAgent):
 # Root agent
 # ---------------------------------------------------------------------------
 
-root_agent = SequentialAgent(
-    name="sonar_autofix_root",
+pipeline_agent = SequentialAgent(
+    name="sonar_autofix_pipeline",
     sub_agents=[SetupStep(), outer_loop, maintainability_expansion_loop, ReportStep()],
 )

@@ -140,9 +140,11 @@ sonar_autofix_agent/
 ├── prompts.py              -- shared fix-prompt skeleton + per-language addenda
 ├── state_schema.py          -- all session.state keys, one place
 ├── adapters/
+│   ├── __init__.py
 │   └── base.py               -- LanguageAdapter interface, Maven + Gradle impls,
 │                                 build-tool auto-detection, preflight checks
 └── tools/
+    ├── __init__.py
     ├── sonar_tools.py         -- fetch/classify/prioritize, ratings, debt ratio
     ├── patch_tools.py          -- cluster classification, diff apply, verification
     └── git_tools.py             -- local/GitHub source resolution, branch, commit
