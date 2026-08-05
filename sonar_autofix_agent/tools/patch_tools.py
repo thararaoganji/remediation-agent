@@ -5,6 +5,9 @@ clusters stay in the single batched prompt; verification (not re-generation)
 is the default path back after the diff is applied.
 """
 
+import os
+import subprocess
+import tempfile
 from dataclasses import dataclass
 
 
@@ -62,7 +65,59 @@ def issues_for_prompt(cluster_result: ClusterResult) -> list[dict]:
 
 
 def apply_diff(diff_text: str, working_dir: str, file_path: str) -> bool:
-    raise NotImplementedError("wire to `git apply` or patch library against working_dir")
+    """Applies an LLM-generated unified diff to file_path within working_dir
+    via `git apply`. Tries progressively more tolerant flag combinations
+    before giving up, since LLM-authored diffs don't always have perfectly
+    formed hunk headers or context lines. `--include` scopes every attempt
+    to file_path as a safety net — the fix prompt targets exactly one file,
+    so a diff touching anything else indicates a malformed/hallucinated
+    patch, not a legitimate multi-file change.
+
+    Returns False (leaves the working tree untouched) on any failure —
+    ApplyAndVerifyStep treats that as 'flag for manual review', not a hard
+    stop. Never raises for a bad diff; only for real filesystem/git errors."""
+    if not diff_text or not diff_text.strip():
+        return False
+
+    abs_path = os.path.join(working_dir, file_path)
+    try:
+        before = open(abs_path, "r").read()
+    except OSError:
+        before = None
+
+    with tempfile.NamedTemporaryFile("w", suffix=".diff", delete=False) as f:
+        f.write(diff_text)
+        diff_path = f.name
+
+    try:
+        attempts = [
+            ["git", "apply", "--whitespace=fix", f"--include={file_path}"],
+            ["git", "apply", "--whitespace=fix", "--recount", f"--include={file_path}"],
+            ["git", "apply", "--whitespace=fix", "--recount", "-p0", f"--include={file_path}"],
+        ]
+        for args in attempts:
+            check = subprocess.run(
+                [*args, "--check", diff_path], cwd=working_dir, capture_output=True, text=True,
+            )
+            if check.returncode != 0:
+                continue
+            applied = subprocess.run(
+                [*args, diff_path], cwd=working_dir, capture_output=True, text=True,
+            )
+            if applied.returncode != 0:
+                continue
+            try:
+                after = open(abs_path, "r").read()
+            except OSError:
+                after = None
+            if after != before:
+                return True
+            # git exited 0 but nothing actually changed — e.g. a strip-level
+            # mismatch under -p0 matched zero files against --include and
+            # silently no-op'd. Not a real application; keep trying.
+        return False
+    finally:
+        os.unlink(diff_path)
 
 
 def verify_issue_patterns_resolved(

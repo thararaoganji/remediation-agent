@@ -119,7 +119,25 @@ class FetchPrioritizeStep(BaseAgent):
         )
 
         completed = set(s[sk.FILES_COMPLETED])
-        s[sk.ORDERED_FILES_REMAINING] = [g for g in ordered if g["file"] not in completed]
+        remaining = [g for g in ordered if g["file"] not in completed]
+
+        # build_fix_prompt() needs rule_description per issue (Section 6);
+        # fetched lazily here, scoped to only the in-scope autofix issues
+        # actually about to be prompted, and cached by rule_key for the
+        # rest of this run (many issues share the same rule) — not fetched
+        # for the whole raw response, which would include out-of-scope and
+        # review-lane issues that never reach the LLM.
+        rule_desc_cache: dict = s.setdefault("temp:rule_description_cache", {})
+        for group in remaining:
+            for issue in group["issues"]:
+                rule_key = issue["rule_key"]
+                if rule_key not in rule_desc_cache:
+                    rule_desc_cache[rule_key] = sonar_tools.get_rule_description(
+                        s["sonar_base_url"], rule_key, s["sonar_token"]
+                    )
+                issue["rule_description"] = rule_desc_cache[rule_key]
+
+        s[sk.ORDERED_FILES_REMAINING] = remaining
         yield Event(author=self.name, content=None)
 
 
@@ -170,7 +188,7 @@ def _build_fix_llm_agent() -> LlmAgent:
     single-parent nodes, so each embedding needs its own instance."""
     return LlmAgent(
         name="fix_llm_agent",
-        model="gemini-2.5-pro",
+        model="gemini-3.5-flash",
         instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
         output_key=sk.PROPOSED_DIFF,
     )
@@ -214,9 +232,17 @@ class ApplyAndVerifyStep(BaseAgent):
             # resolution this should be rare, not the steady-state path.)
             s[sk.FILES_FLAGGED].append({"file": group["file"], "reason": f"unresolved after patch: {unresolved}"})
 
-        git_tools.commit(working_dir, f"fix: sonar issues in {group['file']}")
+        commit_sha = git_tools.commit(working_dir, f"fix: sonar issues in {group['file']}")
         s[sk.FILES_COMPLETED].append(group["file"])
         s[sk.ISSUES_FIXED].extend([i["issue_key"] for i in group["issues"]])
+        # Tracked per-checkpoint (not just FILES_COMPLETED) so RunFullVerifyStep
+        # knows exactly which commits are candidates to revert if the full
+        # build fails — cleared after each checkpoint fires, pass or fail.
+        s.setdefault("temp:checkpoint_batch", []).append({
+            "file": group["file"],
+            "commit_sha": commit_sha,
+            "issue_keys": [i["issue_key"] for i in group["issues"]],
+        })
         s[sk.ORDERED_FILES_REMAINING].pop(0)
         s[sk.FILES_SINCE_CHECKPOINT] += 1
         yield Event(author=self.name, content=None)
@@ -246,10 +272,53 @@ class RunFullVerifyStep(BaseAgent):
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
-        adapter = get_adapter(s[sk.LANGUAGE], s[sk.WORKING_DIR])
-        result = adapter.verify_build(s[sk.WORKING_DIR])
+        working_dir = s[sk.WORKING_DIR]
+        adapter = get_adapter(s[sk.LANGUAGE], working_dir)
+        batch = s.get("temp:checkpoint_batch", [])
+        result = adapter.verify_build(working_dir)
+
         if not result.passed:
-            raise NotImplementedError("bisect_within_checkpoint_files() - revert offending file(s) only")
+            # bisect_within_checkpoint_files(): quick_compile_check() in
+            # ApplyAndVerifyStep only checks the single file being patched
+            # in isolation, so a full-project build regression here means
+            # one of THIS checkpoint's commits broke something elsewhere
+            # (e.g. a caller of a changed method signature). Not true
+            # binary-search bisection — each candidate needs a full project
+            # build and there's only one working tree to test against, so a
+            # linear reverse-commit-order sweep (most recent first, most
+            # likely culprit) is the practical tradeoff. Stops at the first
+            # revert that restores a passing build.
+            reverted = []
+            for entry in reversed(batch):
+                git_tools.revert_commit_for_file(working_dir, entry["commit_sha"], entry["file"])
+                reverted.append(entry)
+                result = adapter.verify_build(working_dir)
+                if result.passed:
+                    break
+
+            reverted_issue_keys = {k for entry in reverted for k in entry["issue_keys"]}
+            for entry in reverted:
+                if entry["file"] in s[sk.FILES_COMPLETED]:
+                    s[sk.FILES_COMPLETED].remove(entry["file"])
+                s[sk.FILES_FLAGGED].append({
+                    "file": entry["file"],
+                    "reason": "reverted: broke the full build at checkpoint",
+                })
+            s[sk.ISSUES_FIXED] = [k for k in s[sk.ISSUES_FIXED] if k not in reverted_issue_keys]
+
+            if not result.passed:
+                # Reverted every commit in this checkpoint's batch and the
+                # build is still broken — the regression predates this run
+                # (or lives outside these files entirely). Not something an
+                # agent should silently paper over: stop and surface it.
+                raise RuntimeError(
+                    f"Full build still failing after reverting all {len(batch)} file(s) "
+                    f"committed since the last checkpoint ({[e['file'] for e in batch]}). "
+                    "Likely a pre-existing failure, not caused by this run's fixes — "
+                    f"build errors: {result.errors}"
+                )
+
+        s["temp:checkpoint_batch"] = []
         yield Event(author=self.name, content=None)
 
 

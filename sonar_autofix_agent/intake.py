@@ -89,7 +89,7 @@ def set_analysis_source(source_type: str, source: str, tool_context: ToolContext
 
 intake_llm_agent = LlmAgent(
     name="intake_agent",
-    model="gemini-2.5-flash",
+    model="gemini-flash-latest",
     instruction=INTAKE_INSTRUCTION,
     tools=[set_analysis_source],
 )

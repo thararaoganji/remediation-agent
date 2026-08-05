@@ -8,6 +8,7 @@ extraheader is scoped to the single command and never persisted."""
 
 import base64
 import os
+import shutil
 import subprocess
 
 
@@ -54,11 +55,14 @@ def resolve_source(source: str, source_type: str, workspace_root: str, github_to
         repo_name = source.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git")
         working_dir = os.path.join(workspace_root, repo_name)
 
-        if os.path.isdir(os.path.join(working_dir, ".git")):
-            # already cloned by a prior run — fetch instead of re-cloning
-            auth = _github_auth_args(github_token) if github_token else []
-            _run(["git", *auth, "fetch", "origin"], cwd=working_dir)
-            return working_dir
+        # Always a fresh clone off the default branch — never reuse/fetch a
+        # prior run's workspace. A stale clone can carry over its own
+        # {project_key}_agent_* branches (find_or_create_branch would then
+        # "resume" into whatever state was left there) and any uncommitted
+        # or committed drift from a previous, possibly-failed run. Wiping
+        # it guarantees this run starts from the actual current upstream.
+        if os.path.exists(working_dir):
+            shutil.rmtree(working_dir)
 
         os.makedirs(workspace_root, exist_ok=True)
         auth = _github_auth_args(github_token) if github_token else []
@@ -92,6 +96,19 @@ def commit(working_dir: str, message: str) -> str:
 
 def revert_file(working_dir: str, file_path: str) -> None:
     _run(["git", "checkout", "--", file_path], cwd=working_dir)
+
+
+def revert_commit_for_file(working_dir: str, commit_sha: str, file_path: str) -> None:
+    """Reverts a single file's fix-commit without touching any other file:
+    restores file_path's content from that commit's parent, then commits
+    the reversion. Used at checkpoint time (Section 5.4) when a full build
+    fails after a batch of per-file commits — checking out just this path
+    is safer than `git revert <sha>` here, since each fix-commit was staged
+    with `git add -A` and a plain revert would replay the whole commit,
+    not just this file, if anything else were ever incidentally dirty."""
+    _run(["git", "checkout", f"{commit_sha}~1", "--", file_path], cwd=working_dir)
+    _run(["git", "add", file_path], cwd=working_dir)
+    _run(["git", "commit", "-m", f"revert: {file_path} broke the full build at checkpoint"], cwd=working_dir)
 
 
 def commit_checkpoint_marker(working_dir: str) -> str:

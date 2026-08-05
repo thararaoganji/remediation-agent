@@ -8,6 +8,8 @@ BaseAgent orchestration code directly, per the "LLM only for fix
 generation" principle from the review.
 """
 
+import requests
+
 CATEGORY_RANK = {"SECURITY": 0, "RELIABILITY": 1, "MAINTAINABILITY": 2, "HOTSPOT": 3}
 
 # Per-category severity floor. SECURITY/RELIABILITY ratings are gated by the
@@ -53,12 +55,155 @@ IN_SCOPE_RATING_METRICS = ["security_rating", "reliability_rating", "sqale_ratin
 MAINTAINABILITY_DEBT_RATIO_TARGET = 5.0   # % — Sonar's A threshold for sqale_rating
 
 
+def _auth_headers(token: str) -> dict:
+    # Bearer is the current documented auth scheme for the Sonar Web API;
+    # user tokens no longer work reliably as an HTTP Basic username on
+    # newer server versions.
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _sonar_get(sonar_base_url: str, path: str, token: str, params: dict) -> dict:
+    resp = requests.get(
+        f"{sonar_base_url.rstrip('/')}{path}",
+        headers=_auth_headers(token),
+        params=params,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _component_path(component_key: str, project_key: str) -> str:
+    # issues/hotspots return component as "{projectKey}:{path}"
+    prefix = f"{project_key}:"
+    return component_key[len(prefix):] if component_key.startswith(prefix) else component_key
+
+
+def _parse_effort_minutes(effort: str | None) -> int:
+    """Sonar effort/debt strings look like '5min', '1h30min', '2d' (1d = 8h)."""
+    if not effort:
+        return 0
+    minutes, num = 0, ""
+    for ch in effort:
+        if ch.isdigit():
+            num += ch
+            continue
+        if not num:
+            continue
+        value = int(num)
+        minutes += {"d": value * 8 * 60, "h": value * 60, "m": value}.get(ch, 0)
+        num = ""
+    return minutes
+
+
+_TYPE_TO_CATEGORY = {"VULNERABILITY": "SECURITY", "BUG": "RELIABILITY", "CODE_SMELL": "MAINTAINABILITY"}
+
+
+def _normalize_issue(raw: dict, project_key: str) -> dict:
+    """Normalizes one /api/issues/search entry into the shape classify_issue(),
+    partition_and_prioritize(), patch_tools, and prompts.build_issue_block()
+    all expect. Handles both the legacy severity/type taxonomy and the
+    newer per-softwareQuality `impacts` array (Clean Code taxonomy) — see
+    _taxonomy_and_severity() above, which keys off whether
+    'impact_severities' is present."""
+    text_range = raw.get("textRange") or {}
+    impacts = raw.get("impacts") or []
+
+    category, impact_severity = None, None
+    by_quality = {imp["softwareQuality"]: imp["severity"] for imp in impacts}
+    for quality in ("SECURITY", "RELIABILITY", "MAINTAINABILITY"):
+        if quality in by_quality:
+            category, impact_severity = quality, by_quality[quality]
+            break
+    if category is None:
+        category = _TYPE_TO_CATEGORY.get(raw.get("type"), raw.get("type"))
+
+    issue = {
+        "issue_key": raw["key"],
+        "rule_key": raw["rule"],
+        "component_path": _component_path(raw["component"], project_key),
+        "category": category,
+        "severity": impact_severity or raw.get("severity", ""),
+        "message": raw.get("message", ""),
+        "start_line": text_range.get("startLine", raw.get("line", 0)) or 0,
+        "end_line": text_range.get("endLine", raw.get("line", 0)) or 0,
+        "start_offset": text_range.get("startOffset", 0) or 0,
+        "end_offset": text_range.get("endOffset", 0) or 0,
+        "effort_minutes": _parse_effort_minutes(raw.get("effort") or raw.get("debt")),
+    }
+    if impact_severity is not None:
+        issue["impact_severities"] = impact_severity
+    return issue
+
+
+def _normalize_hotspot(raw: dict, project_key: str) -> dict:
+    return {
+        "issue_key": raw["key"],
+        "rule_key": raw.get("ruleKey", ""),
+        "component_path": _component_path(raw["component"], project_key),
+        "category": "HOTSPOT",
+        "severity": raw.get("vulnerabilityProbability", ""),
+        "vulnerability_probability": raw.get("vulnerabilityProbability"),
+        "message": raw.get("message", ""),
+        "start_line": raw.get("line", 0) or 0,
+        "end_line": raw.get("line", 0) or 0,
+        "start_offset": 0,
+        "end_offset": 0,
+        "effort_minutes": 0,
+    }
+
+
+def _paginate(sonar_base_url: str, path: str, token: str, params: dict, list_key: str) -> tuple[list[dict], dict]:
+    page, page_size = 1, 500
+    results: list[dict] = []
+    rule_names: dict[str, str] = {}
+    while True:
+        data = _sonar_get(sonar_base_url, path, token, {**params, "p": page, "ps": page_size})
+        results.extend(data.get(list_key, []))
+        for rule in data.get("rules", []):
+            rule_names[rule["key"]] = rule.get("name", rule["key"])
+        paging = data.get("paging", {"total": len(results), "pageSize": page_size})
+        if page * paging.get("pageSize", page_size) >= paging.get("total", len(results)):
+            break
+        page += 1
+    return results, rule_names
+
+
 def fetch_issues_and_hotspots(sonar_base_url: str, project_key: str, token: str) -> list[dict]:
-    """GET /api/issues/search + /api/hotspots/search. Returns raw combined list.
+    """GET /api/issues/search + /api/hotspots/search, normalized into one
+    combined list. Only OPEN/CONFIRMED/REOPENED issues and TO_REVIEW
+    hotspots — anything already resolved or reviewed is excluded at the
+    source rather than relying on classify_issue() to filter it out.
     Caller must first confirm which severity taxonomy this Sonar instance
     returns (legacy vs Clean Code) before classify_issue() is applied —
-    see Section 4.1 note in the workflow doc."""
-    raise NotImplementedError("wire to requests.get against sonar_base_url")
+    see Section 4.1 note in the workflow doc; handled per-issue here via
+    the `impacts` array when present."""
+    raw_issues, rule_names = _paginate(
+        sonar_base_url, "/api/issues/search", token,
+        {
+            "componentKeys": project_key,
+            "statuses": "OPEN,CONFIRMED,REOPENED",
+            "additionalFields": "rules",
+        },
+        "issues",
+    )
+    issues = []
+    for raw in raw_issues:
+        issue = _normalize_issue(raw, project_key)
+        issue["rule_name"] = rule_names.get(issue["rule_key"], issue["rule_key"])
+        issues.append(issue)
+
+    raw_hotspots, _ = _paginate(
+        sonar_base_url, "/api/hotspots/search", token,
+        {"projectKey": project_key, "status": "TO_REVIEW"},
+        "hotspots",
+    )
+    for raw in raw_hotspots:
+        hotspot = _normalize_hotspot(raw, project_key)
+        hotspot["rule_name"] = hotspot["rule_key"]
+        issues.append(hotspot)
+
+    return issues
 
 
 def _taxonomy_and_severity(issue: dict) -> tuple[str, str]:
@@ -172,8 +317,17 @@ def debt_ratio_expansion_candidates(all_issues: list[dict]) -> list[dict]:
 
 def get_rule_description(sonar_base_url: str, rule_key: str, token: str) -> str:
     """GET /api/rules/show?key={rule_key} — used to fill
-    {rule_description_from_sonar_rules_api} in the fix prompt."""
-    raise NotImplementedError("wire to requests.get")
+    {rule_description_from_sonar_rules_api} in the fix prompt.
+    Newer Sonar versions split the description into `descriptionSections`
+    rather than a single `htmlDesc`; falls back through both."""
+    data = _sonar_get(sonar_base_url, "/api/rules/show", token, {"key": rule_key})
+    rule = data.get("rule", {})
+    if rule.get("htmlDesc"):
+        return rule["htmlDesc"]
+    sections = rule.get("descriptionSections") or []
+    if sections:
+        return "\n\n".join(s.get("content", "") for s in sections if s.get("content"))
+    return rule.get("mdDesc", "")
 
 
 def trigger_sonar_analysis(working_dir: str, project_key: str, ce_edition: bool) -> str:
