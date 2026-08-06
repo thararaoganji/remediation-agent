@@ -1,0 +1,139 @@
+import subprocess
+
+from sonar_autofix_agent.tools import git_tools
+
+
+def _git(args, cwd):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r
+
+
+# --- _sanitize_branch_component ---------------------------------------------
+
+def test_sanitize_branch_component_strips_colon_from_maven_default_key():
+    # the exact live failure this session: groupId:artifactId fallback
+    assert git_tools._sanitize_branch_component("org.owasp.webgoat:webgoat") == "org.owasp.webgoat-webgoat"
+
+
+def test_sanitize_branch_component_handles_all_unsafe_chars():
+    result = git_tools._sanitize_branch_component("a b~c^d:e?f*g[h\\i")
+    assert git_tools._BRANCH_UNSAFE_RE.search(result) is None
+
+
+def test_sanitize_branch_component_collapses_dots_and_dashes():
+    assert ".." not in git_tools._sanitize_branch_component("a..b")
+    assert "--" not in git_tools._sanitize_branch_component("a::b")  # two colons -> two dashes -> collapsed
+
+
+def test_sanitize_branch_component_strips_leading_trailing_junk():
+    result = git_tools._sanitize_branch_component(".-my-key-./")
+    assert not result.startswith((".", "-", "/"))
+    assert not result.endswith((".", "-", "/"))
+
+
+def test_sanitize_branch_component_empty_falls_back_to_project():
+    assert git_tools._sanitize_branch_component(":::") == "project"
+
+
+def test_sanitized_branch_name_is_actually_valid_git_ref():
+    for raw_key in ["org.owasp.webgoat:webgoat", "a b~c^d:e?f*g[h\\i", ":::", "..weird..", "normal-key"]:
+        branch = f"{git_tools._sanitize_branch_component(raw_key)}_agent_20260101T000000Z"
+        result = subprocess.run(["git", "check-ref-format", "--branch", branch], capture_output=True)
+        assert result.returncode == 0, f"{branch!r} is not a valid git ref (from {raw_key!r})"
+
+
+# --- completed_files_from_history -------------------------------------------
+
+def test_completed_files_from_history_tracks_fix_commits(git_repo):
+    for name in ("A.java", "B.java"):
+        (git_repo / name).write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("y")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+
+    (git_repo / "B.java").write_text("z")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in B.java"], str(git_repo))
+
+    assert git_tools.completed_files_from_history(str(git_repo)) == ["A.java", "B.java"]
+
+
+def test_completed_files_from_history_revert_cancels_matching_fix(git_repo):
+    for name in ("A.java", "B.java"):
+        (git_repo / name).write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("y")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+
+    (git_repo / "B.java").write_text("z")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in B.java"], str(git_repo))
+
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "revert: A.java broke the full build at checkpoint"], str(git_repo))
+
+    assert git_tools.completed_files_from_history(str(git_repo)) == ["B.java"]
+
+
+def test_completed_files_from_history_ignores_unrelated_commits(git_repo):
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["commit", "--allow-empty", "-m", "checkpoint: verified + rescanned clean"], str(git_repo))
+
+    assert git_tools.completed_files_from_history(str(git_repo)) == []
+
+
+# --- commit() no-op semantics ------------------------------------------------
+
+def test_commit_returns_sha_when_there_are_changes(git_repo):
+    (git_repo / "A.java").write_text("x")
+    sha = git_tools.commit(str(git_repo), "fix: sonar issues in A.java")
+    assert sha is not None
+    assert len(sha) == 40
+
+
+def test_commit_returns_none_when_nothing_to_commit(git_repo):
+    (git_repo / "A.java").write_text("x")
+    first = git_tools.commit(str(git_repo), "init")
+    assert first is not None
+
+    second = git_tools.commit(str(git_repo), "fix: sonar issues in A.java (no-op)")
+    assert second is None  # no error raised despite "nothing to commit"
+
+
+# --- revert_file / revert_commit_for_file ------------------------------------
+
+def test_revert_file_restores_committed_content(git_repo):
+    (git_repo / "A.java").write_text("original")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("modified")
+    git_tools.revert_file(str(git_repo), "A.java")
+    assert (git_repo / "A.java").read_text() == "original"
+
+
+def test_revert_commit_for_file_only_touches_named_file(git_repo):
+    for name in ("A.java", "B.java"):
+        (git_repo / name).write_text("original")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("broken fix")
+    (git_repo / "B.java").write_text("unrelated later change")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+    sha = _git(["rev-parse", "HEAD"], str(git_repo)).stdout.strip()
+
+    git_tools.revert_commit_for_file(str(git_repo), sha, "A.java")
+    assert (git_repo / "A.java").read_text() == "original"
+    assert (git_repo / "B.java").read_text() == "unrelated later change"  # untouched

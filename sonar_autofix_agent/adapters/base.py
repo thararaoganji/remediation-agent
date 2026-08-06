@@ -9,12 +9,26 @@ register it in ADAPTER_REGISTRY, nothing in agents.py or tools/ changes.
 """
 
 import os
+import platform
 import re
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+
+
+def _is_windows() -> bool:
+    return platform.system() == "Windows"
+
+
+def _install_hint() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        return "e.g. `brew install openjdk maven gradle` on macOS"
+    if system == "Windows":
+        return "e.g. `winget install EclipseAdoptium.Temurin.21.JDK` and Maven/Gradle via winget or choco on Windows"
+    return "e.g. `apt install openjdk-21-jdk maven gradle` (or your distro's package manager) on Linux"
 
 
 @dataclass
@@ -46,6 +60,19 @@ class SonarConfigNotFoundError(Exception):
     Sonar fetch or LLM call" contract as ToolNotAvailableError /
     BuildToolNotDetectedError, propagated out of SetupStep and surfaced as
     a clean stop by both run_local.py and IntakeStep's chat path."""
+    pass
+
+
+class SonarPreflightError(Exception):
+    """Raised by sonar_tools.validate_connection()/check_project_analyzed()
+    when the Sonar server itself isn't in a usable state for this run —
+    unreachable, token rejected, or the resolved project key has never
+    actually been analyzed there (a project key that resolves cleanly from
+    pom.xml/build.gradle can still be one nobody has scanned yet, or
+    scanned under a different key — observed live: the agent would
+    otherwise create a branch and silently find 0 issues, with nothing
+    telling the user why). Same "fail fast before any branch is created or
+    issue fetched" contract as the other preflight exceptions above."""
     pass
 
 
@@ -114,13 +141,6 @@ class LanguageAdapter(ABC):
         ...
 
     @abstractmethod
-    def parse_and_validate_patch(self, diff: str, working_dir: str) -> BuildResult:
-        """Syntax-only check that a diff applies and produces parseable
-        source. NOT a semantic guarantee — see checkpoint verify_build()
-        for that."""
-        ...
-
-    @abstractmethod
     def get_project_key(self, working_dir: str) -> str:
         """Reads the Sonar project key straight from this build tool's own
         config (the sonar{} DSL block / gradle.properties for Gradle, the
@@ -161,7 +181,12 @@ class JavaMavenAdapter(LanguageAdapter):
     def _mvn_cmd(self, working_dir: str) -> str:
         # Prefer the wrapper if the project ships one — pins the exact
         # Maven version the project expects, avoids "works on my machine".
-        return "./mvnw" if os.path.isfile(os.path.join(working_dir, "mvnw")) else "mvn"
+        # Windows' wrapper is mvnw.cmd, not the Unix mvnw shell script — and
+        # an absolute path (rather than "./mvnw") sidesteps any ambiguity
+        # about whether a bare relative command name resolves against cwd,
+        # which differs across OS/subprocess implementations.
+        wrapper = os.path.join(working_dir, "mvnw.cmd" if _is_windows() else "mvnw")
+        return wrapper if os.path.isfile(wrapper) else "mvn"
 
     def preflight_check(self, working_dir: str) -> None:
         missing = []
@@ -173,7 +198,7 @@ class JavaMavenAdapter(LanguageAdapter):
         if missing:
             raise ToolNotAvailableError(
                 f"Cannot build this project: missing required tool(s): {', '.join(missing)}. "
-                f"Install them (e.g. `brew install openjdk maven` on macOS) or ensure they're "
+                f"Install them ({_install_hint()}) or ensure they're "
                 f"on PATH, then re-run. Stopping before any Sonar fetch or fix generation."
             )
 
@@ -191,7 +216,15 @@ class JavaMavenAdapter(LanguageAdapter):
 
     def verify_build(self, working_dir: str) -> BuildResult:
         mvn = self._mvn_cmd(working_dir)
-        result = _run([mvn, "-q", "verify"], cwd=working_dir, timeout=1800)
+        # -DskipITs: skips maven-failsafe-plugin's integration-test/verify
+        # goals (anything matching *IT.java, *ITCase.java, IT*.java — e2e/UI
+        # tests like Playwright/Selenium specs live here) while still
+        # running the regular unit tests via surefire. Scope is Sonar
+        # findings in Java source, verified by real unit tests — a
+        # browser-automation timeout has nothing to do with a Sonar fix and
+        # was observed live (WebGoat's LoginUITest) forcing a checkpoint
+        # revert of otherwise-correct changes.
+        result = _run([mvn, "-q", "verify", "-DskipITs"], cwd=working_dir, timeout=1800)
         return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
 
     def run_specific_tests(self, working_dir: str, test_classes: list[str]) -> BuildResult:
@@ -208,14 +241,11 @@ class JavaMavenAdapter(LanguageAdapter):
         return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
 
     def get_source_root(self, working_dir: str) -> str:
-        return f"{working_dir}/src/main/java"
+        return os.path.join(working_dir, "src", "main", "java")
 
     def get_fix_prompt_addendum(self) -> str:
         from ..prompts import JAVA_SPRING_ADDENDUM
         return JAVA_SPRING_ADDENDUM
-
-    def parse_and_validate_patch(self, diff: str, working_dir: str) -> BuildResult:
-        raise NotImplementedError("apply diff to temp copy, run javac -Xlint syntax-only")
 
     def get_project_key(self, working_dir: str) -> str:
         pom_path = os.path.join(working_dir, "pom.xml")
@@ -276,19 +306,33 @@ class JavaMavenAdapter(LanguageAdapter):
 
 
 class JavaGradleAdapter(LanguageAdapter):
+    @staticmethod
+    def _wrapper_name() -> str:
+        # Windows' wrapper is gradlew.bat, not the Unix gradlew shell
+        # script — .bat/.cmd files are directly executable via subprocess
+        # on Windows without shell=True, so no other invocation change
+        # is needed once the right filename is picked.
+        return "gradlew.bat" if _is_windows() else "gradlew"
+
     def _gradle_wrapper_usable(self, working_dir: str) -> bool:
-        # A `gradlew` script alone isn't enough — it's a thin launcher that
-        # does `java -jar gradle/wrapper/gradle-wrapper.jar`, and that jar is
-        # a binary many repos gitignore. A fresh clone can have the script
-        # but not the jar, which fails opaquely ("Unable to access jarfile
-        # ...") deep inside a build call rather than here, wasting an entire
-        # run's worth of fetch/fix work before surfacing. Check both.
-        return os.path.isfile(os.path.join(working_dir, "gradlew")) and os.path.isfile(
+        # A `gradlew`/`gradlew.bat` script alone isn't enough — it's a thin
+        # launcher that does `java -jar gradle/wrapper/gradle-wrapper.jar`,
+        # and that jar is a binary many repos gitignore. A fresh clone can
+        # have the script but not the jar, which fails opaquely ("Unable to
+        # access jarfile ...") deep inside a build call rather than here,
+        # wasting an entire run's worth of fetch/fix work before surfacing.
+        # Check both.
+        return os.path.isfile(os.path.join(working_dir, self._wrapper_name())) and os.path.isfile(
             os.path.join(working_dir, "gradle", "wrapper", "gradle-wrapper.jar")
         )
 
     def _gradle_cmd(self, working_dir: str) -> str:
-        return "./gradlew" if self._gradle_wrapper_usable(working_dir) else "gradle"
+        # Absolute path (rather than "./gradlew") sidesteps any ambiguity
+        # about whether a bare relative command name resolves against cwd,
+        # which differs across OS/subprocess implementations.
+        if self._gradle_wrapper_usable(working_dir):
+            return os.path.join(working_dir, self._wrapper_name())
+        return "gradle"
 
     # Groovy: property "sonar.projectKey", "value"  |  Kotlin: property("sonar.projectKey", "value")
     _PROJECT_KEY_PROPERTY_RE = re.compile(
@@ -336,7 +380,7 @@ class JavaGradleAdapter(LanguageAdapter):
             missing.append("java (JDK)")
         gradle_cmd = self._gradle_cmd(working_dir)
         if gradle_cmd == "gradle" and not _tool_on_path("gradle"):
-            has_gradlew = os.path.isfile(os.path.join(working_dir, "gradlew"))
+            has_gradlew = os.path.isfile(os.path.join(working_dir, self._wrapper_name()))
             reason = (
                 "gradlew is present but gradle/wrapper/gradle-wrapper.jar is missing "
                 "(likely gitignored in this repo) — no usable wrapper"
@@ -346,7 +390,7 @@ class JavaGradleAdapter(LanguageAdapter):
         if missing:
             raise ToolNotAvailableError(
                 f"Cannot build this project: missing required tool(s): {', '.join(missing)}. "
-                f"Install them (e.g. `brew install openjdk gradle` on macOS) or ensure they're "
+                f"Install them ({_install_hint()}) or ensure they're "
                 f"on PATH, then re-run. Stopping before any Sonar fetch or fix generation."
             )
 
@@ -361,7 +405,16 @@ class JavaGradleAdapter(LanguageAdapter):
 
     def verify_build(self, working_dir: str) -> BuildResult:
         gradle = self._gradle_cmd(working_dir)
-        result = _run([gradle, "-q", "build"], cwd=working_dir, timeout=1800)
+        # `test` only, not `build`/`check` — `check` aggregates every
+        # verification task a project wires up, which on some repos
+        # includes separate e2e/UI source sets (Playwright/Selenium) with
+        # their own task. Scope is Sonar findings in Java source, verified
+        # by real unit tests; `test` runs those (compileJava,
+        # compileTestJava, test) without pulling in browser-automation
+        # tasks that are unrelated to a Sonar fix and prone to
+        # environment-driven flakiness (see the Maven adapter's -DskipITs
+        # for the same reasoning).
+        result = _run([gradle, "-q", "test"], cwd=working_dir, timeout=1800)
         return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
 
     def run_specific_tests(self, working_dir: str, test_classes: list[str]) -> BuildResult:
@@ -373,14 +426,11 @@ class JavaGradleAdapter(LanguageAdapter):
         return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
 
     def get_source_root(self, working_dir: str) -> str:
-        return f"{working_dir}/src/main/java"
+        return os.path.join(working_dir, "src", "main", "java")
 
     def get_fix_prompt_addendum(self) -> str:
         from ..prompts import JAVA_SPRING_ADDENDUM
         return JAVA_SPRING_ADDENDUM
-
-    def parse_and_validate_patch(self, diff: str, working_dir: str) -> BuildResult:
-        raise NotImplementedError("apply diff to temp copy, run javac -Xlint syntax-only")
 
     def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None):
         gradle = self._gradle_cmd(working_dir)

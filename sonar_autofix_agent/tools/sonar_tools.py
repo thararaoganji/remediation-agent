@@ -77,6 +77,65 @@ def _sonar_get(sonar_base_url: str, path: str, token: str, params: dict) -> dict
     return resp.json()
 
 
+def validate_connection(sonar_base_url: str, token: str) -> None:
+    """Confirms the Sonar server is reachable and SONAR_TOKEN authenticates.
+    /api/authentication/validate always returns HTTP 200 — even for a bad
+    token — so the actual signal is the `valid` field in the body, not the
+    status code (confirmed live against a real instance). Called from
+    SetupStep before any branch is created or issue fetched, so a bad
+    token/URL fails fast with a clear cause instead of surfacing
+    confusingly deep inside the first issue-fetch call. Raises
+    SonarPreflightError (imported locally to avoid a circular import with
+    adapters.base, which itself doesn't import sonar_tools)."""
+    from ..adapters.base import SonarPreflightError
+    try:
+        data = _sonar_get(sonar_base_url, "/api/authentication/validate", token, {})
+    except requests.exceptions.RequestException as e:
+        raise SonarPreflightError(
+            f"Could not reach Sonar server at {sonar_base_url}: {e}. "
+            "Check SONAR_BASE_URL and that the server is running."
+        )
+    if not data.get("valid"):
+        raise SonarPreflightError(
+            f"Sonar server at {sonar_base_url} rejected the configured SONAR_TOKEN. "
+            "Generate a new token in Sonar under My Account > Security and update .env."
+        )
+
+
+def check_project_analyzed(sonar_base_url: str, project_key: str, token: str) -> None:
+    """Confirms `project_key` has at least one prior analysis on this Sonar
+    server. A project key that resolves cleanly from pom.xml/build.gradle
+    can still be one nobody has ever actually scanned under (or scanned
+    under a DIFFERENT key) — observed live: the agent would otherwise
+    proceed to create a branch and then silently find 0 issues, with no
+    signal telling the user why. Called from SetupStep, before any branch
+    is created. Raises SonarPreflightError."""
+    from ..adapters.base import SonarPreflightError
+    try:
+        data = _sonar_get(
+            sonar_base_url, "/api/project_analyses/search", token, {"project": project_key}
+        )
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            data = {"analyses": []}
+        else:
+            raise SonarPreflightError(f"Could not query Sonar server at {sonar_base_url}: {e}")
+    except requests.exceptions.RequestException as e:
+        raise SonarPreflightError(
+            f"Could not reach Sonar server at {sonar_base_url}: {e}. "
+            "Check SONAR_BASE_URL and that the server is running."
+        )
+    if not data.get("analyses"):
+        raise SonarPreflightError(
+            f"Project key '{project_key}' has no analysis on this Sonar server "
+            f"({sonar_base_url}) yet. Run an initial scan first — e.g. "
+            f"`./mvnw sonar:sonar -Dsonar.projectKey={project_key} "
+            f"-Dsonar.host.url={sonar_base_url} -Dsonar.token=<token>` (Maven) or "
+            f"`./gradlew sonar -Dsonar.projectKey={project_key} "
+            f"-Dsonar.host.url={sonar_base_url} -Dsonar.token=<token>` (Gradle) — then re-run."
+        )
+
+
 def _component_path(component_key: str, project_key: str) -> str:
     # issues/hotspots return component as "{projectKey}:{path}"
     prefix = f"{project_key}:"

@@ -15,6 +15,7 @@ import asyncio
 import datetime
 import os
 import sys
+import tempfile
 
 from dotenv import load_dotenv
 from google.adk.runners import Runner
@@ -62,7 +63,9 @@ def build_initial_state() -> dict:
         "sonar_token": os.environ["SONAR_TOKEN"],
         "ce_edition": os.environ.get("CE_EDITION", "true").lower() == "true",
         "github_token": os.environ.get("GITHUB_TOKEN") or None,
-        "workspace_root": os.environ.get("WORKSPACE_ROOT", "/tmp/sonar_autofix_workspaces"),
+        "workspace_root": os.environ.get(
+            "WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
+        ),
         "timestamp": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
     }
 

@@ -8,6 +8,7 @@ extraheader is scoped to the single command and never persisted."""
 
 import base64
 import os
+import re
 import shutil
 import subprocess
 
@@ -66,16 +67,46 @@ def resolve_source(source: str, source_type: str, workspace_root: str, github_to
 
         os.makedirs(workspace_root, exist_ok=True)
         auth = _github_auth_args(github_token) if github_token else []
-        _run(["git", *auth, "clone", source, working_dir])
+        # core.autocrlf=false pins this fresh clone to whatever line endings
+        # are actually committed in the repo (typically LF for Java
+        # sources), regardless of the host machine's global git config —
+        # Windows installs commonly default core.autocrlf=true, which would
+        # silently rewrite every checked-out file to CRLF. fix_llm_agent's
+        # diffs are generated against LF content; a CRLF-translated working
+        # tree would then mismatch on every line, turning the hunk-miscount
+        # problem (already unreliable enough on its own) into a guaranteed
+        # failure on Windows specifically.
+        _run(["git", "-c", "core.autocrlf=false", *auth, "clone", source, working_dir])
         return working_dir
 
     raise ValueError(f"Unknown source_type: {source_type!r} (expected 'local' or 'github')")
 
 
+_BRANCH_UNSAFE_RE = re.compile(r"[\s~^:?*\[\\]")
+
+
+def _sanitize_branch_component(value: str) -> str:
+    """git branch names reject a specific set of characters — space, ~, ^,
+    :, ?, *, [, \\ (see `git check-ref-format --branch`) — and can't start
+    with '.', end with '.'/'.lock'/'/', or contain '..'. Sonar project keys
+    aren't restricted the same way: Maven's default groupId:artifactId
+    fallback (when a project has no explicit sonar.projectKey) routinely
+    produces a colon, e.g. 'org.owasp.webgoat:webgoat' — used verbatim as a
+    branch-name prefix, that's an invalid ref and `git checkout -b` fails
+    outright before anything else runs (observed live). Only for the
+    branch name — callers must keep using the original, unsanitized
+    project key everywhere else (Sonar API calls), since Sonar itself
+    doesn't share git's restrictions."""
+    sanitized = _BRANCH_UNSAFE_RE.sub("-", value)
+    sanitized = re.sub(r"\.{2,}", "-", sanitized)
+    sanitized = re.sub(r"-{2,}", "-", sanitized).strip("-./")
+    return sanitized or "project"
+
+
 def find_or_create_branch(working_dir: str, sonar_project_key: str, timestamp: str) -> tuple[str, bool]:
     """Section 3 step 4: branch created exactly once per logical run;
     re-invocations resume rather than re-create."""
-    prefix = f"{sonar_project_key}_agent_"
+    prefix = f"{_sanitize_branch_component(sonar_project_key)}_agent_"
     existing = _run(["git", "branch", "--list", f"{prefix}*"], cwd=working_dir).stdout.strip()
 
     if existing:
@@ -88,8 +119,54 @@ def find_or_create_branch(working_dir: str, sonar_project_key: str, timestamp: s
     return branch_name, False
 
 
-def commit(working_dir: str, message: str) -> str:
+_FIX_COMMIT_RE = re.compile(r"^fix: sonar issues in (.+)$")
+_REVERT_COMMIT_RE = re.compile(r"^revert: (.+) broke the full build at checkpoint$")
+
+
+def completed_files_from_history(working_dir: str) -> list[str]:
+    """Reconstructs which files this branch has already had successfully
+    committed (and not since reverted) by replaying its own commit log,
+    oldest first, so a later revert commit correctly cancels out its
+    matching earlier fix commit.
+
+    Exists for find_or_create_branch()'s resume path: InMemorySessionService
+    has no cross-invocation persistence, so a genuinely new session resuming
+    a branch that already has commits on it (from an earlier, separate
+    invocation against the same local repo) would otherwise start
+    FILES_COMPLETED empty — even though the branch it just checked out may
+    already have real fix commits sitting on disk — and silently re-queue
+    and re-fix every one of them from scratch. SetupStep calls this only
+    when session state is actually empty on a resumed branch, so it never
+    overwrites a genuine same-session resume that already has this
+    populated correctly."""
+    log = _run(["git", "log", "--reverse", "--format=%s"], cwd=working_dir).stdout
+    completed: list[str] = []
+    for line in log.splitlines():
+        m = _FIX_COMMIT_RE.match(line)
+        if m:
+            f = m.group(1)
+            if f not in completed:
+                completed.append(f)
+            continue
+        m = _REVERT_COMMIT_RE.match(line)
+        if m and m.group(1) in completed:
+            completed.remove(m.group(1))
+    return completed
+
+
+def commit(working_dir: str, message: str) -> str | None:
+    """Returns the new commit SHA, or None if there was nothing to commit
+    (e.g. a redundant re-fix regenerated content byte-identical to what's
+    already on disk — observed live from the resume bug above, but possible
+    any time a fix is a genuine no-op). `git commit` would exit non-zero
+    for "nothing to commit", which _run() turns into an unhandled
+    RuntimeError that crashes the whole pipeline — a no-op isn't a failure.
+    Callers should treat None as "nothing new for a checkpoint to revert",
+    not as an error."""
     _run(["git", "add", "-A"], cwd=working_dir)
+    status = _run(["git", "status", "--porcelain"], cwd=working_dir)
+    if not status.stdout.strip():
+        return None
     _run(["git", "commit", "-m", message], cwd=working_dir)
     return _run(["git", "rev-parse", "HEAD"], cwd=working_dir).stdout.strip()
 

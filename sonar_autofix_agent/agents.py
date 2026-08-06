@@ -22,8 +22,9 @@ Composition (top to bottom):
   └── outer_loop           (LoopAgent, max_iterations = MAX_OUTER_ITERATIONS)
         ├── refetch_prioritize_step (BaseAgent)   -- 5.5 re-fetch
         ├── per_file_loop           (LoopAgent, iterations = queue length)
-        │     ├── file_fixer_step   (BaseAgent)   -- 5.1/5.2 prep + calls fix_llm_agent
-        │     ├── fix_llm_agent     (LlmAgent)    -- Section 6, only LLM call in the graph
+        │     ├── file_fixer_step   (BaseAgent)   -- 5.1/5.2 prep + deterministic pre-pass
+        │     ├── fix_llm_gate_step (BaseAgent)   -- calls fix_llm_agent unless every issue
+        │     │     └── fix_llm_agent (LlmAgent)  -- was resolved deterministically already
         │     ├── apply_and_verify_step (BaseAgent) -- apply diff, compile check, verify
         │     └── checkpoint_gate   (BaseAgent)   -- fires checkpoint_pipeline conditionally
         │           └── checkpoint_pipeline (SequentialAgent) -- Section 5.4
@@ -31,8 +32,10 @@ Composition (top to bottom):
   └── report_step           (BaseAgent)  -- Phase IV, always runs (SequentialAgent tail)
 """
 
+import difflib
 import os
 import re
+import tempfile
 import time
 from typing import AsyncGenerator
 
@@ -44,7 +47,7 @@ from google.genai import types
 from . import state_schema as sk
 from .adapters.base import get_adapter, ToolNotAvailableError, BuildToolNotDetectedError
 from .prompts import build_fix_prompt
-from .tools import sonar_tools, patch_tools, git_tools
+from .tools import sonar_tools, patch_tools, git_tools, deterministic_fixes
 
 
 def _msg(text: str) -> types.Content:
@@ -169,7 +172,9 @@ class SetupStep(BaseAgent):
         working_dir = git_tools.resolve_source(
             s["source"],
             s[sk.SOURCE_TYPE],
-            workspace_root=s.get("workspace_root", "/tmp/sonar_autofix_workspaces"),
+            workspace_root=s.get(
+                "workspace_root", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
+            ),
             github_token=s.get("github_token"),
         )
         # Fail fast, before any Sonar fetch or LLM call: resolve the actual
@@ -191,6 +196,16 @@ class SetupStep(BaseAgent):
         # project key while the scan itself analyzes under another.
         s[sk.SONAR_PROJECT_KEY] = adapter.get_project_key(working_dir)
 
+        # SonarPreflightError deliberately NOT caught here — same "fail
+        # fast before any branch is created or issue fetched" contract as
+        # the tool/build-file checks above. A project key that resolves
+        # cleanly from the build file can still be one that's never been
+        # scanned on this server (or was scanned under a different key) —
+        # without this, the run would proceed to create a branch and then
+        # silently find 0 issues, with nothing telling the user why.
+        sonar_tools.validate_connection(s["sonar_base_url"], s["sonar_token"])
+        sonar_tools.check_project_analyzed(s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"])
+
         branch_name, resumed = git_tools.find_or_create_branch(
             working_dir, s[sk.SONAR_PROJECT_KEY], s.get("timestamp", "")
         )
@@ -209,10 +224,18 @@ class SetupStep(BaseAgent):
         s.setdefault(sk.WONT_FIX_REVIEW_QUEUE, [])
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_ITERATION, 0)
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_BATCH_SIZE, 8)
-        # Resuming a run: ADK's SessionService already restored all the
-        # above from persisted state if `resumed` is True — this is the
-        # idempotency requirement from the doc's Section 8, satisfied by
-        # using a durable SessionService instead of a hand-rolled JSON file.
+        # Resuming a run: ADK's SessionService is relied on to have already
+        # restored the above from persisted state — but InMemorySessionService
+        # has no cross-invocation persistence, so a genuinely new session
+        # resuming a branch with real commits already on it (from an
+        # earlier, separate invocation against the same local repo) would
+        # otherwise start FILES_COMPLETED empty and silently re-fix every
+        # already-fixed file from scratch (observed live — a redundant
+        # re-fix that happened to produce a no-op diff crashed the whole
+        # run in git_tools.commit()). Only reconstructs when state is
+        # actually empty, so a real same-session resume is untouched.
+        if resumed and not s[sk.FILES_COMPLETED]:
+            s[sk.FILES_COMPLETED] = git_tools.completed_files_from_history(working_dir)
         verb = "Resumed" if resumed else "Checked out"
         yield Event(author=self.name, content=_msg(f"{verb} branch `{branch_name}`. Fetching Sonar issues next."))
 
@@ -305,20 +328,70 @@ class FileFixerStep(BaseAgent):
 
         batch_issues = patch_tools.issues_for_prompt(cluster_result)
         adapter = get_adapter(s[sk.LANGUAGE], s[sk.WORKING_DIR])
-        with open(f"{s[sk.WORKING_DIR]}/{group['file']}") as f:
-            file_content = f.read()
+        # group["file"] is always forward-slash-separated (Sonar's own
+        # component-path convention), regardless of host OS — split and
+        # rejoin with os.path.join rather than raw string interpolation so
+        # the actual filesystem call always uses the native separator.
+        file_abs_path = os.path.join(s[sk.WORKING_DIR], *group["file"].split("/"))
+        with open(file_abs_path) as f:
+            original_content = f.read()
 
+        # Deterministic pre-pass: a handful of rules (see
+        # tools/deterministic_fixes.py) have exactly one unambiguous
+        # correct fix — .collect(toList()) -> .toList(), deleting
+        # commented-out code, etc. Applying those with plain text surgery
+        # before the LLM ever sees the file cuts cost/latency for that
+        # slice and removes any chance of the LLM touching something else
+        # in the same pass. Issues a fixer declines (wrong shape) fall
+        # straight through to remaining_issues unchanged.
+        file_content, mechanical_fixed, remaining_issues = deterministic_fixes.apply_deterministic_fixes(
+            original_content, batch_issues,
+        )
+        if mechanical_fixed:
+            with open(file_abs_path, "w") as f:
+                f.write(file_content)
+            rule_list = ", ".join(sorted({i["rule_key"] for i in mechanical_fixed}))
+            yield Event(author=self.name, content=_msg(
+                f"Deterministically fixed {len(mechanical_fixed)} issue(s) in `{group['file']}` "
+                f"({rule_list}) — no LLM call needed for these."
+            ))
+
+        # CURRENT_FILE_GROUP["issues"] stays the FULL batch (mechanical +
+        # LLM-bound) — ApplyAndVerifyStep uses it for ISSUES_FIXED
+        # tracking, the commit's issue_keys, and (usefully) re-verifies
+        # the deterministic fixes too via the same before/after count
+        # check it already runs for LLM fixes.
         s[sk.CURRENT_FILE_GROUP] = {"file": group["file"], "issues": batch_issues}
-        s[sk.CURRENT_FILE_CONTENT] = file_content
+        # The TRUE pre-patch text, not the post-mechanical-fix content —
+        # verify_issue_patterns_resolved()'s before/after comparison and
+        # _retry_full_file()'s diff both need the real starting point.
+        s[sk.CURRENT_FILE_CONTENT] = original_content
+
+        if not remaining_issues:
+            # Every issue in this file was resolved by the deterministic
+            # pre-pass — nothing left for fix_llm_agent to do. The file on
+            # disk already IS the fix; ApplyAndVerifyStep's apply_diff
+            # call is skipped for this file (see temp:skip_llm_fix) so it
+            # runs its normal compile-check/verify path against what's
+            # already there instead.
+            s["temp:skip_llm_fix"] = True
+            s[sk.PROPOSED_DIFF] = ""
+            yield Event(author=self.name, content=_msg(
+                f"All issue(s) in `{group['file']}` resolved deterministically."
+            ))
+            return
+
+        s["temp:skip_llm_fix"] = False
         s["temp:fix_prompt"] = build_fix_prompt(
             file_path=group["file"],
             language=s[sk.LANGUAGE],
             file_content=file_content,
-            issues_bottom_to_top=batch_issues,
+            issues_bottom_to_top=remaining_issues,
             language_addendum=adapter.get_fix_prompt_addendum(),
         )
         yield Event(author=self.name, content=_msg(
-            f"Fixing `{group['file']}` ({len(batch_issues)} issue(s))."
+            f"Fixing `{group['file']}` ({len(remaining_issues)} issue(s)"
+            f"{f', {len(mechanical_fixed)} more fixed deterministically' if mechanical_fixed else ''})."
         ))
 
 
@@ -333,6 +406,26 @@ def _build_fix_llm_agent() -> LlmAgent:
         instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
         output_key=sk.PROPOSED_DIFF,
     )
+
+
+class FixLlmGateStep(BaseAgent):
+    """Wraps fix_llm_agent so a file whose issues were fully resolved by
+    FileFixerStep's deterministic pre-pass skips the LLM call entirely,
+    instead of asking the model to regenerate a diff for zero remaining
+    issues. Manually invokes the wrapped LlmAgent's .run_async(ctx) — the
+    same free-standing-agent invocation pattern CheckpointGate already
+    uses for checkpoint_pipeline — so its output_key write and
+    usage_metadata plumbing behave exactly as when it was a bare
+    per_file_loop sub_agent."""
+    name: str = "fix_llm_gate_step"
+    llm_agent: LlmAgent
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        s = ctx.session.state
+        if s.get("temp:skip_llm_fix"):
+            return
+        async for event in self.llm_agent.run_async(ctx):
+            yield event
 
 
 class ApplyAndVerifyStep(BaseAgent):
@@ -380,7 +473,17 @@ class ApplyAndVerifyStep(BaseAgent):
             ),
         )
         retry_agent = _build_fix_llm_agent()
+        # Don't forward the model's own text — that's the entire
+        # regenerated file, and re-yielding it verbatim dumps the whole
+        # class into the visible chat/web log on every retry (confirmed
+        # live: a several-hundred-line file rendered in full in adk web).
+        # Same suppress-text/forward-everything-else pattern IntakeStep
+        # uses for intake_llm_agent's replies — there's no tool call here
+        # to preserve either, so this drains the generator without
+        # emitting anything until the diff summary below.
         async for event in retry_agent.run_async(ctx):
+            if event.content and any(getattr(p, "text", None) for p in event.content.parts or []):
+                continue
             yield event
 
         raw = s.get(sk.PROPOSED_DIFF, "")
@@ -391,13 +494,30 @@ class ApplyAndVerifyStep(BaseAgent):
             f.write(content)
         s["temp:full_file_retry_ok"] = True
 
+        diff_lines = list(difflib.unified_diff(
+            s[sk.CURRENT_FILE_CONTENT].splitlines(keepends=True),
+            content.splitlines(keepends=True),
+            fromfile=group["file"], tofile=group["file"],
+        ))
+        diff_text = "".join(diff_lines) or "(no textual difference from the original)"
+        yield Event(author=self.name, content=_msg(
+            f"Full-file fix for `{group['file']}`:\n```diff\n{diff_text[-3000:]}\n```"
+        ))
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         group = s[sk.CURRENT_FILE_GROUP]
         working_dir = s[sk.WORKING_DIR]
         adapter = get_adapter(s[sk.LANGUAGE], s[sk.WORKING_DIR])
 
-        applied = patch_tools.apply_diff(s[sk.PROPOSED_DIFF], working_dir, group["file"])
+        # A deterministic-only fix (FileFixerStep found no remaining
+        # issues for the LLM) already wrote the patched content straight
+        # to disk — there's no diff to apply, so treat this file as
+        # already "applied" and fall through to the same compile-check/
+        # verify path every other fix goes through.
+        applied = True if s.get("temp:skip_llm_fix") else patch_tools.apply_diff(
+            s[sk.PROPOSED_DIFF], working_dir, group["file"],
+        )
         retried = False
         if not applied:
             yield Event(author=self.name, content=_msg(
@@ -493,14 +613,25 @@ class ApplyAndVerifyStep(BaseAgent):
         commit_sha = git_tools.commit(working_dir, f"fix: sonar issues in {group['file']}")
         s[sk.FILES_COMPLETED].append(group["file"])
         s[sk.ISSUES_FIXED].extend([i["issue_key"] for i in group["issues"]])
-        # Tracked per-checkpoint (not just FILES_COMPLETED) so RunFullVerifyStep
-        # knows exactly which commits are candidates to revert if the full
-        # build fails — cleared after each checkpoint fires, pass or fail.
-        s.setdefault("temp:checkpoint_batch", []).append({
-            "file": group["file"],
-            "commit_sha": commit_sha,
-            "issue_keys": [i["issue_key"] for i in group["issues"]],
-        })
+        if commit_sha is not None:
+            # None means this was a no-op — the regenerated fix was already
+            # byte-identical to what's on disk (e.g. a redundant re-fix of
+            # an already-correct file). Nothing new exists for a later
+            # checkpoint to revert in that case, so it's deliberately left
+            # out of this checkpoint's revertible batch — including it
+            # would point RunFullVerifyStep's revert at the wrong commit
+            # (whatever unrelated commit HEAD already was), not at a real
+            # fix for this file.
+            #
+            # Tracked per-checkpoint (not just FILES_COMPLETED) so
+            # RunFullVerifyStep knows exactly which commits are candidates
+            # to revert if the full build fails — cleared after each
+            # checkpoint fires, pass or fail.
+            s.setdefault("temp:checkpoint_batch", []).append({
+                "file": group["file"],
+                "commit_sha": commit_sha,
+                "issue_keys": [i["issue_key"] for i in group["issues"]],
+            })
         s[sk.ORDERED_FILES_REMAINING].pop(0)
         s[sk.FILES_SINCE_CHECKPOINT] += 1
         note = f" ({len(unresolved)} issue(s) still unresolved, also flagged)" if unresolved else ""
@@ -697,7 +828,12 @@ def _build_per_file_loop() -> LoopAgent:
     """Factory, not a module-level singleton — see _build_fix_llm_agent()."""
     return LoopAgent(
         name="per_file_loop",
-        sub_agents=[FileFixerStep(), _build_fix_llm_agent(), ApplyAndVerifyStep(), CheckpointGate()],
+        sub_agents=[
+            FileFixerStep(),
+            FixLlmGateStep(llm_agent=_build_fix_llm_agent()),
+            ApplyAndVerifyStep(),
+            CheckpointGate(),
+        ],
         max_iterations=1000,  # real exit is FileFixerStep's escalate=True on empty queue
     )
 

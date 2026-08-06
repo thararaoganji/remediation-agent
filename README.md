@@ -183,7 +183,57 @@ checked-out repo's `build.gradle`/`build.gradle.kts` (`sonar { properties { prop
 or `gradle.properties`) or `pom.xml` (`<sonar.projectKey>` property, falling back to `groupId:artifactId`),
 so it always matches whatever project key the Sonar plugin itself will scan under.
 
-Run:
+---
+
+## Prerequisites (checked automatically, fail-fast)
+
+`SetupStep` validates all of these before touching a git branch or fetching a
+single issue — a failure here stops the run immediately with a specific,
+actionable message instead of failing confusingly mid-pipeline (or, worse,
+silently finding 0 issues). Worth self-checking before a run too:
+
+**Tooling** (`ToolNotAvailableError`)
+- `java` on PATH.
+- `mvn`/`gradle` on PATH, *or* the repo ships a working wrapper (`mvnw`/`mvnw.cmd`,
+  `gradlew`/`gradlew.bat` **and** the committed `gradle/wrapper/gradle-wrapper.jar`
+  — a wrapper script without its jar, common when it's gitignored, fails
+  opaquely deep inside a build call otherwise).
+
+**Repo/build-file configuration** (`BuildToolNotDetectedError` / `SonarConfigNotFoundError`)
+- `pom.xml` or `build.gradle[.kts]` exists at the repo root.
+- It resolves to a Sonar project key — either an explicit `sonar.projectKey`
+  property, or (Maven only) a `groupId`/`artifactId` to fall back to.
+- Local source only: the given path is a real git repository.
+
+**Sonar server state** (`SonarPreflightError`) — the two easiest to miss,
+since a project key can look completely valid and still fail here:
+- The server at `SONAR_BASE_URL` is reachable and `SONAR_TOKEN` authenticates
+  (`/api/authentication/validate` always returns HTTP 200 even for a bad
+  token — the actual signal is the `valid` field in the body, not the status
+  code).
+- **The resolved project key has at least one analysis already on that
+  server.** A key that resolves cleanly from `pom.xml`/`build.gradle` can
+  still be one nobody has ever scanned — or scanned under a *different*
+  key — and without this check the run would proceed to create a branch and
+  then silently find 0 issues, with nothing telling you why. If this fires,
+  run an initial scan first, e.g.:
+  ```bash
+  ./mvnw sonar:sonar -Dsonar.projectKey=<key> -Dsonar.host.url=$SONAR_BASE_URL -Dsonar.token=$SONAR_TOKEN
+  # or
+  ./gradlew sonar -Dsonar.projectKey=<key> -Dsonar.host.url=$SONAR_BASE_URL -Dsonar.token=$SONAR_TOKEN
+  ```
+  then re-run — `sonar.projectKey` only needs to be set on the initial scan;
+  persisting it in `pom.xml`/`build.gradle` afterward keeps every later run
+  (including the ones this agent triggers itself) pointed at the same key.
+
+Not currently pre-checked, still worth confirming yourself: GitHub source
+with a private repo needs a `GITHUB_TOKEN` with read access for the clone
+(currently only surfaces as a clone failure); pushing the fix branch needs
+`Contents: Read & write` on that same token.
+
+---
+
+## Run
 
 ```bash
 python run_local.py
@@ -194,10 +244,28 @@ chat, and this pipeline runs to completion from pre-seeded state rather than
 responding conversationally. `run_local.py` is the actual entry point;
 `adk web` is only useful for poking at `fix_llm_agent` in isolation.
 
-`SetupStep` preflight-checks `java` + `mvn`/`mvnw` or `gradle`/`gradlew`
-before any Sonar fetch or LLM call happens. Missing tools stop the run
-immediately with a clear message (`ToolNotAvailableError`) instead of
-failing confusingly mid-pipeline.
+---
+
+## Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+Covers the deterministic logic layer — `tools/deterministic_fixes.py`,
+`tools/patch_tools.py`, `tools/git_tools.py`, `tools/sonar_tools.py`
+(classification/prioritization + preflight checks against mocked HTTP),
+`adapters/base.py`, and `prompts.py` — via real temp git repos and
+filesystem fixtures, no network or LLM calls, so it's fast and hermetic.
+
+Not yet covered: the `BaseAgent` orchestration classes in `agents.py`
+themselves (`FileFixerStep`, `ApplyAndVerifyStep`, `RunFullVerifyStep`,
+etc.). Unit-testing those directly needs a real `InvocationContext`
+(session, agent tree, ADK's own plumbing) rather than a plain mock, since
+they're written against that contract — worth adding as a follow-up, but
+scoped out here in favor of thorough coverage of the pure logic layer,
+which is both the highest-value and lowest-risk-to-test surface.
 
 ---
 

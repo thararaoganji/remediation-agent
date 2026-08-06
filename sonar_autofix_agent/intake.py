@@ -33,6 +33,7 @@ actually stops execution for this turn.
 
 import datetime
 import os
+import tempfile
 import time
 from typing import AsyncGenerator
 
@@ -43,7 +44,9 @@ from google.adk.tools import ToolContext
 from google.genai import types
 
 from . import state_schema as sk
-from .adapters.base import ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError
+from .adapters.base import (
+    ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError, SonarPreflightError,
+)
 from .agents import pipeline_agent
 
 REQUIRED_ENV = ["GOOGLE_API_KEY", "SONAR_BASE_URL", "SONAR_TOKEN", "LANGUAGE"]
@@ -227,7 +230,13 @@ class IntakeStep(BaseAgent):
         s.setdefault("sonar_token", os.environ["SONAR_TOKEN"])
         s.setdefault("ce_edition", os.environ.get("CE_EDITION", "true").lower() == "true")
         s.setdefault("github_token", os.environ.get("GITHUB_TOKEN") or None)
-        s.setdefault("workspace_root", os.environ.get("WORKSPACE_ROOT", "/tmp/sonar_autofix_workspaces"))
+        # tempfile.gettempdir() rather than a hardcoded "/tmp" — that path
+        # doesn't exist on Windows; gettempdir() resolves to the right
+        # per-OS temp location (TEMP/TMP env vars on Windows, /tmp on
+        # Unix-likes) automatically.
+        s.setdefault("workspace_root", os.environ.get(
+            "WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
+        ))
         # Not setdefault: every invocation of IntakeStep that reaches this
         # point is about to trigger a fresh pipeline_agent run against a
         # freshly re-cloned workspace (see git_tools.resolve_source) — the
@@ -246,10 +255,14 @@ class IntakeStep(BaseAgent):
             async for event in pipeline_agent.run_async(ctx):
                 _accumulate_tokens(s, event)
                 yield event
-        except (ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError) as e:
+        except (
+            ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError, SonarPreflightError,
+        ) as e:
             # SetupStep's preflight checks (build tool on PATH, pom.xml/
-            # build.gradle present, Sonar project key configured) all
-            # deliberately raise before any Sonar fetch or LLM call and
+            # build.gradle present, Sonar project key configured, Sonar
+            # server reachable with a valid token and an actual analysis
+            # under this project key) all deliberately raise before any
+            # issue fetch or LLM call and
             # deliberately are NOT caught inside agents.py — this is the
             # one place that turns that into a clean chat message instead
             # of an unhandled exception reaching adk web's request handler.
