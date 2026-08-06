@@ -54,13 +54,47 @@ def _fix_s125(source: str, issue: dict) -> str | None:
 _S3_BUILDER_RE = re.compile(r"(S3Client\.builder\(\))(.*?)(\.build\(\))", re.DOTALL)
 
 
+_IMPORT_STMT_RE = re.compile(r"^import\s+[\w.]+(?:\.\*)?\s*;\s*$")
+_PACKAGE_STMT_RE = re.compile(r"^package\s+[\w.]+\s*;\s*$")
+
+
+def _ensure_import(source: str, import_line: str) -> str:
+    """Inserts `import_line` (e.g. 'import a.b.C;') right after the last
+    existing import statement, or after the package declaration if there
+    are none, unless it's already present. Exists because a fixer that
+    inserts code referencing a new type (see _fix_s6242) can't assume
+    that type is already imported -- observed live: AwsConfig.java broke
+    (cannot find symbol: DefaultCredentialsProvider) because the S6242
+    fixer added a call to it without adding the import, turning a file
+    that compiled fine into one that didn't."""
+    if import_line in source:
+        return source
+    lines = source.splitlines(keepends=True)
+    last_import_idx = None
+    for i, line in enumerate(lines):
+        if _IMPORT_STMT_RE.match(line.strip()):
+            last_import_idx = i
+    if last_import_idx is not None:
+        lines.insert(last_import_idx + 1, import_line + "\n")
+        return "".join(lines)
+    for i, line in enumerate(lines):
+        if _PACKAGE_STMT_RE.match(line.strip()):
+            lines.insert(i + 1, "\n" + import_line + "\n")
+            return "".join(lines)
+    return import_line + "\n" + source
+
+
+_DEFAULT_CREDENTIALS_PROVIDER_IMPORT = "import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;"
+
+
 def _fix_s6242(source: str, issue: dict) -> str | None:
     """S6242: S3Client.builder()...build() with no explicit
     .credentialsProvider(...) — inserts one using
     DefaultCredentialsProvider.builder().build(), matching both the
     STRICT JAVA REMEDIATION RULES guidance in prompts.py (builder().build(),
     never .create()) and patch_tools._s3_credentials_provider_missing_count,
-    the same check verification uses afterward."""
+    the same check verification uses afterward. Also ensures the type's
+    import is present -- see _ensure_import's docstring for why."""
     lines = source.splitlines(keepends=True)
     lo, hi = max(0, issue["start_line"] - 1), min(len(lines), issue["end_line"])
     window = "".join(lines[lo:hi])
@@ -70,7 +104,8 @@ def _fix_s6242(source: str, issue: dict) -> str | None:
     insertion = ".credentialsProvider(DefaultCredentialsProvider.builder().build())"
     new_window = window[: m.start(3)] + insertion + window[m.start(3):]
     lines[lo:hi] = [new_window]
-    return "".join(lines)
+    result = "".join(lines)
+    return _ensure_import(result, _DEFAULT_CREDENTIALS_PROVIDER_IMPORT)
 
 
 _LOG_CONCAT_RE = re.compile(r'(\blog(?:ger)?\.\w+\()\s*"([^"]*)"\s*\+\s*([^,;)+"]+?)\s*\)')

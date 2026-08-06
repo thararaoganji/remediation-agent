@@ -62,6 +62,20 @@ def _msg(text: str) -> types.Content:
 
 
 _CODE_FENCE_RE = re.compile(r"```(?:\w+)?\n(.*?)```", re.DOTALL)
+_DIFF_ARTIFACT_RE = re.compile(r"^diff --git |^@@ .*@@", re.MULTILINE)
+
+
+def _looks_like_diff(text: str) -> bool:
+    """Observed live: when a full-file retry is asked to regenerate the
+    whole file (see _retry_full_file), the model can still degrade back
+    into diff-shaped output partway through — the extracted 'full file'
+    ends with a literal `diff --git a/...` / `@@ ... @@` block instead of
+    real source, which then fails to compile with confusing javac errors
+    ("class, interface, enum, or record expected") pointing at that
+    embedded diff syntax. Catching this before writing to disk turns a
+    wasted compile-check cycle into an immediate, clearly-explained
+    decline."""
+    return bool(_DIFF_ARTIFACT_RE.search(text))
 
 
 def _extract_code_block(text: str) -> str:
@@ -489,6 +503,12 @@ class ApplyAndVerifyStep(BaseAgent):
         raw = s.get(sk.PROPOSED_DIFF, "")
         content = _extract_code_block(raw).strip()
         if not content:
+            return
+        if _looks_like_diff(content):
+            yield Event(author=self.name, content=_msg(
+                f"Full-file retry for `{group['file']}` still returned diff-shaped output "
+                "instead of a complete file — declining rather than writing it, flagged for manual review."
+            ))
             return
         with open(os.path.join(working_dir, group["file"]), "w") as f:
             f.write(content)

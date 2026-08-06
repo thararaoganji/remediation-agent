@@ -93,6 +93,38 @@ def test_s6242_inserts_credentials_provider():
     assert "DefaultCredentialsProvider.builder().build()" in patched
 
 
+def test_s6242_adds_missing_import():
+    """Regression: the fixer used to insert DefaultCredentialsProvider
+    without importing it, breaking a file that compiled fine before —
+    observed live in a real run (AwsConfig.java: 'cannot find symbol')."""
+    src = (
+        "package portal.expenses.config;\n\n"
+        "import software.amazon.awssdk.regions.Region;\n"
+        "import software.amazon.awssdk.services.s3.S3Client;\n\n"
+        "class AwsConfig {\n"
+        "  S3Client c() {\n"
+        "    return S3Client.builder().region(Region.US_EAST_1).build();\n"
+        "  }\n"
+        "}\n"
+    )
+    patched, applied, remaining = df.apply_deterministic_fixes(src, [issue("java:S6242", 8, 8)])
+    assert len(applied) == 1
+    assert "import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;" in patched
+
+
+def test_s6242_does_not_duplicate_import_if_already_present():
+    src = (
+        "import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;\n"
+        "import software.amazon.awssdk.services.s3.S3Client;\n\n"
+        "class C {\n"
+        "  S3Client c() { return S3Client.builder().build(); }\n"
+        "}\n"
+    )
+    patched, applied, remaining = df.apply_deterministic_fixes(src, [issue("java:S6242", 5, 5)])
+    assert len(applied) == 1
+    assert patched.count("import software.amazon.awssdk.auth.credentials.DefaultCredentialsProvider;") == 1
+
+
 def test_s6242_declines_when_already_present():
     src = (
         "S3Client client = S3Client.builder()\n"
