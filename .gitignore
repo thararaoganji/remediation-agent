@@ -26,3 +26,8 @@ htmlcov/
 
 # Logs
 *.log
+
+# ADK local runtime state (session DB accumulates full chat/event history
+# from local dev runs, including repo URLs and model output -- not
+# meant to be shared or version-controlled)
+.adk/
