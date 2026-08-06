@@ -177,6 +177,7 @@ cp .env.example .env   # fill in the keys below
 | `GITHUB_TOKEN` | fine-grained PAT, `Contents: Read & write` — only needed to push the fix branch |
 | `WORKSPACE_ROOT` | where GitHub-mode clones land |
 | `LANGUAGE` | `java` (auto-detects Maven vs Gradle) or explicit `java-maven`/`java-gradle` |
+| `FIX_LLM_THINKING_BUDGET` | optional, default `4096` — caps `fix_llm_agent`'s Gemini thinking tokens per file. Set to `-1` for automatic/uncapped (the pre-cap default) if fix quality regresses. |
 
 Note: `sonar.projectKey` is not an `.env` setting — it's read directly from the
 checked-out repo's `build.gradle`/`build.gradle.kts` (`sonar { properties { property "sonar.projectKey", ... } } }`

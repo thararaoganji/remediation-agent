@@ -434,6 +434,17 @@ class FileFixerStep(BaseAgent):
         ))
 
 
+# Caps (doesn't disable) Gemini's thinking tokens for fix_llm_agent.
+# Observed live: thinking_token_count ranged from ~90 to over 8000 across
+# single-file fixes with no cap set (the default is per-model automatic,
+# effectively unbounded) — often larger than the fix itself. These are
+# narrow, single-file, already-scoped fixes, not open-ended reasoning
+# tasks, so a cap trims the worst outliers without well-reasoned fixes
+# needing that much budget in the first place. -1 (automatic, uncapped)
+# restores the pre-cap behavior if quality regresses in practice.
+_FIX_LLM_THINKING_BUDGET = int(os.environ.get("FIX_LLM_THINKING_BUDGET", "4096"))
+
+
 def _build_fix_llm_agent() -> LlmAgent:
     """The only LLM call in the entire graph. A factory, not a module-level
     singleton, because per_file_loop (which embeds this) is instantiated
@@ -444,6 +455,9 @@ def _build_fix_llm_agent() -> LlmAgent:
         model="gemini-3.5-flash",
         instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
         output_key=sk.PROPOSED_DIFF,
+        generate_content_config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_budget=_FIX_LLM_THINKING_BUDGET),
+        ),
     )
 
 
