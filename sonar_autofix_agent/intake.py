@@ -243,7 +243,9 @@ class IntakeStep(BaseAgent):
         # branch name it creates should reflect when THIS run started, not
         # get stuck on whatever timestamp happened to be cached in
         # session.state from an earlier run in the same chat session.
-        s["timestamp"] = datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        # datetime.now() (machine-local time), not utcnow() — branch names
+        # are read by humans, who expect the time on their own clock, not UTC.
+        s["timestamp"] = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
 
         # Scoped to the pipeline run itself (not any back-and-forth spent
         # above resolving the repo) — that's what "duration/tokens of the

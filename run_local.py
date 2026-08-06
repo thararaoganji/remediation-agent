@@ -66,7 +66,9 @@ def build_initial_state() -> dict:
         "workspace_root": os.environ.get(
             "WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
         ),
-        "timestamp": datetime.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"),
+        # machine-local time, not UTC -- branch names are read by humans,
+        # who expect the time on their own clock.
+        "timestamp": datetime.datetime.now().strftime("%Y%m%d_%H%M%S"),
     }
 
 
