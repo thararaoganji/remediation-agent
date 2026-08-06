@@ -22,7 +22,9 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from sonar_autofix_agent import root_agent
-from sonar_autofix_agent.adapters.base import ToolNotAvailableError, BuildToolNotDetectedError
+from sonar_autofix_agent.adapters.base import (
+    ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError,
+)
 
 load_dotenv()
 
@@ -30,7 +32,7 @@ APP_NAME = "sonar_autofix"
 USER_ID = "local_dev"
 SESSION_ID = "local_run_1"
 
-REQUIRED = ["GOOGLE_API_KEY", "SONAR_BASE_URL", "SONAR_TOKEN", "SONAR_PROJECT_KEY", "LANGUAGE"]
+REQUIRED = ["GOOGLE_API_KEY", "SONAR_BASE_URL", "SONAR_TOKEN", "LANGUAGE"]
 
 
 def build_initial_state() -> dict:
@@ -53,7 +55,8 @@ def build_initial_state() -> dict:
     return {
         "source": source,
         "source_type": source_type,
-        "sonar_project_key": os.environ["SONAR_PROJECT_KEY"],
+        # sonar_project_key deliberately NOT seeded here — SetupStep reads
+        # it from build.gradle/pom.xml once the source is checked out.
         "language": os.environ["LANGUAGE"],
         "sonar_base_url": os.environ["SONAR_BASE_URL"],
         "sonar_token": os.environ["SONAR_TOKEN"],
@@ -87,7 +90,7 @@ async def main():
             if err:
                 sys.exit(f"\nStopped: {err}")
             print(f"[{event.author}] {event.content or '(state update)'}")
-    except (ToolNotAvailableError, BuildToolNotDetectedError) as e:
+    except (ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError) as e:
         # Raised by SetupStep's preflight check before any Sonar fetch or
         # LLM call — surface it as a clean stop, not a stack trace.
         sys.exit(f"\nStopped: {e}")

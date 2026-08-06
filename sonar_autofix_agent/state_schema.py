@@ -51,3 +51,7 @@ LAST_CHECKPOINT_TIME = "temp:last_checkpoint_time"
 # --- Loop exit signaling ---
 OUTER_LOOP_DONE = "temp:outer_loop_done"
 FILE_LOOP_DONE = "temp:file_loop_done"
+
+# --- Run metrics (Section 9 report) ---
+RUN_START_TIME = "temp:run_start_time"          # time.time() set right before pipeline_agent runs
+TOKEN_USAGE = "temp:token_usage"                # {"prompt_tokens", "candidates_tokens", "total_tokens"}

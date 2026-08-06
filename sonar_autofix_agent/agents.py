@@ -31,16 +31,130 @@ Composition (top to bottom):
   └── report_step           (BaseAgent)  -- Phase IV, always runs (SequentialAgent tail)
 """
 
+import os
+import re
+import time
 from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent, LlmAgent, LoopAgent, SequentialAgent
 from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
+from google.genai import types
 
 from . import state_schema as sk
 from .adapters.base import get_adapter, ToolNotAvailableError, BuildToolNotDetectedError
 from .prompts import build_fix_prompt
 from .tools import sonar_tools, patch_tools, git_tools
+
+
+def _msg(text: str) -> types.Content:
+    """Every custom BaseAgent step below was originally silent
+    (content=None) — deterministic orchestration doesn't need an LLM to
+    narrate it, so there's no model turn to show. But that leaves adk
+    web's event list full of unlabeled placeholder entries with nothing
+    to click into. This wraps a short, fixed status line as the event's
+    content instead — still not LLM-generated, just a visible echo of
+    the decision the step already made."""
+    return types.Content(role="model", parts=[types.Part(text=text)])
+
+
+_CODE_FENCE_RE = re.compile(r"```(?:\w+)?\n(.*?)```", re.DOTALL)
+
+
+def _extract_code_block(text: str) -> str:
+    """fix_llm_agent's responses are consistently prose explanation followed
+    by one fenced code block — every response observed live follows this
+    shape, even when the prompt explicitly asks for raw output only. Used by
+    ApplyAndVerifyStep's full-file retry to pull just the file content back
+    out. Falls back to the raw text if no fence is found, in case the model
+    does comply literally."""
+    m = _CODE_FENCE_RE.search(text)
+    return m.group(1) if m else text
+
+
+def _java_fqcn(file_path: str) -> str:
+    """Converts a Java source path (as reported by Sonar, relative to the
+    repo root) to its fully-qualified class name — e.g.
+    'src/test/java/portal/expenses/controller/AuthControllerTest.java' ->
+    'portal.expenses.controller.AuthControllerTest'. Assumes the standard
+    Maven/Gradle layout (a 'java/' segment marking the source root)."""
+    parts = file_path.replace("\\", "/").split("/")
+    if "java" in parts:
+        parts = parts[parts.index("java") + 1:]
+    joined = "/".join(parts)
+    if joined.endswith(".java"):
+        joined = joined[: -len(".java")]
+    return joined.replace("/", ".")
+
+
+_RATING_LETTERS = {"1.0": "A", "2.0": "B", "3.0": "C", "4.0": "D", "5.0": "E"}
+
+
+def _format_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours}h {minutes}m {secs}s"
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
+
+def _format_summary(report: dict) -> str:
+    """Human-readable close-out message for ReportStep. Per-file detail is
+    deliberately just a comma-joined list of file names, not a per-file
+    breakdown — the individual fix/checkpoint/re-scan events already
+    narrated each file's outcome as it happened."""
+    lines = [f"**Sonar Auto-Fix complete** — branch `{report['branch_name']}`", ""]
+
+    lines.append(f"- Issues fixed: {len(report['issues_fixed'])}")
+
+    files_completed = report["files_completed"]
+    if files_completed:
+        lines.append(f"- Files fixed ({len(files_completed)}): {', '.join(f'`{f}`' for f in files_completed)}")
+    else:
+        lines.append("- Files fixed: none")
+
+    flagged = report["files_flagged_for_manual_review"]
+    if flagged:
+        lines.append(f"- Flagged for manual review ({len(flagged)}):")
+        for entry in flagged:
+            lines.append(f"  - `{entry['file']}` — {entry['reason']}")
+
+    review_queue = report["wont_fix_review_queue"]
+    if review_queue:
+        lines.append(f"- Awaiting human decision (Minor/Low Security or Reliability): {len(review_queue)} issue(s)")
+
+    lines.append(f"- Checkpoints: {len(report['checkpoints'])}, outer loop iterations: {report['outer_iterations']}"
+                  + (" (hit max)" if report["hit_max_iterations"] else ""))
+
+    push_result = report["push_result"]
+    push_label = {"pushed": f"Pushed `{report['branch_name']}` to origin."}.get(
+        push_result, push_result[0].upper() + push_result[1:] if push_result != "not attempted" else "Not attempted."
+    )
+    lines.append(f"- Push: {push_label}")
+
+    tokens = report["tokens_consumed"]
+    lines.append(
+        f"- Duration: {_format_duration(report['duration_seconds'])}, "
+        f"tokens consumed: {tokens['total_tokens']} "
+        f"(prompt: {tokens['prompt_tokens']}, output: {tokens['candidates_tokens']})"
+    )
+
+    _metric_names = {"sqale_rating": "Maintainability", "security_rating": "Security", "reliability_rating": "Reliability"}
+    ratings = ", ".join(
+        f"{_metric_names.get(metric, metric)}: {_RATING_LETTERS.get(grade, grade)}"
+        for metric, grade in report["final_ratings"].items()
+    )
+    lines.append(f"- Final quality ratings — {ratings}")
+
+    if report["note_if_not_a"]:
+        lines.append(f"\n{report['note_if_not_a']}")
+    else:
+        lines.append("\nAll categories are rated A.")
+
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -58,12 +172,6 @@ class SetupStep(BaseAgent):
             workspace_root=s.get("workspace_root", "/tmp/sonar_autofix_workspaces"),
             github_token=s.get("github_token"),
         )
-        branch_name, resumed = git_tools.find_or_create_branch(
-            working_dir, s[sk.SONAR_PROJECT_KEY], s.get("timestamp", "")
-        )
-        s[sk.WORKING_DIR] = working_dir
-        s[sk.BRANCH_NAME] = branch_name
-
         # Fail fast, before any Sonar fetch or LLM call: resolve the actual
         # build tool (auto-detected for a generic "java" LANGUAGE, or the
         # explicit override from .env) and confirm the required binaries
@@ -75,6 +183,19 @@ class SetupStep(BaseAgent):
         adapter = get_adapter(s[sk.LANGUAGE], working_dir)
         adapter.preflight_check(working_dir)
         s["temp:resolved_language"] = type(adapter).__name__
+
+        # Read from the build file, not .env: the project key the Sonar
+        # plugin actually uses when run_sonar_scan() invokes `gradle sonar`
+        # / `mvn sonar:sonar` is whatever's configured in build.gradle/
+        # pom.xml — a mismatched .env value would fetch/report against one
+        # project key while the scan itself analyzes under another.
+        s[sk.SONAR_PROJECT_KEY] = adapter.get_project_key(working_dir)
+
+        branch_name, resumed = git_tools.find_or_create_branch(
+            working_dir, s[sk.SONAR_PROJECT_KEY], s.get("timestamp", "")
+        )
+        s[sk.WORKING_DIR] = working_dir
+        s[sk.BRANCH_NAME] = branch_name
 
         s.setdefault(sk.OUTER_ITERATION, 0)
         s.setdefault(sk.MAX_OUTER_ITERATIONS, 5)
@@ -92,7 +213,8 @@ class SetupStep(BaseAgent):
         # above from persisted state if `resumed` is True — this is the
         # idempotency requirement from the doc's Section 8, satisfied by
         # using a durable SessionService instead of a hand-rolled JSON file.
-        yield Event(author=self.name, content=None)
+        verb = "Resumed" if resumed else "Checked out"
+        yield Event(author=self.name, content=_msg(f"{verb} branch `{branch_name}`. Fetching Sonar issues next."))
 
 
 # ---------------------------------------------------------------------------
@@ -104,8 +226,17 @@ class FetchPrioritizeStep(BaseAgent):
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
+        # branch=None (the project's default branch, e.g. main) deliberately
+        # — not s[sk.BRANCH_NAME]. The agent's own {project_key}_agent_*
+        # branch has no Sonar analysis of its own until checkpoint_pipeline
+        # scans it for the first time, so querying it by name here 404s.
+        # main's already-scanned issue list is the actual "what needs
+        # fixing" source of truth; FILES_COMPLETED/FILES_FLAGGED (updated
+        # locally as files are fixed/reverted) is what keeps re-fetching
+        # the same static main list from reprocessing already-handled
+        # files across outer_loop iterations.
         issues = sonar_tools.fetch_issues_and_hotspots(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"]
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], None
         )
         # Cached for the debt-ratio expansion pass later so it doesn't need
         # a second full fetch just to find Minor Maintainability candidates.
@@ -138,7 +269,11 @@ class FetchPrioritizeStep(BaseAgent):
                 issue["rule_description"] = rule_desc_cache[rule_key]
 
         s[sk.ORDERED_FILES_REMAINING] = remaining
-        yield Event(author=self.name, content=None)
+        yield Event(author=self.name, content=_msg(
+            f"Fetched {len(issues)} Sonar issue(s)/hotspot(s) — "
+            f"{len(remaining)} file(s) queued to fix, "
+            f"{len(s[sk.WONT_FIX_REVIEW_QUEUE])} total in the manual-review queue."
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +291,11 @@ class FileFixerStep(BaseAgent):
         queue = s[sk.ORDERED_FILES_REMAINING]
         if not queue:
             s[sk.FILE_LOOP_DONE] = True
-            yield Event(author=self.name, actions=EventActions(escalate=True))
+            yield Event(
+                author=self.name,
+                content=_msg("No files left in the queue."),
+                actions=EventActions(escalate=True),
+            )
             return
 
         group = queue[0]  # keep at index 0 until fully handled; pop on success
@@ -178,7 +317,9 @@ class FileFixerStep(BaseAgent):
             issues_bottom_to_top=batch_issues,
             language_addendum=adapter.get_fix_prompt_addendum(),
         )
-        yield Event(author=self.name, content=None)
+        yield Event(author=self.name, content=_msg(
+            f"Fixing `{group['file']}` ({len(batch_issues)} issue(s))."
+        ))
 
 
 def _build_fix_llm_agent() -> LlmAgent:
@@ -199,6 +340,57 @@ class ApplyAndVerifyStep(BaseAgent):
     verification (not regeneration) step from the 5.2/6.1 resolution."""
     name: str = "apply_and_verify_step"
 
+    async def _retry_full_file(
+        self, ctx: InvocationContext, group: dict, working_dir: str, reason: str,
+    ) -> AsyncGenerator[Event, None]:
+        """Fallback for when the diff-based fix fails — either git apply
+        rejects it outright, or it applies but the result doesn't compile.
+        Both were observed live to share the same root cause: fix_llm_agent
+        miscounting unified-diff hunk headers on larger, multi-hunk edits.
+        A wrong header either makes git apply reject the whole patch, or —
+        worse — 'succeed' with some hunks silently mis-merged (e.g. a field
+        rename applied but not every call site updated), which then fails
+        at compile time instead of at apply time. Asking for the WHOLE file
+        instead of a diff sidesteps hunk arithmetic entirely.
+
+        Sets state["temp:full_file_retry_ok"] rather than returning a value
+        (async generators can't `return` one) — the caller checks it once
+        this generator is fully drained. Uses a fresh, unregistered
+        LlmAgent (see _build_fix_llm_agent()'s docstring on why factories
+        instead of singletons sidestep ADK's single-parent constraint) so
+        this can run from inside another step with no sub_agents wiring,
+        the same pattern IntakeStep/CheckpointGate already use for
+        one-off/nested agent invocations."""
+        s = ctx.session.state
+        s["temp:full_file_retry_ok"] = False
+        adapter = get_adapter(s[sk.LANGUAGE], working_dir)
+        s["temp:fix_prompt"] = build_fix_prompt(
+            file_path=group["file"],
+            language=s[sk.LANGUAGE],
+            file_content=s[sk.CURRENT_FILE_CONTENT],
+            issues_bottom_to_top=group["issues"],
+            language_addendum=adapter.get_fix_prompt_addendum(),
+            output_format=(
+                f"The previous diff-based attempt failed because {reason}. "
+                "This time, output the COMPLETE corrected file — every line "
+                "from start to end, with the fixes applied — not a diff. "
+                "Wrap it in a single fenced code block and nothing else: no "
+                "explanation, no per-issue breakdown, just the fenced block "
+                "containing the full file."
+            ),
+        )
+        retry_agent = _build_fix_llm_agent()
+        async for event in retry_agent.run_async(ctx):
+            yield event
+
+        raw = s.get(sk.PROPOSED_DIFF, "")
+        content = _extract_code_block(raw).strip()
+        if not content:
+            return
+        with open(os.path.join(working_dir, group["file"]), "w") as f:
+            f.write(content)
+        s["temp:full_file_retry_ok"] = True
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         group = s[sk.CURRENT_FILE_GROUP]
@@ -206,22 +398,88 @@ class ApplyAndVerifyStep(BaseAgent):
         adapter = get_adapter(s[sk.LANGUAGE], s[sk.WORKING_DIR])
 
         applied = patch_tools.apply_diff(s[sk.PROPOSED_DIFF], working_dir, group["file"])
+        retried = False
         if not applied:
-            s[sk.FILES_FLAGGED].append({"file": group["file"], "reason": "diff failed to apply"})
-            s[sk.ORDERED_FILES_REMAINING].pop(0)
-            yield Event(author=self.name, content=None)
-            return
+            yield Event(author=self.name, content=_msg(
+                f"Diff for `{group['file']}` failed to apply — retrying with a full-file fix."
+            ))
+            async for event in self._retry_full_file(ctx, group, working_dir, "the diff failed to apply"):
+                yield event
+            retried = True
+            applied = s.get("temp:full_file_retry_ok", False)
+            if not applied:
+                s[sk.FILES_FLAGGED].append({
+                    "file": group["file"],
+                    "reason": "diff failed to apply (full-file retry also failed)",
+                })
+                s[sk.ORDERED_FILES_REMAINING].pop(0)
+                yield Event(author=self.name, content=_msg(
+                    f"Could not apply the fix to `{group['file']}` even after a full-file retry — "
+                    "flagged for manual review."
+                ))
+                return
 
         result = adapter.quick_compile_check(working_dir, scope=group["file"])
+        if not result.passed and not retried:
+            # First failure for this file, and it came from a diff that DID
+            # apply — same root cause as the apply-fail branch above (a
+            # miscounted hunk can merge into subtly wrong code that still
+            # "applies" cleanly), so the same fallback applies here too.
+            # Only one retry per file either way (the `retried` guard).
+            git_tools.revert_file(working_dir, group["file"])
+            yield Event(author=self.name, content=_msg(
+                f"Fix for `{group['file']}` applied but failed to compile — retrying with a full-file fix."
+            ))
+            async for event in self._retry_full_file(ctx, group, working_dir, "the applied fix failed to compile"):
+                yield event
+            retried = True
+            if s.get("temp:full_file_retry_ok", False):
+                result = adapter.quick_compile_check(working_dir, scope=group["file"])
+
         if not result.passed:
             git_tools.revert_file(working_dir, group["file"])
             s[sk.FILES_FLAGGED].append({"file": group["file"], "reason": result.errors})
             s[sk.ORDERED_FILES_REMAINING].pop(0)
-            yield Event(author=self.name, content=None)
+            yield Event(author=self.name, content=_msg(
+                f"Fix for `{group['file']}`{' still' if retried else ''} failed to compile — "
+                "reverted, flagged for manual review."
+            ))
             return
 
+        # Re-enabling an S2187-flagged test means it's about to run for the
+        # very first time — quick_compile_check above only proved it
+        # compiles, not that it passes. Verify it here, in isolation, on
+        # just this file, rather than letting a broken re-enabled test ride
+        # into a shared checkpoint batch where the full build's failure
+        # would drag every other file in that batch into a collateral
+        # bisect-revert (observed live: a bad re-enabled test took 6
+        # unrelated, individually-correct fixes down with it).
+        if any(i["rule_key"] == "java:S2187" for i in group["issues"]):
+            test_result = adapter.run_specific_tests(working_dir, [_java_fqcn(group["file"])])
+            if not test_result.passed:
+                git_tools.revert_file(working_dir, group["file"])
+                failing = patch_tools.parse_junit_failures(working_dir)
+                detail = f" (failing test(s): {'; '.join(failing)})" if failing else ""
+                s[sk.FILES_FLAGGED].append({
+                    "file": group["file"],
+                    "reason": f"re-enabled test still fails{detail}",
+                })
+                s[sk.ORDERED_FILES_REMAINING].pop(0)
+                yield Event(author=self.name, content=_msg(
+                    f"Fix for `{group['file']}` compiled, but the re-enabled test still fails{detail} — "
+                    "reverted, flagged for manual review."
+                ))
+                return
+
+        # This attempt is about to succeed — clear any stale flag left by an
+        # earlier outer_loop iteration's failed attempt on this same file
+        # (e.g. a checkpoint revert), so the final report doesn't keep
+        # showing it as needing manual review once it's actually fixed.
+        s[sk.FILES_FLAGGED] = [f for f in s[sk.FILES_FLAGGED] if f["file"] != group["file"]]
+
         verification = patch_tools.verify_issue_patterns_resolved(
-            group["file"], group["issues"], working_dir
+            group["file"], group["issues"], working_dir,
+            original_content=s[sk.CURRENT_FILE_CONTENT],
         )
         unresolved = [k for k, ok in verification.items() if not ok]
         if unresolved:
@@ -245,7 +503,8 @@ class ApplyAndVerifyStep(BaseAgent):
         })
         s[sk.ORDERED_FILES_REMAINING].pop(0)
         s[sk.FILES_SINCE_CHECKPOINT] += 1
-        yield Event(author=self.name, content=None)
+        note = f" ({len(unresolved)} issue(s) still unresolved, also flagged)" if unresolved else ""
+        yield Event(author=self.name, content=_msg(f"Committed fix for `{group['file']}`{note}."))
 
 
 class CheckpointGate(BaseAgent):
@@ -262,7 +521,9 @@ class CheckpointGate(BaseAgent):
                 yield event
             s[sk.FILES_SINCE_CHECKPOINT] = 0
         else:
-            yield Event(author=self.name, content=None)
+            yield Event(author=self.name, content=_msg(
+                f"{s[sk.FILES_SINCE_CHECKPOINT]}/{s[sk.CHECKPOINT_BATCH_SIZE]} file(s) since last checkpoint."
+            ))
 
 
 # --- Checkpoint pipeline (Section 5.4) ---
@@ -276,8 +537,21 @@ class RunFullVerifyStep(BaseAgent):
         adapter = get_adapter(s[sk.LANGUAGE], working_dir)
         batch = s.get("temp:checkpoint_batch", [])
         result = adapter.verify_build(working_dir)
+        reverted = []
 
         if not result.passed:
+            # Captured before any reverts happen — this is the actual
+            # compiler/test output that triggered the bisect below, and the
+            # only evidence of WHY without re-deriving it after the fact
+            # (as happened diagnosing a real run: the revert-list alone
+            # doesn't say what broke, only what got blamed for it).
+            original_error = result.errors
+            # gradle -q (quiet console) never prints individual failing test
+            # names/stack traces — only the summary count seen in
+            # original_error — so this is the only way to name which
+            # test(s) actually broke, from the JUnit XML report the Test
+            # task still writes regardless of console verbosity.
+            failing_tests = patch_tools.parse_junit_failures(working_dir)
             # bisect_within_checkpoint_files(): quick_compile_check() in
             # ApplyAndVerifyStep only checks the single file being patched
             # in isolation, so a full-project build regression here means
@@ -288,7 +562,6 @@ class RunFullVerifyStep(BaseAgent):
             # linear reverse-commit-order sweep (most recent first, most
             # likely culprit) is the practical tradeoff. Stops at the first
             # revert that restores a passing build.
-            reverted = []
             for entry in reversed(batch):
                 git_tools.revert_commit_for_file(working_dir, entry["commit_sha"], entry["file"])
                 reverted.append(entry)
@@ -297,12 +570,15 @@ class RunFullVerifyStep(BaseAgent):
                     break
 
             reverted_issue_keys = {k for entry in reverted for k in entry["issue_keys"]}
+            revert_reason = "reverted: broke the full build at checkpoint"
+            if failing_tests:
+                revert_reason += f" (failing test(s): {'; '.join(failing_tests)})"
             for entry in reverted:
                 if entry["file"] in s[sk.FILES_COMPLETED]:
                     s[sk.FILES_COMPLETED].remove(entry["file"])
                 s[sk.FILES_FLAGGED].append({
                     "file": entry["file"],
-                    "reason": "reverted: broke the full build at checkpoint",
+                    "reason": revert_reason,
                 })
             s[sk.ISSUES_FIXED] = [k for k in s[sk.ISSUES_FIXED] if k not in reverted_issue_keys]
 
@@ -319,7 +595,19 @@ class RunFullVerifyStep(BaseAgent):
                 )
 
         s["temp:checkpoint_batch"] = []
-        yield Event(author=self.name, content=None)
+        if batch and not reverted:
+            msg = f"Checkpoint: full build passed ({len(batch)} file(s) since last checkpoint)."
+        elif reverted:
+            s["temp:checkpoint_build_error"] = {"error": original_error, "failing_tests": failing_tests}
+            test_detail = f"\nFailing test(s): {'; '.join(failing_tests)}" if failing_tests else ""
+            msg = (
+                f"Checkpoint: build failed — reverted `{'`, `'.join(e['file'] for e in reverted)}`, then passed."
+                f"{test_detail}\n"
+                f"Build error that triggered the revert:\n```\n{original_error[-1500:]}\n```"
+            )
+        else:
+            msg = "Checkpoint: full build passed."
+        yield Event(author=self.name, content=_msg(msg))
 
 
 class TriggerAndReconcileScanStep(BaseAgent):
@@ -328,19 +616,76 @@ class TriggerAndReconcileScanStep(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         import datetime
         s = ctx.session.state
+        working_dir = s[sk.WORKING_DIR]
         checkpoint_start = datetime.datetime.utcnow().isoformat()
         task_id = sonar_tools.trigger_sonar_analysis(
-            s[sk.WORKING_DIR], s[sk.SONAR_PROJECT_KEY], ce_edition=s.get("ce_edition", True)
+            working_dir, s[sk.SONAR_PROJECT_KEY], ce_edition=s.get("ce_edition", True),
+            language=s[sk.LANGUAGE], sonar_base_url=s["sonar_base_url"], sonar_token=s["sonar_token"],
         )
-        sonar_tools.poll_ce_task_status(task_id, timeout_s=600)
+        sonar_tools.poll_ce_task_status(s["sonar_base_url"], s["sonar_token"], task_id, timeout_s=600)
         new_issues = sonar_tools.get_issues_created_after(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], checkpoint_start, s["sonar_token"]
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], checkpoint_start, s["sonar_token"], s[sk.BRANCH_NAME]
         )
+
+        reverted_files = []
         if new_issues:
-            raise NotImplementedError("attempt_fix(issue) OR revert file that caused it, then re-verify + re-scan")
-        s[sk.CHECKPOINTS].append({"timestamp": checkpoint_start, "new_issues_found": 0})
-        git_tools.commit_checkpoint_marker(s[sk.WORKING_DIR])
-        yield Event(author=self.name, content=None)
+            # Same bisect-revert reasoning as RunFullVerifyStep: only this
+            # checkpoint's own batch of commits are candidates to blame.
+            # New issues attributable to a batch file get that file
+            # reverted; anything else gets flagged without touching code,
+            # since there's no commit here that's safe to undo for it.
+            batch = s.get("temp:checkpoint_batch", [])
+            batch_by_file = {entry["file"]: entry for entry in batch}
+            implicated = {i["component_path"] for i in new_issues if i["component_path"] in batch_by_file}
+
+            for file in implicated:
+                entry = batch_by_file[file]
+                git_tools.revert_commit_for_file(working_dir, entry["commit_sha"], entry["file"])
+                reverted_files.append(entry["file"])
+                if entry["file"] in s[sk.FILES_COMPLETED]:
+                    s[sk.FILES_COMPLETED].remove(entry["file"])
+                s[sk.ISSUES_FIXED] = [k for k in s[sk.ISSUES_FIXED] if k not in entry["issue_keys"]]
+                new_count = sum(1 for i in new_issues if i["component_path"] == file)
+                s[sk.FILES_FLAGGED].append({
+                    "file": entry["file"],
+                    "reason": f"reverted: introduced {new_count} new Sonar issue(s) found by this checkpoint's re-scan",
+                })
+
+            for i in new_issues:
+                if i["component_path"] not in batch_by_file:
+                    s[sk.FILES_FLAGGED].append({
+                        "file": i["component_path"],
+                        "reason": f"new Sonar issue after checkpoint, not attributable to this batch: "
+                                  f"{i.get('rule_key')} — {i.get('message', '')}",
+                    })
+
+            if reverted_files:
+                adapter = get_adapter(s[sk.LANGUAGE], working_dir)
+                result = adapter.verify_build(working_dir)
+                if not result.passed:
+                    raise RuntimeError(
+                        f"Build still failing after reverting {reverted_files} in response to new "
+                        f"Sonar issues — errors: {result.errors}"
+                    )
+
+        s[sk.CHECKPOINTS].append({
+            "timestamp": checkpoint_start,
+            "new_issues_found": len(new_issues),
+            "reverted_files": reverted_files,
+            # Set by RunFullVerifyStep earlier in this same checkpoint_pipeline
+            # run when a full-build failure triggered a revert — carries the
+            # actual compiler/test error into the final report instead of
+            # just the list of files that got blamed for it.
+            "build_error": s.pop("temp:checkpoint_build_error", None),
+        })
+        git_tools.commit_checkpoint_marker(working_dir)
+        if not new_issues:
+            msg = "Re-scanned Sonar — no new issues introduced."
+        elif reverted_files:
+            msg = f"Re-scan found new issues — reverted `{'`, `'.join(reverted_files)}`, then re-verified clean."
+        else:
+            msg = f"Re-scan found {len(new_issues)} new issue(s) not attributable to this batch — flagged for review."
+        yield Event(author=self.name, content=_msg(msg))
 
 
 checkpoint_pipeline = SequentialAgent(
@@ -370,9 +715,16 @@ class OuterExitCheck(BaseAgent):
         remaining = bool(s[sk.ORDERED_FILES_REMAINING]) or bool(s[sk.FILES_FLAGGED])
         maxed_out = s[sk.OUTER_ITERATION] >= s[sk.MAX_OUTER_ITERATIONS]
         if not remaining or maxed_out:
-            yield Event(author=self.name, actions=EventActions(escalate=True))
+            reason = "hit max outer iterations" if maxed_out else "file queue empty"
+            yield Event(
+                author=self.name,
+                content=_msg(f"Outer loop done after {s[sk.OUTER_ITERATION]} iteration(s) ({reason})."),
+                actions=EventActions(escalate=True),
+            )
         else:
-            yield Event(author=self.name, content=None)
+            yield Event(author=self.name, content=_msg(
+                f"Outer loop iteration {s[sk.OUTER_ITERATION]} complete — re-fetching Sonar issues."
+            ))
 
 
 outer_loop = LoopAgent(
@@ -398,13 +750,18 @@ class MaintainabilityDebtCheckStep(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         ratio = sonar_tools.get_maintainability_debt_ratio(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"]
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], s[sk.BRANCH_NAME]
         )
         s[sk.MAINTAINABILITY_EXPANSION_ITERATION] += 1
         maxed_out = s[sk.MAINTAINABILITY_EXPANSION_ITERATION] > 3
 
         if ratio <= sonar_tools.MAINTAINABILITY_DEBT_RATIO_TARGET or maxed_out:
-            yield Event(author=self.name, actions=EventActions(escalate=True))
+            reason = "hit expansion iteration cap" if maxed_out else "target met"
+            yield Event(
+                author=self.name,
+                content=_msg(f"Maintainability debt ratio {ratio}% (target ≤{sonar_tools.MAINTAINABILITY_DEBT_RATIO_TARGET}%) — {reason}."),
+                actions=EventActions(escalate=True),
+            )
             return
 
         candidates = sonar_tools.debt_ratio_expansion_candidates(s.get("temp:all_fetched_issues", []))
@@ -420,7 +777,11 @@ class MaintainabilityDebtCheckStep(BaseAgent):
                 "file": "<project-wide>",
                 "reason": f"sqale_debt_ratio still {ratio}% after exhausting Minor/Low candidates",
             })
-            yield Event(author=self.name, actions=EventActions(escalate=True))
+            yield Event(
+                author=self.name,
+                content=_msg(f"Debt ratio still {ratio}% but no more Minor/Low candidates — flagged for manual review."),
+                actions=EventActions(escalate=True),
+            )
             return
 
         groups: dict[str, list[dict]] = {}
@@ -430,7 +791,9 @@ class MaintainabilityDebtCheckStep(BaseAgent):
             {"file": path, "file_priority": (2, 2), "issues": issues}
             for path, issues in groups.items()
         ]
-        yield Event(author=self.name, content=None)
+        yield Event(author=self.name, content=_msg(
+            f"Debt ratio {ratio}% still above target — queuing {len(s[sk.ORDERED_FILES_REMAINING])} more file(s)."
+        ))
 
 
 maintainability_expansion_loop = LoopAgent(
@@ -441,8 +804,42 @@ maintainability_expansion_loop = LoopAgent(
 
 
 # ---------------------------------------------------------------------------
-# Phase IV — Report (Section 9)
+# Phase IV — Push (Section 3 step 4 follow-through) + Report (Section 9)
 # ---------------------------------------------------------------------------
+
+class PushStep(BaseAgent):
+    """Runs after outer_loop + maintainability_expansion_loop, i.e. after
+    every committed file has already passed a checkpoint's full verify_build
+    (CheckpointGate always fires once more when the file queue empties, so
+    the last batch is never left un-checkpointed) — by construction, every
+    commit on the branch at this point belongs to a build that passed."""
+    name: str = "push_step"
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        s = ctx.session.state
+        working_dir = s[sk.WORKING_DIR]
+        branch_name = s[sk.BRANCH_NAME]
+
+        # No files fixed and no checkpoints run means the branch has no new
+        # commits over its base (e.g. the project was already all-A) —
+        # pushing an unchanged branch is just noise.
+        if not s[sk.FILES_COMPLETED] and not s[sk.CHECKPOINTS]:
+            s["temp:push_result"] = "skipped — no commits made this run"
+            yield Event(author=self.name, content=_msg("Nothing to push — no commits made this run."))
+            return
+
+        try:
+            git_tools.push_branch(working_dir, branch_name, github_token=s.get("github_token"))
+        except RuntimeError as e:
+            s["temp:push_result"] = f"failed — {e}"
+            yield Event(author=self.name, content=_msg(
+                f"Could not push `{branch_name}` to origin — {e}. Fixes are committed locally; push manually."
+            ))
+            return
+
+        s["temp:push_result"] = "pushed"
+        yield Event(author=self.name, content=_msg(f"Pushed branch `{branch_name}` to origin."))
+
 
 class ReportStep(BaseAgent):
     name: str = "report_step"
@@ -453,7 +850,7 @@ class ReportStep(BaseAgent):
         # and coverage are excluded at the tool level (IN_SCOPE_RATING_METRICS),
         # not filtered out here, so there's no way to accidentally re-include them.
         ratings = sonar_tools.get_quality_ratings(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"]
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], s[sk.BRANCH_NAME]
         )
         all_a = all(v == "1.0" for v in ratings.values())
         report = {
@@ -467,6 +864,12 @@ class ReportStep(BaseAgent):
             "final_ratings": ratings,           # e.g. {"security_rating": "1.0", ...}
             "all_categories_a": all_a,
             "wont_fix_review_queue": s[sk.WONT_FIX_REVIEW_QUEUE],  # human decides, agent never resolves these
+            "push_result": s.get("temp:push_result", "not attempted"),
+            # Scoped to pipeline_agent's own run (set by IntakeStep right
+            # before invoking it) — excludes any time/tokens spent in the
+            # conversational back-and-forth resolving which repo to use.
+            "duration_seconds": time.time() - s.get(sk.RUN_START_TIME, time.time()),
+            "tokens_consumed": s.get(sk.TOKEN_USAGE, {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0}),
             # If False: any category still below A most likely means either
             # (a) the wont_fix_review_queue above has unresolved Minor/Low
             # Security or Reliability issues awaiting a human call, or
@@ -483,7 +886,7 @@ class ReportStep(BaseAgent):
             ),
         }
         s["final_report"] = report
-        yield Event(author=self.name, content=None)
+        yield Event(author=self.name, content=_msg(_format_summary(report)))
 
 
 # ---------------------------------------------------------------------------
@@ -492,5 +895,5 @@ class ReportStep(BaseAgent):
 
 pipeline_agent = SequentialAgent(
     name="sonar_autofix_pipeline",
-    sub_agents=[SetupStep(), outer_loop, maintainability_expansion_loop, ReportStep()],
+    sub_agents=[SetupStep(), outer_loop, maintainability_expansion_loop, PushStep(), ReportStep()],
 )

@@ -8,6 +8,10 @@ BaseAgent orchestration code directly, per the "LLM only for fix
 generation" principle from the review.
 """
 
+import datetime
+import subprocess
+import time
+
 import requests
 
 CATEGORY_RANK = {"SECURITY": 0, "RELIABILITY": 1, "MAINTAINABILITY": 2, "HOTSPOT": 3}
@@ -169,7 +173,7 @@ def _paginate(sonar_base_url: str, path: str, token: str, params: dict, list_key
     return results, rule_names
 
 
-def fetch_issues_and_hotspots(sonar_base_url: str, project_key: str, token: str) -> list[dict]:
+def fetch_issues_and_hotspots(sonar_base_url: str, project_key: str, token: str, branch: str | None) -> list[dict]:
     """GET /api/issues/search + /api/hotspots/search, normalized into one
     combined list. Only OPEN/CONFIRMED/REOPENED issues and TO_REVIEW
     hotspots — anything already resolved or reviewed is excluded at the
@@ -177,11 +181,26 @@ def fetch_issues_and_hotspots(sonar_base_url: str, project_key: str, token: str)
     Caller must first confirm which severity taxonomy this Sonar instance
     returns (legacy vs Clean Code) before classify_issue() is applied —
     see Section 4.1 note in the workflow doc; handled per-issue here via
-    the `impacts` array when present."""
+    the `impacts` array when present.
+
+    branch is required to be passed explicitly (no default) so every call
+    site has to make a deliberate choice, but None is a legitimate, common
+    choice here — not a bug. Pass None to read the PROJECT'S DEFAULT branch
+    (Sonar's own fallback when `branch` is omitted from the API call): used
+    by FetchPrioritizeStep to discover what needs fixing, since a freshly
+    created `{project_key}_agent_*` branch (see git_tools.
+    find_or_create_branch) has no Sonar analysis of its own yet — it hasn't
+    been scanned — so querying it by name 404s. The default branch is the
+    one thing guaranteed to already have analysis data to start from.
+    Pass the actual branch name once the agent's own branch HAS been
+    scanned at least once (checkpoint_pipeline's TriggerAndReconcileScanStep
+    scans it before this could otherwise be called on it) — e.g. checking
+    for new issues since a checkpoint, or the final quality ratings."""
     raw_issues, rule_names = _paginate(
         sonar_base_url, "/api/issues/search", token,
         {
             "componentKeys": project_key,
+            "branch": branch,
             "statuses": "OPEN,CONFIRMED,REOPENED",
             "additionalFields": "rules",
         },
@@ -195,7 +214,7 @@ def fetch_issues_and_hotspots(sonar_base_url: str, project_key: str, token: str)
 
     raw_hotspots, _ = _paginate(
         sonar_base_url, "/api/hotspots/search", token,
-        {"projectKey": project_key, "status": "TO_REVIEW"},
+        {"projectKey": project_key, "branch": branch, "status": "TO_REVIEW"},
         "hotspots",
     )
     for raw in raw_hotspots:
@@ -238,14 +257,27 @@ def classify_issue(issue: dict) -> dict:
     return {"in_scope": True, "action": action, "rank": (cat_rank, sev_rank)}
 
 
-def get_quality_ratings(sonar_base_url: str, project_key: str, token: str) -> dict:
+def _get_measures(sonar_base_url: str, project_key: str, token: str, metric_keys: list[str], branch: str) -> dict[str, str]:
+    data = _sonar_get(sonar_base_url, "/api/measures/component", token, {
+        "component": project_key, "branch": branch, "metricKeys": ",".join(metric_keys),
+    })
+    measures = data.get("component", {}).get("measures", [])
+    return {m["metric"]: m["value"] for m in measures if "value" in m}
+
+
+def get_quality_ratings(sonar_base_url: str, project_key: str, token: str, branch: str) -> dict:
     """GET /api/measures/component?metricKeys=security_rating,reliability_rating,sqale_rating
     Deliberately requests ONLY IN_SCOPE_RATING_METRICS — duplication and
     coverage are never included here, so a caller can't accidentally treat
     them as part of the success criterion. Returns e.g.
     {"security_rating": "1.0", "reliability_rating": "2.0", "sqale_rating": "1.0"}
-    where Sonar encodes A=1.0 .. E=5.0."""
-    raise NotImplementedError("wire to requests.get with metricKeys=" + ",".join(IN_SCOPE_RATING_METRICS))
+    where Sonar encodes A=1.0 .. E=5.0.
+
+    branch is required — see fetch_issues_and_hotspots()'s docstring;
+    omitting it silently reports main's ratings instead of the branch this
+    run is actually fixing, which would make the final A-rating check
+    meaningless (checking a branch this agent never touches)."""
+    return _get_measures(sonar_base_url, project_key, token, IN_SCOPE_RATING_METRICS, branch)
 
 
 def partition_and_prioritize(issues: list[dict]) -> tuple[list[dict], list[dict]]:
@@ -294,10 +326,18 @@ def resolve_issue_transition(sonar_base_url: str, issue_key: str, transition: st
     raise NotImplementedError("wire to requests.post, human-confirmed issue_keys only")
 
 
-def get_maintainability_debt_ratio(sonar_base_url: str, project_key: str, token: str) -> float:
+def get_maintainability_debt_ratio(sonar_base_url: str, project_key: str, token: str, branch: str) -> float:
     """GET /api/measures/component?metricKeys=sqale_debt_ratio. Returns the
-    percentage Sonar itself uses for the sqale_rating threshold (A <= 5.0)."""
-    raise NotImplementedError("wire to requests.get")
+    percentage Sonar itself uses for the sqale_rating threshold (A <= 5.0).
+    branch is required — see fetch_issues_and_hotspots()'s docstring."""
+    measures = _get_measures(sonar_base_url, project_key, token, ["sqale_debt_ratio"], branch)
+    value = measures.get("sqale_debt_ratio")
+    if value is None:
+        raise RuntimeError(
+            f"sqale_debt_ratio not returned for project {project_key!r} — "
+            "check the project key and that at least one analysis has completed."
+        )
+    return float(value)
 
 
 def debt_ratio_expansion_candidates(all_issues: list[dict]) -> list[dict]:
@@ -330,19 +370,91 @@ def get_rule_description(sonar_base_url: str, rule_key: str, token: str) -> str:
     return rule.get("mdDesc", "")
 
 
-def trigger_sonar_analysis(working_dir: str, project_key: str, ce_edition: bool) -> str:
-    """Section 7: if not ce_edition (i.e. Developer+), push branch and run
-    branch-aware sonar-scanner. If ce_edition, run a LOCAL working-tree scan
-    (no sonar.branch.name) per the recommended CE workaround — nothing is
-    pushed to the shared project until merge. Returns a CE task id to poll."""
-    raise NotImplementedError("wire to sonar-scanner subprocess")
+def trigger_sonar_analysis(
+    working_dir: str, project_key: str, ce_edition: bool, language: str,
+    sonar_base_url: str, sonar_token: str,
+) -> str:
+    """Section 7: if not ce_edition (i.e. Developer+), run a branch-aware
+    scan. If ce_edition, run a LOCAL working-tree scan (no sonar.branch.name)
+    per the recommended CE workaround — nothing is pushed to the shared
+    project until merge. Returns a CE task id to poll.
+
+    Delegates the actual scan to the project's own LanguageAdapter
+    (`gradle sonar` / `mvn sonar:sonar`) rather than a standalone
+    sonar-scanner binary — this repo (and most Java Sonar setups) run
+    analysis through the build tool's own Sonar plugin, and adapters/base.py
+    already owns "how do I invoke this project's build tool" for every
+    other build step."""
+    from ..adapters.base import get_adapter
+    adapter = get_adapter(language, working_dir)
+
+    branch = None
+    if not ce_edition:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=working_dir, capture_output=True, text=True,
+        )
+        branch = result.stdout.strip() or None
+
+    return adapter.run_sonar_scan(working_dir, sonar_base_url, sonar_token, project_key, branch=branch)
 
 
-def poll_ce_task_status(task_id: str, timeout_s: int = 600) -> bool:
-    raise NotImplementedError("wire to GET /api/ce/task?id=")
+def poll_ce_task_status(sonar_base_url: str, token: str, task_id: str, timeout_s: int = 600) -> bool:
+    """Polls GET /api/ce/task?id= until the background report-processing
+    task finishes. Returns True on SUCCESS; raises on FAILED/CANCELED or
+    timeout — a checkpoint's re-scan silently not landing would make every
+    downstream 'no new issues' check meaningless."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        data = _sonar_get(sonar_base_url, "/api/ce/task", token, {"id": task_id})
+        status = data.get("task", {}).get("status")
+        if status == "SUCCESS":
+            return True
+        if status in ("FAILED", "CANCELED"):
+            raise RuntimeError(f"Sonar background task {task_id} ended with status {status}")
+        time.sleep(5)
+    raise TimeoutError(f"Sonar background task {task_id} did not finish within {timeout_s}s")
 
 
-def get_issues_created_after(sonar_base_url: str, project_key: str, since_iso: str, token: str) -> list[dict]:
+def _to_sonar_datetime(iso_str: str) -> str:
+    """Sonar's createdAfter param expects yyyy-MM-dd'T'HH:mm:ssZ (e.g.
+    2017-10-19T13:00:00+0200) — reformats whatever ISO string the caller
+    has (datetime.isoformat(), with or without tz/microseconds) into that,
+    assuming UTC if no tzinfo is present."""
+    dt = datetime.datetime.fromisoformat(iso_str)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=datetime.timezone.utc)
+    return dt.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+
+def get_issues_created_after(sonar_base_url: str, project_key: str, since_iso: str, token: str, branch: str) -> list[dict]:
     """Used at checkpoint time — creationDate filtering avoids false
-    positives from issue-key instability across scans (per workflow doc)."""
-    raise NotImplementedError("wire to requests.get with createdAfter param")
+    positives from issue-key instability across scans (per workflow doc).
+    branch is required — see fetch_issues_and_hotspots()'s docstring; this
+    is what makes the checkpoint's regression check actually look at the
+    branch this run just re-scanned, not main.
+
+    Note this only catches issues Sonar treats as genuinely NEW (a fresh
+    creationDate). An issue that was fixed, reverted, and thus reappears
+    identically can get matched back to its original (older) issue key by
+    Sonar's own tracking and come back with its ORIGINAL creationDate —
+    invisible to this createdAfter filter. That's fine here: it's caught
+    on the next outer_loop iteration's full fetch_issues_and_hotspots()
+    instead, which has no date filter."""
+    raw_issues, rule_names = _paginate(
+        sonar_base_url, "/api/issues/search", token,
+        {
+            "componentKeys": project_key,
+            "branch": branch,
+            "statuses": "OPEN,CONFIRMED,REOPENED",
+            "createdAfter": _to_sonar_datetime(since_iso),
+            "additionalFields": "rules",
+        },
+        "issues",
+    )
+    issues = []
+    for raw in raw_issues:
+        issue = _normalize_issue(raw, project_key)
+        issue["rule_name"] = rule_names.get(issue["rule_key"], issue["rule_key"])
+        issues.append(issue)
+    return issues

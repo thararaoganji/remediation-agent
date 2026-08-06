@@ -56,6 +56,82 @@ LANGUAGE-SPECIFIC GUIDANCE (Java / Spring Boot):
   workarounds.
 - After fixing, the file must remain valid for the project's declared Java
   language level — do not use syntax newer than that.
+
+STRICT JAVA REMEDIATION RULES (per-rule guidance from observed checkpoint
+failures — these are more specific than the general guidance above and win
+on conflict for the rule keys they name):
+1. No broad suppressions. The only rules an @SuppressWarnings is allowed for:
+   stateless CSRF (java:S4502), JPA param counts (java:S107), or marker
+   interfaces (java:S2094).
+2. S6242/S1874 (AWS): use DefaultCredentialsProvider.builder().build(). Do
+   NOT use .create().
+3. S6809/S6813 (self-invocation / @Transactional proxy bypass): fix via
+   SETTER injection (@Autowired @Lazy on a setter), NOT field or constructor
+   self-injection — a self-referencing constructor/field injection risks a
+   BeanCurrentlyInCreationException that fails the whole application
+   context, breaking the full build, not just this file.
+   The self-referencing field is only ever wired by a real Spring context at
+   runtime — Mockito's @InjectMocks has no way to satisfy it, so any existing
+   Mockito-only unit test (@ExtendWith(MockitoExtension.class), no Spring
+   context) of this class will NullPointerException the moment it calls a
+   method that goes through the self-proxy, even though nothing in the test
+   itself changed. If this class already has such a unit test, you MUST also
+   add `instance.setSelf(instance);` (using this class's actual self-setter
+   name) to that test's @BeforeEach/setup — this is an explicit exception to
+   "fix only the listed file," the same carve-out rule 9 makes for S1948.
+4. S6208/S6880 (switch expressions): replace if/else chains with a Java 21+
+   switch expression (only if the project's language level supports it — see
+   the general guidance above). Always handle null safely:
+     return switch (obj) {
+         case null -> throw new IllegalArgumentException("Target is null");
+         case String s -> "string type";
+         default -> "other type";
+     };
+5. S6877/S6916 (pattern match guards): replace a nested if inside a pattern
+   match/case block with a `when` guard instead. Do NOT write nested ifs.
+     Violation: case String s -> { if (s.isEmpty()) { ... } }
+     Fix:       case String s when s.isEmpty() -> ...
+6. S2629 (logging): never evaluate methods or concatenate strings inside
+   logger parameters. Pass raw objects as {} placeholders, or guard with an
+   explicit if (log.isXEnabled()) block.
+     Violation: log.debug("error: " + err.getMessage());
+     Fix:       log.debug("error: {}", err);
+7. S2187 (disabled tests): restore the test (remove the comment-out), and
+   add whatever @MockBean(s) are needed to fix any resulting
+   UnsatisfiedDependencyException rather than leaving the test broken.
+   A disabled test has never actually been run — do not assume it's only
+   missing whatever ONE dependency happens to be visible from a quick read;
+   check the ENTIRE constructor signature of the class under test (and, for
+   a @WebMvcTest, of every class the test's @Import(...) list pulls in too)
+   against what the test provides via @Autowired/@MockBean. Every
+   constructor parameter of every one of those classes needs a matching
+   bean or an explicit @MockBean — a test that still fails to load its
+   ApplicationContext after your fix is worse than leaving it disabled,
+   since it now breaks the full build instead of just sitting inert.
+8. S5778 (assertThrows): extract any setup/construction (e.g. `new
+   BigDecimal(...)`, `LocalDate.now()`) OUTSIDE the assertThrows lambda —
+   the lambda must contain exactly one method call.
+9. S1948 (serialization): you MAY modify related classes outside the
+   flagged file to implement Serializable and add a serialVersionUID — this
+   is the one explicit exception to "fix only the listed file."
+
+DEFENSIVE REFACTORING (avoid introducing new Medium-severity findings):
+before finalizing your diff, check it doesn't introduce any of these:
+10. S1128 (unused imports): if your fix removed the last usage of an
+    imported class, delete that import. Never introduce a wildcard (`.*`)
+    import.
+11. S1481/S1068 (unused locals/fields): don't leave an orphaned local
+    variable or private field that's no longer read.
+12. S1192 (duplicated string literals): don't let the same string literal
+    appear 3+ times — extract it to a private static final String constant.
+13. S3776 (cognitive complexity): if your fix adds multiple try/catch or
+    if/else blocks, extract the inner logic into a private helper method
+    instead of nesting it inline.
+14. Scope: only modify the reported file — the named exceptions are rule 9
+    (S1948, may touch related classes for Serializable) and rule 3 (S6809/
+    S6813, may touch this class's own existing Mockito unit test file to
+    wire the self-reference). Otherwise do not touch unrelated code even if
+    you notice other problems in it.
 """
 
 

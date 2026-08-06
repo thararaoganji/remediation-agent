@@ -111,6 +111,29 @@ def revert_commit_for_file(working_dir: str, commit_sha: str, file_path: str) ->
     _run(["git", "commit", "-m", f"revert: {file_path} broke the full build at checkpoint"], cwd=working_dir)
 
 
+def push_branch(working_dir: str, branch_name: str, github_token: str | None = None) -> None:
+    """Pushes branch_name to 'origin'. Uses the same per-invocation
+    extraheader auth as the initial clone (never persisted to git config)
+    when a github_token is available — harmless to pass even if origin
+    isn't github.com, since the extraheader is scoped to the
+    github.com host and simply goes unused for any other remote.
+    Without a token, relies on whatever git auth is already configured in
+    the environment (SSH agent, credential helper) — the path a local
+    repo with its own already-authenticated origin takes.
+
+    Raises RuntimeError (with actual git output for real push failures,
+    or a clearer message when there's no 'origin' remote at all) — this is
+    the run's very last step, so a caller should treat a failure here as
+    'commits exist locally on the branch, just not pushed' rather than
+    unwinding any of the completed fix work."""
+    remotes = _run(["git", "remote"], cwd=working_dir).stdout.split()
+    if "origin" not in remotes:
+        raise RuntimeError("no 'origin' remote configured in this repo — nothing to push to")
+
+    auth = _github_auth_args(github_token) if github_token else []
+    _run(["git", *auth, "push", "-u", "origin", branch_name], cwd=working_dir)
+
+
 def commit_checkpoint_marker(working_dir: str) -> str:
     _run(["git", "commit", "--allow-empty", "-m", "checkpoint: verified + rescanned clean"], cwd=working_dir)
     return _run(["git", "rev-parse", "HEAD"], cwd=working_dir).stdout.strip()

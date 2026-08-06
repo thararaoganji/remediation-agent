@@ -68,7 +68,8 @@ root_agent (SequentialAgent)
 ├── maintainability_expansion_loop (LoopAgent, max 4)
 │     ├── MaintainabilityDebtCheckStep -- checks sqale_debt_ratio, tops up scope if needed
 │     └── per_file_loop (reused)
-└── ReportStep                    -- final ratings, review queue, flagged files
+├── PushStep                      -- push the fix branch to origin (skips if nothing was committed)
+└── ReportStep                    -- final ratings, review queue, flagged files, push result
 ```
 
 ### Why some things are custom `BaseAgent`s instead of ADK's built-in primitives
@@ -169,7 +170,6 @@ cp .env.example .env   # fill in the keys below
 | `GOOGLE_API_KEY` | Gemini access for `fix_llm_agent` (AI Studio) |
 | `SONAR_BASE_URL` | local Sonar instance, e.g. `http://localhost:9000` |
 | `SONAR_TOKEN` | Sonar UI → My Account → Security → Generate Token |
-| `SONAR_PROJECT_KEY` | project key in Sonar |
 | `CE_EDITION` | `true` → local working-tree scan (Community Edition has no branch analysis) |
 | `SOURCE_TYPE` | `local` or `github` |
 | `SOURCE_PATH` | used if `SOURCE_TYPE=local` |
@@ -177,6 +177,11 @@ cp .env.example .env   # fill in the keys below
 | `GITHUB_TOKEN` | fine-grained PAT, `Contents: Read & write` — only needed to push the fix branch |
 | `WORKSPACE_ROOT` | where GitHub-mode clones land |
 | `LANGUAGE` | `java` (auto-detects Maven vs Gradle) or explicit `java-maven`/`java-gradle` |
+
+Note: `sonar.projectKey` is not an `.env` setting — it's read directly from the
+checked-out repo's `build.gradle`/`build.gradle.kts` (`sonar { properties { property "sonar.projectKey", ... } } }`
+or `gradle.properties`) or `pom.xml` (`<sonar.projectKey>` property, falling back to `groupId:artifactId`),
+so it always matches whatever project key the Sonar plugin itself will scan under.
 
 Run:
 
