@@ -4,7 +4,45 @@ to exercise directly (see README's "Running tests" section) -- out of scope
 here. This covers the plain, context-free helper functions instead.
 """
 
-from sonar_autofix_agent.agents import _looks_like_diff, _extract_code_block, _java_fqcn
+from google.adk.events import Event, EventActions
+from google.genai import types
+
+from sonar_autofix_agent.agents import _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text
+
+
+# --- _hide_text --------------------------------------------------------
+
+def test_hide_text_strips_content_but_preserves_state_delta():
+    """Regression: dropping a text-bearing event outright (via `continue`,
+    the pattern this replaced) also drops its state_delta, since ADK only
+    applies state_delta when an event reaches the top-level Runner via
+    session_service.append_event -- confirmed live, this silently broke
+    fix_llm_agent's output_key write (KeyError: 'temp:proposed_diff')
+    and had been breaking _retry_full_file's read of the regenerated
+    file the same way for the whole session before this fix."""
+    event = Event(
+        author="fix_llm_agent",
+        content=types.Content(role="model", parts=[types.Part(text="explanation + diff")]),
+        actions=EventActions(state_delta={"temp:proposed_diff": "the actual diff"}),
+    )
+    hidden = _hide_text(event)
+    assert hidden.content is None
+    assert hidden.actions.state_delta == {"temp:proposed_diff": "the actual diff"}
+
+
+def test_hide_text_passes_through_non_text_events_unchanged():
+    event = Event(
+        author="fix_llm_agent",
+        content=types.Content(role="user", parts=[types.Part(function_response={"name": "x", "response": {}})]),
+        actions=EventActions(state_delta={"source": "some/repo"}),
+    )
+    result = _hide_text(event)
+    assert result is event  # untouched, not even copied
+
+
+def test_hide_text_passes_through_content_none_unchanged():
+    event = Event(author="x", actions=EventActions())
+    assert _hide_text(event) is event
 
 
 # --- _looks_like_diff --------------------------------------------------

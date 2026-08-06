@@ -50,6 +50,29 @@ from .prompts import build_fix_prompt
 from .tools import sonar_tools, patch_tools, git_tools, deterministic_fixes
 
 
+def _hide_text(event: Event) -> Event:
+    """Strips a text-bearing event's visible content while preserving its
+    `actions` (notably `state_delta`, which is how output_key writes
+    reach session.state — see LlmAgent.__maybe_save_output_to_state).
+    ADK only applies an event's state_delta when that event reaches the
+    top-level Runner via session_service.append_event(); a step that
+    drops the event entirely (rather than yielding a version of it) also
+    drops that write. Confirmed live: dropping fix_llm_agent's own
+    response event this way left session.state[PROPOSED_DIFF] unset
+    entirely (KeyError downstream) -- and _retry_full_file's identical,
+    pre-existing pattern had the same bug the whole session, silently
+    reading PROPOSED_DIFF's STALE value from the original failed diff
+    attempt instead of the actual full-file regeneration, which explains
+    the "corrupted diff-shaped full file" symptom diagnosed earlier as a
+    model-quality issue -- it was actually just old data.
+    Non-text events (function calls/responses) pass through unchanged;
+    only cosmetic content is touched, `.model_copy` leaves `actions` (and
+    everything else) as the same object."""
+    if not (event.content and any(getattr(p, "text", None) for p in event.content.parts or [])):
+        return event
+    return event.model_copy(update={"content": None})
+
+
 def _msg(text: str) -> types.Content:
     """Every custom BaseAgent step below was originally silent
     (content=None) — deterministic orchestration doesn't need an LLM to
@@ -477,16 +500,16 @@ class FixLlmGateStep(BaseAgent):
         s = ctx.session.state
         if s.get("temp:skip_llm_fix"):
             return
-        # Don't forward the model's own prose+diff text — it's verbose
-        # (explanation of the fix plus the full unified diff) and gets
-        # replaced by ApplyAndVerifyStep's own concise "issue + compact
-        # diff" summary once the fix is actually confirmed to work. Same
-        # suppress-text/forward-everything-else pattern used elsewhere
-        # (IntakeStep, _retry_full_file).
+        # Hide the model's own prose+diff text — it's verbose (explanation
+        # of the fix plus the full unified diff) and gets replaced by
+        # ApplyAndVerifyStep's own concise "issue + compact diff" summary
+        # once the fix is actually confirmed to work. Still yields the
+        # event (via _hide_text, content stripped but actions/state_delta
+        # intact) rather than dropping it outright — dropping it would
+        # also drop the output_key write that lands PROPOSED_DIFF in
+        # session.state; see _hide_text's docstring.
         async for event in self.llm_agent.run_async(ctx):
-            if event.content and any(getattr(p, "text", None) for p in event.content.parts or []):
-                continue
-            yield event
+            yield _hide_text(event)
 
 
 class ApplyAndVerifyStep(BaseAgent):
@@ -534,18 +557,15 @@ class ApplyAndVerifyStep(BaseAgent):
             ),
         )
         retry_agent = _build_fix_llm_agent()
-        # Don't forward the model's own text — that's the entire
-        # regenerated file, and re-yielding it verbatim dumps the whole
-        # class into the visible chat/web log on every retry (confirmed
-        # live: a several-hundred-line file rendered in full in adk web).
-        # Same suppress-text/forward-everything-else pattern IntakeStep
-        # uses for intake_llm_agent's replies — there's no tool call here
-        # to preserve either, so this drains the generator without
-        # emitting anything until the diff summary below.
+        # Hide the model's own text — that's the entire regenerated file,
+        # and showing it verbatim dumps the whole class into the visible
+        # chat/web log on every retry (confirmed live: a several-hundred-
+        # line file rendered in full in adk web). Still yields the event
+        # via _hide_text (content stripped, actions/state_delta intact),
+        # not dropped outright — dropping it drops the output_key write
+        # PROPOSED_DIFF depends on below, same as FixLlmGateStep.
         async for event in retry_agent.run_async(ctx):
-            if event.content and any(getattr(p, "text", None) for p in event.content.parts or []):
-                continue
-            yield event
+            yield _hide_text(event)
 
         raw = s.get(sk.PROPOSED_DIFF, "")
         content = _extract_code_block(raw).strip()
