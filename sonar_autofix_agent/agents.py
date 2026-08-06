@@ -89,6 +89,31 @@ def _extract_code_block(text: str) -> str:
     return m.group(1) if m else text
 
 
+_FIX_SUMMARY_DIFF_CHAR_LIMIT = 1500
+
+
+def _build_fix_summary(file_path: str, issues: list[dict], before: str, after: str) -> str:
+    """The one place a fix's actual content is shown in chat/web —
+    "error" (the Sonar issue(s) that triggered this fix) plus "resolution"
+    (a compact diff of what changed), replacing what used to be shown
+    piecemeal: fix_llm_agent's own verbose prose+diff response, a second
+    diff dump from a full-file retry, and no diff at all for deterministic
+    fixes. Diffed against the TRUE pre-fix content (before any
+    deterministic or LLM change), so a file that got both still shows one
+    combined diff, not two. Truncated — a full class-level diff dumped
+    into chat for every fix is the "displays too much" complaint this
+    exists to fix."""
+    lines = [f"- `{i['rule_key']}`: {i['message']}" for i in issues]
+    diff_lines = list(difflib.unified_diff(
+        before.splitlines(keepends=True), after.splitlines(keepends=True),
+        fromfile=file_path, tofile=file_path,
+    ))
+    diff_text = "".join(diff_lines) or "(no textual difference from the original)"
+    if len(diff_text) > _FIX_SUMMARY_DIFF_CHAR_LIMIT:
+        diff_text = diff_text[:_FIX_SUMMARY_DIFF_CHAR_LIMIT] + "\n… (truncated)"
+    return f"Fixed `{file_path}`:\n" + "\n".join(lines) + f"\n```diff\n{diff_text}\n```"
+
+
 def _java_fqcn(file_path: str) -> str:
     """Converts a Java source path (as reported by Sonar, relative to the
     repo root) to its fully-qualified class name — e.g.
@@ -438,7 +463,15 @@ class FixLlmGateStep(BaseAgent):
         s = ctx.session.state
         if s.get("temp:skip_llm_fix"):
             return
+        # Don't forward the model's own prose+diff text — it's verbose
+        # (explanation of the fix plus the full unified diff) and gets
+        # replaced by ApplyAndVerifyStep's own concise "issue + compact
+        # diff" summary once the fix is actually confirmed to work. Same
+        # suppress-text/forward-everything-else pattern used elsewhere
+        # (IntakeStep, _retry_full_file).
         async for event in self.llm_agent.run_async(ctx):
+            if event.content and any(getattr(p, "text", None) for p in event.content.parts or []):
+                continue
             yield event
 
 
@@ -513,15 +546,11 @@ class ApplyAndVerifyStep(BaseAgent):
         with open(os.path.join(working_dir, group["file"]), "w") as f:
             f.write(content)
         s["temp:full_file_retry_ok"] = True
-
-        diff_lines = list(difflib.unified_diff(
-            s[sk.CURRENT_FILE_CONTENT].splitlines(keepends=True),
-            content.splitlines(keepends=True),
-            fromfile=group["file"], tofile=group["file"],
-        ))
-        diff_text = "".join(diff_lines) or "(no textual difference from the original)"
+        # No diff shown here — ApplyAndVerifyStep's own summary (issue
+        # list + compact diff) covers this once the fix is confirmed to
+        # actually compile/verify, instead of showing it twice.
         yield Event(author=self.name, content=_msg(
-            f"Full-file fix for `{group['file']}`:\n```diff\n{diff_text[-3000:]}\n```"
+            f"Full-file fix for `{group['file']}` generated — verifying."
         ))
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
@@ -655,7 +684,10 @@ class ApplyAndVerifyStep(BaseAgent):
         s[sk.ORDERED_FILES_REMAINING].pop(0)
         s[sk.FILES_SINCE_CHECKPOINT] += 1
         note = f" ({len(unresolved)} issue(s) still unresolved, also flagged)" if unresolved else ""
-        yield Event(author=self.name, content=_msg(f"Committed fix for `{group['file']}`{note}."))
+        with open(os.path.join(working_dir, group["file"])) as f:
+            after_content = f.read()
+        summary = _build_fix_summary(group["file"], group["issues"], s[sk.CURRENT_FILE_CONTENT], after_content)
+        yield Event(author=self.name, content=_msg(f"{summary}{note}"))
 
 
 class CheckpointGate(BaseAgent):
