@@ -924,6 +924,42 @@ def _build_per_file_loop() -> LoopAgent:
     )
 
 
+def _strip_escalate(event: Event) -> Event:
+    """ADK's LoopAgent re-yields every sub-agent event upward completely
+    unmodified, and checks event.actions.escalate at EVERY nesting level
+    it passes through. FileFixerStep's escalate=True (its own queue-empty
+    signal, meant only to stop per_file_loop's iteration) therefore also
+    terminates whatever LoopAgent per_file_loop is embedded in (outer_loop,
+    maintainability_expansion_loop) the moment it bubbles through —
+    confirmed live: outer_loop had never run a second iteration in this
+    project's history, always exiting after exactly one per_file_loop
+    pass regardless of whether files ended up flagged and outer_loop's
+    own re-fetch-and-retry (Section 5.5, MAX_OUTER_ITERATIONS) was meant
+    to give them another attempt; OuterExitCheck itself never ran (its
+    OUTER_ITERATION counter stayed 0 in the final report). Stripping the
+    flag here, once, at the per_file_loop boundary, means only
+    per_file_loop's own LoopAgent sees it — the enclosing loop's own exit
+    check (OuterExitCheck / MaintainabilityDebtCheckStep) makes its own
+    independent decision instead of being silently pre-empted."""
+    if not event.actions.escalate:
+        return event
+    return event.model_copy(update={"actions": event.actions.model_copy(update={"escalate": False})})
+
+
+class PerFileLoopStep(BaseAgent):
+    """Wraps a per_file_loop instance so its own internal LoopAgent exit
+    signal doesn't also terminate whatever LoopAgent embeds it — see
+    _strip_escalate. Manually invokes .run_async(ctx), the same
+    free-standing-agent pattern used elsewhere (CheckpointGate,
+    IntakeStep) for a child that needs its own event post-processing."""
+    name: str = "per_file_loop_step"
+    loop: LoopAgent
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        async for event in self.loop.run_async(ctx):
+            yield _strip_escalate(event)
+
+
 # ---------------------------------------------------------------------------
 # Outer loop (Section 5.5)
 # ---------------------------------------------------------------------------
@@ -951,7 +987,7 @@ class OuterExitCheck(BaseAgent):
 
 outer_loop = LoopAgent(
     name="outer_loop",
-    sub_agents=[FetchPrioritizeStep(), _build_per_file_loop(), OuterExitCheck()],
+    sub_agents=[FetchPrioritizeStep(), PerFileLoopStep(loop=_build_per_file_loop()), OuterExitCheck()],
     max_iterations=5,  # hard ceiling backing MAX_OUTER_ITERATIONS in state
 )
 
@@ -1020,7 +1056,7 @@ class MaintainabilityDebtCheckStep(BaseAgent):
 
 maintainability_expansion_loop = LoopAgent(
     name="maintainability_expansion_loop",
-    sub_agents=[MaintainabilityDebtCheckStep(), _build_per_file_loop()],
+    sub_agents=[MaintainabilityDebtCheckStep(), PerFileLoopStep(loop=_build_per_file_loop())],
     max_iterations=4,
 )
 

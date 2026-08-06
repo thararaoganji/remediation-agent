@@ -7,7 +7,33 @@ here. This covers the plain, context-free helper functions instead.
 from google.adk.events import Event, EventActions
 from google.genai import types
 
-from sonar_autofix_agent.agents import _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text
+from sonar_autofix_agent.agents import _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate
+
+
+# --- _strip_escalate -----------------------------------------------------
+
+def test_strip_escalate_clears_the_flag():
+    """Regression: ADK's LoopAgent re-yields sub-agent events unmodified
+    and checks event.actions.escalate at every nesting level -- so
+    per_file_loop's own queue-empty escalate=True also terminated
+    whatever LoopAgent embedded it (outer_loop, maintainability_expansion_loop)
+    the moment it bubbled through. Confirmed live: outer_loop had never
+    run a second iteration in this project's history (OUTER_ITERATION
+    stayed 0 in every final report) even when files ended up flagged and
+    were meant to get a re-fetch-and-retry attempt."""
+    event = Event(author="file_fixer_step", actions=EventActions(escalate=True))
+    stripped = _strip_escalate(event)
+    assert stripped.actions.escalate is False
+
+
+def test_strip_escalate_passes_through_non_escalating_events_unchanged():
+    event = Event(author="file_fixer_step", actions=EventActions(escalate=False))
+    assert _strip_escalate(event) is event
+
+
+def test_strip_escalate_passes_through_default_actions_unchanged():
+    event = Event(author="file_fixer_step")
+    assert _strip_escalate(event) is event
 
 
 # --- _hide_text --------------------------------------------------------

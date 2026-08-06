@@ -114,20 +114,35 @@ on conflict for the rule keys they name):
 9. S1948 (serialization): you MAY modify related classes outside the
    flagged file to implement Serializable and add a serialVersionUID — this
    is the one explicit exception to "fix only the listed file."
+10. S2068/S6437 (hardcoded credentials): when replacing a hardcoded literal
+    with an externalized value (System.getenv/@Value/config), do NOT add a
+    hardcoded literal as the fallback for when it's missing — a fallback
+    string assigned to a password/secret/token-named variable is ITSELF
+    exactly the pattern these rules flag, so it just re-triggers the same
+    finding under a different guise (observed live: `String x =
+    System.getenv("X"); if (x == null) { x = "someLiteralDefault"; }`
+    still gets flagged, because the fallback assignment IS a hardcoded
+    credential-shaped literal). Fail fast instead — throw
+    IllegalStateException (or the class's existing exception convention) if
+    the externalized value is missing, rather than silently substituting a
+    fake one.
+      Violation: String pw = System.getenv("PW"); if (pw == null) { pw = "default"; }
+      Fix:       String pw = System.getenv("PW");
+                 if (pw == null) { throw new IllegalStateException("PW must be set"); }
 
 DEFENSIVE REFACTORING (avoid introducing new Medium-severity findings):
 before finalizing your diff, check it doesn't introduce any of these:
-10. S1128 (unused imports): if your fix removed the last usage of an
+11. S1128 (unused imports): if your fix removed the last usage of an
     imported class, delete that import. Never introduce a wildcard (`.*`)
     import.
-11. S1481/S1068 (unused locals/fields): don't leave an orphaned local
+12. S1481/S1068 (unused locals/fields): don't leave an orphaned local
     variable or private field that's no longer read.
-12. S1192 (duplicated string literals): don't let the same string literal
+13. S1192 (duplicated string literals): don't let the same string literal
     appear 3+ times — extract it to a private static final String constant.
-13. S3776 (cognitive complexity): if your fix adds multiple try/catch or
+14. S3776 (cognitive complexity): if your fix adds multiple try/catch or
     if/else blocks, extract the inner logic into a private helper method
     instead of nesting it inline.
-14. Scope: only modify the reported file — the named exceptions are rule 9
+15. Scope: only modify the reported file — the named exceptions are rule 9
     (S1948, may touch related classes for Serializable) and rule 3 (S6809/
     S6813, may touch this class's own existing Mockito unit test file to
     wire the self-reference). Otherwise do not touch unrelated code even if
