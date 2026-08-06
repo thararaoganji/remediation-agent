@@ -457,15 +457,19 @@ class FileFixerStep(BaseAgent):
         ))
 
 
-# Caps (doesn't disable) Gemini's thinking tokens for fix_llm_agent.
-# Observed live: thinking_token_count ranged from ~90 to over 8000 across
-# single-file fixes with no cap set (the default is per-model automatic,
-# effectively unbounded) — often larger than the fix itself. These are
-# narrow, single-file, already-scoped fixes, not open-ended reasoning
-# tasks, so a cap trims the worst outliers without well-reasoned fixes
-# needing that much budget in the first place. -1 (automatic, uncapped)
-# restores the pre-cap behavior if quality regresses in practice.
-_FIX_LLM_THINKING_BUDGET = int(os.environ.get("FIX_LLM_THINKING_BUDGET", "4096"))
+# Caps Gemini's thinking effort for fix_llm_agent. IMPORTANT: this model
+# (gemini-3.5-flash, a Gemini 3.5+ model) deprecates the older numeric
+# thinking_budget field in favor of this categorical thinking_level --
+# per google.genai.types' own ReinforcementTuningThinkingLevel docstring,
+# "Starting from Gemini 3.5 models, the old thinking_budget will no
+# longer be supported ... use the thinking_level parameter instead."
+# Confirmed live: setting thinking_budget=4096 on this model did NOT
+# error, but also plainly wasn't enforced -- several single-file fixes
+# still logged over 5000-6000 thinking tokens despite the cap. LOW (not
+# MINIMAL) is the default: these are narrow, single-file, already-scoped
+# fixes, not open-ended reasoning, but some (self-invocation setter
+# wiring, multi-issue batches) do need genuine reasoning to get right.
+_FIX_LLM_THINKING_LEVEL = types.ThinkingLevel(os.environ.get("FIX_LLM_THINKING_LEVEL", "LOW").upper())
 
 
 def _build_fix_llm_agent() -> LlmAgent:
@@ -479,7 +483,7 @@ def _build_fix_llm_agent() -> LlmAgent:
         instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
         output_key=sk.PROPOSED_DIFF,
         generate_content_config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_budget=_FIX_LLM_THINKING_BUDGET),
+            thinking_config=types.ThinkingConfig(thinking_level=_FIX_LLM_THINKING_LEVEL),
         ),
     )
 
