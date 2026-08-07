@@ -80,6 +80,12 @@ def _tool_on_path(name: str) -> bool:
     return shutil.which(name) is not None
 
 
+def _resolve_tool_on_path(name: str) -> str | None:
+    if not _tool_on_path(name):
+        return None
+    return shutil.which(name)
+
+
 def _run(args: list[str], cwd: str, timeout: int, env: dict | None = None) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=env)
@@ -202,7 +208,13 @@ class JavaMavenAdapter(LanguageAdapter):
         # about whether a bare relative command name resolves against cwd,
         # which differs across OS/subprocess implementations.
         wrapper = os.path.join(working_dir, "mvnw.cmd" if _is_windows() else "mvnw")
-        return wrapper if os.path.isfile(wrapper) else "mvn"
+        if os.path.isfile(wrapper):
+            return wrapper
+        if _is_windows():
+            resolved = _resolve_tool_on_path("mvn")
+            if resolved:
+                return resolved
+        return "mvn"
 
     def preflight_check(self, working_dir: str) -> None:
         missing = []
@@ -348,6 +360,10 @@ class JavaGradleAdapter(LanguageAdapter):
         # which differs across OS/subprocess implementations.
         if self._gradle_wrapper_usable(working_dir):
             return os.path.join(working_dir, self._wrapper_name())
+        if _is_windows():
+            resolved = _resolve_tool_on_path("gradle")
+            if resolved:
+                return resolved
         return "gradle"
 
     # Groovy: property "sonar.projectKey", "value"  |  Kotlin: property("sonar.projectKey", "value")
