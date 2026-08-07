@@ -84,7 +84,7 @@ def apply_diff(diff_text: str, working_dir: str, file_path: str) -> bool:
 
     abs_path = os.path.join(working_dir, file_path)
     try:
-        before = open(abs_path, "r").read()
+        before = open(abs_path, "r", encoding="utf-8").read()
     except OSError:
         before = None
 
@@ -110,7 +110,7 @@ def apply_diff(diff_text: str, working_dir: str, file_path: str) -> bool:
             if applied.returncode != 0:
                 continue
             try:
-                after = open(abs_path, "r").read()
+                after = open(abs_path, "r", encoding="utf-8").read()
             except OSError:
                 after = None
             if after != before:
@@ -284,7 +284,7 @@ def verify_issue_patterns_resolved(
     in session state from before the fix ran) is what makes the "before"
     half of that comparison possible; if it isn't supplied, this falls back
     to the older, coarser "no violation anywhere left in the file" check."""
-    with open(os.path.join(working_dir, file_path)) as f:
+    with open(os.path.join(working_dir, file_path), encoding="utf-8") as f:
         after_source = f.read()
 
     by_rule: dict[str, list[dict]] = {}

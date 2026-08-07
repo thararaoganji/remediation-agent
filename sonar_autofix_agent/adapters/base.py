@@ -366,14 +366,14 @@ class JavaGradleAdapter(LanguageAdapter):
             if not os.path.isfile(path):
                 continue
             build_files_found = True
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 m = self._PROJECT_KEY_PROPERTY_RE.search(f.read())
             if m:
                 return m.group(1)
 
         props_path = os.path.join(working_dir, "gradle.properties")
         if os.path.isfile(props_path):
-            with open(props_path) as f:
+            with open(props_path, encoding="utf-8") as f:
                 m = self._PROJECT_KEY_PROPS_FILE_RE.search(f.read())
             if m:
                 return m.group(1)

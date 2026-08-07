@@ -185,6 +185,7 @@ def test_gradle_get_project_key_build_file_present_but_no_key_raises(tmp_path):
 
 def test_maven_preflight_uses_wrapper_when_present(tmp_path):
     (tmp_path / "mvnw").write_text("#!/bin/sh\n")
+    (tmp_path / "mvnw.cmd").write_text("@echo off\n")
     adapter = base.JavaMavenAdapter()
     # should not raise: wrapper satisfies the "mvn on PATH" requirement
     # regardless of whether a real `mvn` binary exists on this machine
@@ -200,6 +201,7 @@ def test_maven_preflight_raises_when_neither_wrapper_nor_mvn(tmp_path, monkeypat
 
 def test_gradle_preflight_wrapper_without_jar_reports_specific_reason(tmp_path, monkeypatch):
     (tmp_path / "gradlew").write_text("#!/bin/sh\n")
+    (tmp_path / "gradlew.bat").write_text("@echo off\n")
     monkeypatch.setattr(base, "_tool_on_path", lambda name: name == "java")
     adapter = base.JavaGradleAdapter()
     with pytest.raises(base.ToolNotAvailableError, match="gradle-wrapper.jar is missing"):

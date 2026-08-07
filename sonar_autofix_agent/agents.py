@@ -395,7 +395,7 @@ class FileFixerStep(BaseAgent):
         # rejoin with os.path.join rather than raw string interpolation so
         # the actual filesystem call always uses the native separator.
         file_abs_path = os.path.join(s[sk.WORKING_DIR], *group["file"].split("/"))
-        with open(file_abs_path) as f:
+        with open(file_abs_path, encoding="utf-8") as f:
             original_content = f.read()
 
         # Deterministic pre-pass: a handful of rules (see
@@ -410,7 +410,7 @@ class FileFixerStep(BaseAgent):
             original_content, batch_issues,
         )
         if mechanical_fixed:
-            with open(file_abs_path, "w") as f:
+            with open(file_abs_path, "w", encoding="utf-8") as f:
                 f.write(file_content)
             rule_list = ", ".join(sorted({i["rule_key"] for i in mechanical_fixed}))
             yield Event(author=self.name, content=_msg(
@@ -581,7 +581,7 @@ class ApplyAndVerifyStep(BaseAgent):
                 "instead of a complete file — declining rather than writing it, flagged for manual review."
             ))
             return
-        with open(os.path.join(working_dir, group["file"]), "w") as f:
+        with open(os.path.join(working_dir, group["file"]), "w", encoding="utf-8") as f:
             f.write(content)
         s["temp:full_file_retry_ok"] = True
         # No diff shown here — ApplyAndVerifyStep's own summary (issue
@@ -722,7 +722,7 @@ class ApplyAndVerifyStep(BaseAgent):
         s[sk.ORDERED_FILES_REMAINING].pop(0)
         s[sk.FILES_SINCE_CHECKPOINT] += 1
         note = f" ({len(unresolved)} issue(s) still unresolved, also flagged)" if unresolved else ""
-        with open(os.path.join(working_dir, group["file"])) as f:
+        with open(os.path.join(working_dir, group["file"]), encoding="utf-8") as f:
             after_content = f.read()
         summary = _build_fix_summary(group["file"], group["issues"], s[sk.CURRENT_FILE_CONTENT], after_content)
         yield Event(author=self.name, content=_msg(f"{summary}{note}"))
