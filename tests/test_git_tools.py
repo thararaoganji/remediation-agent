@@ -1,3 +1,5 @@
+import os
+import stat
 import subprocess
 
 from sonar_autofix_agent.tools import git_tools
@@ -7,6 +9,39 @@ def _git(args, cwd):
     r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return r
+
+
+# --- _force_rmtree -----------------------------------------------------------
+
+def test_force_rmtree_deletes_read_only_files(tmp_path):
+    """Regression: shutil.rmtree() alone fails on Windows (and, as this
+    test itself caught, would also fail on Unix if the chmod pre-pass
+    only set the write bit alone rather than a full rwx mode -- chmod
+    REPLACES the mode, it doesn't add to it, so write-bit-only strips a
+    directory's execute bit and makes it untraversable). git marks files
+    inside .git/objects read-only; reported live as: existing workspace
+    code not getting deleted before a fresh clone, crashing the run."""
+    repo = tmp_path / "repo"
+    objects_dir = repo / ".git" / "objects"
+    objects_dir.mkdir(parents=True)
+    obj_file = objects_dir / "abc123"
+    obj_file.write_text("x")
+
+    # simulate git's read-only object files and a read-only containing dir
+    os.chmod(obj_file, stat.S_IREAD)
+    os.chmod(objects_dir, stat.S_IREAD)
+    os.chmod(repo / ".git", stat.S_IREAD)
+
+    git_tools._force_rmtree(str(repo))
+    assert not repo.exists()
+
+
+def test_force_rmtree_handles_normal_writable_tree(tmp_path):
+    d = tmp_path / "plain"
+    (d / "sub").mkdir(parents=True)
+    (d / "sub" / "file.txt").write_text("x")
+    git_tools._force_rmtree(str(d))
+    assert not d.exists()
 
 
 # --- _sanitize_branch_component ---------------------------------------------

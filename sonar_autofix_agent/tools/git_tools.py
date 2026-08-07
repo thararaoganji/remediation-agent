@@ -10,6 +10,7 @@ import base64
 import os
 import re
 import shutil
+import stat
 import subprocess
 
 
@@ -25,6 +26,42 @@ def _github_auth_args(github_token: str) -> list[str]:
     command only, so the token never lands in persisted git config."""
     basic = base64.b64encode(f"x-access-token:{github_token}".encode()).decode()
     return ["-c", f"http.https://github.com/.extraheader=AUTHORIZATION: basic {basic}"]
+
+
+def _force_rmtree(path: str) -> None:
+    """shutil.rmtree() alone fails on Windows with PermissionError
+    ([WinError 5] Access is denied) on a git-cloned directory -- git
+    marks files inside .git/objects (and sometimes others) read-only,
+    and unlike Unix (where the containing directory's permissions govern
+    deletion), Windows enforces the file's own read-only attribute for
+    deletion too. Confirmed as the reported failure mode: resolve_source's
+    stale-workspace cleanup left old code in place and crashed the whole
+    run with an unhandled exception on Windows specifically.
+
+    Clears the read-only bit on everything first, then deletes, rather
+    than using shutil.rmtree's onerror/onexc retry-callback -- that
+    parameter's name and callback signature changed between Python
+    versions (onerror deprecated in 3.12, removed in 3.14 in favor of
+    onexc with a different signature), so a pre-pass that doesn't depend
+    on either is the version-safe choice.
+
+    Uses S_IRWXU (owner rwx), not just the write bit alone -- os.chmod
+    sets the ABSOLUTE mode, it doesn't add to the existing one, so
+    chmod(path, S_IWRITE) alone strips a directory's execute bit on Unix
+    and makes it untraversable (confirmed live: rmtree then failed with
+    PermissionError trying to even open the directory). S_IRWXU is safe
+    on both platforms -- Windows only cares whether any write bit is set
+    at all (that's what clears the read-only attribute), the rest of the
+    mode is irrelevant there."""
+    if os.path.isdir(path):
+        for root, dirs, files in os.walk(path):
+            for name in dirs + files:
+                full = os.path.join(root, name)
+                try:
+                    os.chmod(full, stat.S_IRWXU)
+                except OSError:
+                    pass
+    shutil.rmtree(path)
 
 
 def resolve_source(source: str, source_type: str, workspace_root: str, github_token: str | None = None) -> str:
@@ -63,7 +100,7 @@ def resolve_source(source: str, source_type: str, workspace_root: str, github_to
         # or committed drift from a previous, possibly-failed run. Wiping
         # it guarantees this run starts from the actual current upstream.
         if os.path.exists(working_dir):
-            shutil.rmtree(working_dir)
+            _force_rmtree(working_dir)
 
         os.makedirs(workspace_root, exist_ok=True)
         auth = _github_auth_args(github_token) if github_token else []
