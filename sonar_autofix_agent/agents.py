@@ -1006,28 +1006,33 @@ outer_loop = LoopAgent(
 # still over target after the main pass, and pulls the highest-debt-minute
 # Minor/Low smells first rather than exhaustively closing the whole tail.
 
+def _scanned_branch(s: dict) -> str | None:
+    """This run's own agent branch only gets its OWN Sonar analysis once a
+    checkpoint's re-scan has actually run (TriggerAndReconcileScanStep) --
+    which only happens after at least one file has been committed. A run
+    that finds zero files to fix in the primary pass never fires a
+    checkpoint, so the branch is never scanned at all: querying it by
+    name for a rating/ratio either crashes (get_maintainability_debt_ratio
+    correctly raises when the metric comes back missing) or silently lies
+    (get_quality_ratings returns {}, and all(v == '1.0' for v in {}.values())
+    is vacuously True in Python -- a report would falsely claim "all
+    categories A" with zero actual data). Both confirmed live.
+
+    Since a branch with zero commits so far is still byte-identical to
+    whatever it was created from, the default branch's own already-
+    existing rating/ratio (branch=None, the same "omit branch -> Sonar's
+    own default" convention fetch_issues_and_hotspots already relies on)
+    is a valid substitute -- no wasted extra scan needed."""
+    return s[sk.BRANCH_NAME] if s[sk.FILES_COMPLETED] else None
+
+
 class MaintainabilityDebtCheckStep(BaseAgent):
     name: str = "maintainability_debt_check_step"
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
-        # This run's own branch only gets its OWN Sonar analysis once a
-        # checkpoint's re-scan has actually run (TriggerAndReconcileScanStep)
-        # -- which only happens after at least one file has been committed.
-        # Confirmed live: a run that finds zero files to fix in the primary
-        # pass never fires a checkpoint, so the branch is never scanned at
-        # all, and get_maintainability_debt_ratio(branch=BRANCH_NAME) has
-        # nothing to return -- it correctly raised RuntimeError
-        # ("sqale_debt_ratio not returned"), which crashed the whole
-        # pipeline instead of degrading gracefully. Since a branch with
-        # zero commits so far is still byte-identical to whatever it was
-        # created from, the default branch's own ratio (branch=None, the
-        # same "omit branch -> Sonar's own default" convention
-        # fetch_issues_and_hotspots already relies on) is a valid,
-        # already-existing substitute -- no wasted extra scan needed.
-        branch = s[sk.BRANCH_NAME] if s[sk.FILES_COMPLETED] else None
         ratio = sonar_tools.get_maintainability_debt_ratio(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], branch
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], _scanned_branch(s)
         )
         s[sk.MAINTAINABILITY_EXPANSION_ITERATION] += 1
         maxed_out = s[sk.MAINTAINABILITY_EXPANSION_ITERATION] > 3
@@ -1126,8 +1131,12 @@ class ReportStep(BaseAgent):
         # security_rating/reliability_rating/sqale_rating ONLY — duplication
         # and coverage are excluded at the tool level (IN_SCOPE_RATING_METRICS),
         # not filtered out here, so there's no way to accidentally re-include them.
+        # _scanned_branch: falls back to the default branch if this run's
+        # own branch was never scanned (zero files fixed) -- see its
+        # docstring for why get_quality_ratings(branch=BRANCH_NAME) would
+        # otherwise silently return {} and misreport "all A".
         ratings = sonar_tools.get_quality_ratings(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], s[sk.BRANCH_NAME]
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], _scanned_branch(s)
         )
         all_a = all(v == "1.0" for v in ratings.values())
         report = {

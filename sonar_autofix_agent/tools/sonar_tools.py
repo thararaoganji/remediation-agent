@@ -324,7 +324,7 @@ def _get_measures(sonar_base_url: str, project_key: str, token: str, metric_keys
     return {m["metric"]: m["value"] for m in measures if "value" in m}
 
 
-def get_quality_ratings(sonar_base_url: str, project_key: str, token: str, branch: str) -> dict:
+def get_quality_ratings(sonar_base_url: str, project_key: str, token: str, branch: str | None) -> dict:
     """GET /api/measures/component?metricKeys=security_rating,reliability_rating,sqale_rating
     Deliberately requests ONLY IN_SCOPE_RATING_METRICS — duplication and
     coverage are never included here, so a caller can't accidentally treat
@@ -332,10 +332,15 @@ def get_quality_ratings(sonar_base_url: str, project_key: str, token: str, branc
     {"security_rating": "1.0", "reliability_rating": "2.0", "sqale_rating": "1.0"}
     where Sonar encodes A=1.0 .. E=5.0.
 
-    branch is required — see fetch_issues_and_hotspots()'s docstring;
-    omitting it silently reports main's ratings instead of the branch this
-    run is actually fixing, which would make the final A-rating check
-    meaningless (checking a branch this agent never touches)."""
+    branch is required to be passed explicitly (no default) — see
+    fetch_issues_and_hotspots()'s docstring; passing the wrong branch
+    silently reports main's ratings instead of the branch this run is
+    actually fixing, which would make the final A-rating check
+    meaningless. None IS a legitimate, deliberate choice though — see
+    agents.py's _scanned_branch()) — for a branch with no analysis of its
+    own yet (zero files fixed this run), the default branch's rating is
+    the only real data available, and is still an accurate stand-in since
+    that branch's source hasn't diverged."""
     return _get_measures(sonar_base_url, project_key, token, IN_SCOPE_RATING_METRICS, branch)
 
 

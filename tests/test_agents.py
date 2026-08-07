@@ -7,7 +7,29 @@ here. This covers the plain, context-free helper functions instead.
 from google.adk.events import Event, EventActions
 from google.genai import types
 
-from sonar_autofix_agent.agents import _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate
+from sonar_autofix_agent import state_schema as sk
+from sonar_autofix_agent.agents import (
+    _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate, _scanned_branch,
+)
+
+
+# --- _scanned_branch -----------------------------------------------------
+
+def test_scanned_branch_falls_back_to_default_when_nothing_fixed():
+    """Regression: a run that fixes zero files never fires a checkpoint,
+    so its own agent branch never gets Sonar-analyzed under its own name
+    -- querying it directly either crashed
+    (get_maintainability_debt_ratio) or silently misreported "all A"
+    (get_quality_ratings on an empty {}). branch=None (falling back to
+    the project's default branch, still byte-identical to the new branch
+    at that point) is the fix."""
+    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: []}
+    assert _scanned_branch(s) is None
+
+
+def test_scanned_branch_uses_own_branch_once_something_was_fixed():
+    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"]}
+    assert _scanned_branch(s) == "my-project_agent_20260101_000000"
 
 
 # --- _strip_escalate -----------------------------------------------------
