@@ -1,6 +1,38 @@
+import subprocess
+
 import pytest
 
 from sonar_autofix_agent.adapters import base
+
+
+# --- _combined_output --------------------------------------------------
+
+def test_combined_output_includes_stdout_even_when_stderr_nonempty():
+    """Regression: `result.stderr or result.stdout` picked stderr whenever
+    it was non-empty AT ALL -- including when stderr is just JVM startup
+    warnings (native access, deprecated Unsafe, final-field-mutation --
+    all extremely common on modern JDKs), silently discarding stdout even
+    when it held the actual Maven/Gradle [ERROR] failure summary.
+    Confirmed live: a real `mvn sonar:sonar` failure surfaced as nothing
+    but JVM warning noise with zero information about the actual cause."""
+    result = subprocess.CompletedProcess(
+        args=[], returncode=1,
+        stdout="[ERROR] Failed to execute goal ...\nBUILD FAILURE",
+        stderr="WARNING: A restricted method in java.lang.System has been called",
+    )
+    combined = base._combined_output(result)
+    assert "BUILD FAILURE" in combined
+    assert "restricted method" in combined
+
+
+def test_combined_output_handles_empty_streams():
+    result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+    assert base._combined_output(result) == ""
+
+
+def test_combined_output_stdout_only():
+    result = subprocess.CompletedProcess(args=[], returncode=1, stdout="[ERROR] boom", stderr="")
+    assert base._combined_output(result) == "[ERROR] boom"
 
 
 # --- detect_build_tool --------------------------------------------------

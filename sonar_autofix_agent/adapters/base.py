@@ -87,6 +87,22 @@ def _run(args: list[str], cwd: str, timeout: int, env: dict | None = None) -> su
         return subprocess.CompletedProcess(args, returncode=124, stdout=e.stdout or "", stderr=f"timed out after {timeout}s")
 
 
+def _combined_output(result: subprocess.CompletedProcess) -> str:
+    """Combines stdout+stderr instead of picking one. The previous
+    `result.stderr or result.stdout` pattern picked stderr whenever it was
+    non-empty AT ALL -- but JVM startup/deprecation warnings (native
+    access, sun.misc.Unsafe, final-field-mutation -- all extremely common
+    on modern JDKs) also go to stderr, silently discarding stdout even
+    when it held the actual Maven/Gradle [ERROR] failure summary.
+    Confirmed live: a real `mvn sonar:sonar` failure surfaced as nothing
+    but JVM warning noise, with zero information about the actual cause.
+    stderr first, stdout last: every caller here truncates to the LAST N
+    chars, and a build tool's real error summary is almost always at the
+    END of stdout, so this ordering keeps that inside the truncation
+    window instead of the warnings pushing it out."""
+    return f"{result.stderr or ''}\n{result.stdout or ''}".strip()
+
+
 _CE_TASK_ID_RE = re.compile(r"api/ce/task\?id=([\w-]+)")
 
 
@@ -212,7 +228,7 @@ class JavaMavenAdapter(LanguageAdapter):
             # fall back to a project-wide compile in case `scope` isn't a
             # real Maven module (e.g. single-module repo, scope == file path)
             result = _run([mvn, "-q", "compile"], cwd=working_dir, timeout=300)
-        return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
+        return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def verify_build(self, working_dir: str) -> BuildResult:
         mvn = self._mvn_cmd(working_dir)
@@ -225,7 +241,7 @@ class JavaMavenAdapter(LanguageAdapter):
         # was observed live (WebGoat's LoginUITest) forcing a checkpoint
         # revert of otherwise-correct changes.
         result = _run([mvn, "-q", "verify", "-DskipITs"], cwd=working_dir, timeout=1800)
-        return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
+        return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def run_specific_tests(self, working_dir: str, test_classes: list[str]) -> BuildResult:
         mvn = self._mvn_cmd(working_dir)
@@ -238,7 +254,7 @@ class JavaMavenAdapter(LanguageAdapter):
             [mvn, "-q", "test", f"-Dtest={','.join(simple_names)}"],
             cwd=working_dir, timeout=300,
         )
-        return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
+        return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def get_source_root(self, working_dir: str) -> str:
         return os.path.join(working_dir, "src", "main", "java")
@@ -301,7 +317,7 @@ class JavaMavenAdapter(LanguageAdapter):
             args.append(f"-Dsonar.branch.name={branch}")
         result = _run(args, cwd=working_dir, timeout=900)
         if result.returncode != 0:
-            raise RuntimeError(f"Sonar scan failed (mvn sonar:sonar):\n{(result.stderr or result.stdout)[-3000:]}")
+            raise RuntimeError(f"Sonar scan failed (mvn sonar:sonar):\n{_combined_output(result)[-3000:]}")
         return _parse_ce_task_id(result.stdout + result.stderr)
 
 
@@ -401,7 +417,7 @@ class JavaGradleAdapter(LanguageAdapter):
         result = _run([gradle, "-q", task, "compileTestJava"], cwd=working_dir, timeout=180)
         if result.returncode != 0:
             result = _run([gradle, "-q", "compileJava", "compileTestJava"], cwd=working_dir, timeout=300)
-        return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
+        return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def verify_build(self, working_dir: str) -> BuildResult:
         gradle = self._gradle_cmd(working_dir)
@@ -415,7 +431,7 @@ class JavaGradleAdapter(LanguageAdapter):
         # environment-driven flakiness (see the Maven adapter's -DskipITs
         # for the same reasoning).
         result = _run([gradle, "-q", "test"], cwd=working_dir, timeout=1800)
-        return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
+        return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def run_specific_tests(self, working_dir: str, test_classes: list[str]) -> BuildResult:
         gradle = self._gradle_cmd(working_dir)
@@ -423,7 +439,7 @@ class JavaGradleAdapter(LanguageAdapter):
         for c in test_classes:
             args += ["--tests", c]
         result = _run(args, cwd=working_dir, timeout=300)
-        return BuildResult(passed=result.returncode == 0, errors=result.stderr or result.stdout)
+        return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def get_source_root(self, working_dir: str) -> str:
         return os.path.join(working_dir, "src", "main", "java")
@@ -457,7 +473,7 @@ class JavaGradleAdapter(LanguageAdapter):
             args.append(f"-Dsonar.branch.name={branch}")
         result = _run(args, cwd=working_dir, timeout=900)
         if result.returncode != 0:
-            raise RuntimeError(f"Sonar scan failed (gradle sonar):\n{(result.stderr or result.stdout)[-3000:]}")
+            raise RuntimeError(f"Sonar scan failed (gradle sonar):\n{_combined_output(result)[-3000:]}")
         return _parse_ce_task_id(result.stdout + result.stderr)
 
 
