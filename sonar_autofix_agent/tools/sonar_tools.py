@@ -385,10 +385,14 @@ def resolve_issue_transition(sonar_base_url: str, issue_key: str, transition: st
     raise NotImplementedError("wire to requests.post, human-confirmed issue_keys only")
 
 
-def get_maintainability_debt_ratio(sonar_base_url: str, project_key: str, token: str, branch: str) -> float:
+def get_maintainability_debt_ratio(sonar_base_url: str, project_key: str, token: str, branch: str | None) -> float:
     """GET /api/measures/component?metricKeys=sqale_debt_ratio. Returns the
     percentage Sonar itself uses for the sqale_rating threshold (A <= 5.0).
-    branch is required — see fetch_issues_and_hotspots()'s docstring."""
+    branch is required to be passed explicitly (no default) — see
+    fetch_issues_and_hotspots()'s docstring — but None is a legitimate
+    choice: a branch with no commits/analysis of its own yet has nothing
+    for this to return, so the caller may deliberately fall back to the
+    project's default branch (Sonar's own fallback when branch is omitted)."""
     measures = _get_measures(sonar_base_url, project_key, token, ["sqale_debt_ratio"], branch)
     value = measures.get("sqale_debt_ratio")
     if value is None:

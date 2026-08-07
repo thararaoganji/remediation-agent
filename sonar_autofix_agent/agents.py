@@ -1011,8 +1011,23 @@ class MaintainabilityDebtCheckStep(BaseAgent):
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
+        # This run's own branch only gets its OWN Sonar analysis once a
+        # checkpoint's re-scan has actually run (TriggerAndReconcileScanStep)
+        # -- which only happens after at least one file has been committed.
+        # Confirmed live: a run that finds zero files to fix in the primary
+        # pass never fires a checkpoint, so the branch is never scanned at
+        # all, and get_maintainability_debt_ratio(branch=BRANCH_NAME) has
+        # nothing to return -- it correctly raised RuntimeError
+        # ("sqale_debt_ratio not returned"), which crashed the whole
+        # pipeline instead of degrading gracefully. Since a branch with
+        # zero commits so far is still byte-identical to whatever it was
+        # created from, the default branch's own ratio (branch=None, the
+        # same "omit branch -> Sonar's own default" convention
+        # fetch_issues_and_hotspots already relies on) is a valid,
+        # already-existing substitute -- no wasted extra scan needed.
+        branch = s[sk.BRANCH_NAME] if s[sk.FILES_COMPLETED] else None
         ratio = sonar_tools.get_maintainability_debt_ratio(
-            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], s[sk.BRANCH_NAME]
+            s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], branch
         )
         s[sk.MAINTAINABILITY_EXPANSION_ITERATION] += 1
         maxed_out = s[sk.MAINTAINABILITY_EXPANSION_ITERATION] > 3

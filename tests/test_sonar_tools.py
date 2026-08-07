@@ -168,3 +168,34 @@ def test_check_project_analyzed_empty_analyses_raises(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"analyses": []}))
     with pytest.raises(SonarPreflightError, match="no analysis"):
         sonar_tools.check_project_analyzed("http://localhost:9000", "my-key", "token")
+
+
+# --- get_maintainability_debt_ratio ------------------------------------
+
+def test_get_maintainability_debt_ratio_branch_none_omits_branch_param(monkeypatch):
+    """Regression: a freshly created agent branch with zero commits has
+    never been Sonar-analyzed under its own name (that only happens once
+    a checkpoint fires a re-scan, which needs at least one committed
+    file first) -- querying its debt ratio crashed the whole pipeline
+    with an unhandled RuntimeError on any run that found zero files to
+    fix. branch=None (falling back to the project's default branch,
+    which the new branch is still byte-identical to at that point) is
+    the fix -- this confirms requests actually omits a None-valued query
+    param rather than sending the literal string "None", which is what
+    that fallback depends on."""
+    captured = {}
+
+    def fake_get(url, headers, params, timeout):
+        captured["params"] = params
+        return _FakeResponse({"component": {"measures": [{"metric": "sqale_debt_ratio", "value": "2.5"}]}})
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    ratio = sonar_tools.get_maintainability_debt_ratio("http://localhost:9000", "my-key", "token", None)
+    assert ratio == 2.5
+    assert captured["params"]["branch"] is None  # requests itself drops a None param from the URL
+
+
+def test_get_maintainability_debt_ratio_raises_when_metric_missing(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"component": {"measures": []}}))
+    with pytest.raises(RuntimeError, match="sqale_debt_ratio not returned"):
+        sonar_tools.get_maintainability_debt_ratio("http://localhost:9000", "my-key", "token", "some-branch")
