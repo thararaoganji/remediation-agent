@@ -35,6 +35,50 @@ def test_combined_output_stdout_only():
     assert base._combined_output(result) == "[ERROR] boom"
 
 
+# --- JavaMavenAdapter.run_sonar_scan -------------------------------------
+
+def test_maven_run_sonar_scan_uses_fully_qualified_goal_not_prefix(tmp_path, monkeypatch):
+    """Regression: the "sonar:sonar" prefix shorthand only resolves if
+    org.sonarsource.scanner.maven is registered in this Maven install's
+    ~/.m2/settings.xml <pluginGroups>, or the target project's own pom.xml
+    already declares sonar-maven-plugin as a build plugin. Neither holds
+    for a repo that's never had Sonar wired into its POM -- confirmed
+    live: WebGoat's first-ever checkpoint scan failed outright with
+    "No plugin found for prefix 'sonar'", crashing the whole run. The
+    fully-qualified groupId:artifactId:goal form resolves directly from
+    the repository regardless of either."""
+    captured = {}
+
+    def fake_run(args, cwd=None, env=None, timeout=None):
+        captured["args"] = args
+        return subprocess.CompletedProcess(
+            args=args, returncode=0,
+            stdout="[INFO] More about the report processing at "
+                   "http://localhost:9000/api/ce/task?id=abc123",
+            stderr="",
+        )
+
+    monkeypatch.setattr(base, "_run", fake_run)
+    adapter = base.JavaMavenAdapter()
+    task_id = adapter.run_sonar_scan(str(tmp_path), "http://localhost:9000", "tok", "my:proj")
+
+    assert task_id == "abc123"
+    assert "org.sonarsource.scanner.maven:sonar-maven-plugin:sonar" in captured["args"]
+    assert "sonar:sonar" not in captured["args"]
+
+
+def test_maven_run_sonar_scan_raises_with_output_on_failure(tmp_path, monkeypatch):
+    def fake_run(args, cwd=None, env=None, timeout=None):
+        return subprocess.CompletedProcess(
+            args=args, returncode=1, stdout="[ERROR] No plugin found for prefix 'sonar'", stderr="",
+        )
+
+    monkeypatch.setattr(base, "_run", fake_run)
+    adapter = base.JavaMavenAdapter()
+    with pytest.raises(RuntimeError, match="No plugin found for prefix"):
+        adapter.run_sonar_scan(str(tmp_path), "http://localhost:9000", "tok", "my:proj")
+
+
 # --- detect_build_tool --------------------------------------------------
 
 def test_detect_build_tool_maven(tmp_path):

@@ -320,8 +320,19 @@ class JavaMavenAdapter(LanguageAdapter):
 
     def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None):
         mvn = self._mvn_cmd(working_dir)
+        # Fully-qualified plugin goal, not the "sonar:sonar" prefix shorthand.
+        # Prefix resolution only works if org.sonarsource.scanner.maven is
+        # already registered in this Maven install's ~/.m2/settings.xml
+        # <pluginGroups>, or the target project's own pom.xml already
+        # declares sonar-maven-plugin as a build plugin (which registers the
+        # prefix from the reactor itself). Neither holds for a repo that's
+        # never had Sonar wired into its POM -- confirmed live: WebGoat's
+        # first-ever checkpoint scan failed outright with "No plugin found
+        # for prefix 'sonar'", crashing the whole run. The fully-qualified
+        # groupId:artifactId:goal form resolves directly from the repository
+        # and doesn't depend on either.
         args = [
-            mvn, "sonar:sonar",
+            mvn, "org.sonarsource.scanner.maven:sonar-maven-plugin:sonar",
             f"-Dsonar.host.url={sonar_base_url}", f"-Dsonar.projectKey={project_key}",
             f"-Dsonar.token={sonar_token}",
         ]
@@ -329,7 +340,10 @@ class JavaMavenAdapter(LanguageAdapter):
             args.append(f"-Dsonar.branch.name={branch}")
         result = _run(args, cwd=working_dir, timeout=900)
         if result.returncode != 0:
-            raise RuntimeError(f"Sonar scan failed (mvn sonar:sonar):\n{_combined_output(result)[-3000:]}")
+            raise RuntimeError(
+                f"Sonar scan failed ({mvn} org.sonarsource.scanner.maven:sonar-maven-plugin:sonar):\n"
+                f"{_combined_output(result)[-3000:]}"
+            )
         return _parse_ce_task_id(result.stdout + result.stderr)
 
 
