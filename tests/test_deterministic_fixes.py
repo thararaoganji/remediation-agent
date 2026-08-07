@@ -83,6 +83,44 @@ def test_s125_declines_on_empty_range():
     assert len(remaining) == 1
 
 
+def test_s125_declines_when_flagged_range_is_narrower_than_block_comment():
+    """Regression: exact live bug (AuthControllerTest.java). Sonar flagged
+    only the 'public static void main' line inside a /* ... */ block, not
+    the whole block. Deleting just that line left the println/close-brace
+    remnant still commented out -- still an S125 violation, silently
+    re-flagged as a brand-new open issue on the next scan. Must decline
+    (fall through to the LLM) rather than produce a truncated remnant."""
+    src = (
+        "class T {\n"
+        "    /*\n"
+        "    public static void main(String args[]){\n"
+        '        System.out.println("hi");\n'
+        "    }\n"
+        "     */\n"
+        "}\n"
+    )
+    _, applied, remaining = df.apply_deterministic_fixes(src, [issue("java:S125", 3, 3)])
+    assert applied == []
+    assert len(remaining) == 1
+
+
+def test_s125_applies_when_flagged_range_covers_the_whole_block_comment():
+    src = (
+        "class T {\n"
+        "    /*\n"
+        "    public static void main(String args[]){\n"
+        '        System.out.println("hi");\n'
+        "    }\n"
+        "     */\n"
+        "}\n"
+    )
+    patched, applied, remaining = df.apply_deterministic_fixes(src, [issue("java:S125", 2, 6)])
+    assert len(applied) == 1
+    assert remaining == []
+    assert "/*" not in patched
+    assert "public static void main" not in patched
+
+
 # --- S6242: AWS DefaultCredentialsProvider ----------------------------------
 
 def test_s6242_inserts_credentials_provider():

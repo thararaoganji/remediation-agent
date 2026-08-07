@@ -179,6 +179,32 @@ def test_verify_falls_back_to_after_only_check_without_original_content(tmp_path
     assert result == {"k1": True}
 
 
+def test_verify_unresolved_when_count_math_masks_the_actual_flagged_line(tmp_path):
+    """Regression: exact live bug (ExpenseService.java). Two S112 issues
+    flagged, at lines 1 and 2. The LLM only fixes line 2, but also edits
+    a THIRD, never-flagged occurrence of the same pattern elsewhere in
+    the file -- the aggregate count still drops by 2, satisfying the
+    before/after math, even though line 1's actual flagged violation is
+    untouched. Verified live: reported as fully resolved and silently
+    left open on the next Sonar scan."""
+    before = (
+        'void a() { throw new RuntimeException("still here"); }\n'
+        'void b() { throw new RuntimeException("gets fixed"); }\n'
+        'void c() { throw new RuntimeException("unflagged, but edited anyway"); }\n'
+    )
+    after = (
+        'void a() { throw new RuntimeException("still here"); }\n'
+        'void b() { throw new IllegalStateException("gets fixed"); }\n'
+        'void c() { throw new IllegalStateException("unflagged, but edited anyway"); }\n'
+    )
+    _write(tmp_path, "A.java", after)
+    issues = [issue("java:S112", "k1", 1), issue("java:S112", "k2", 2)]
+    result = patch_tools.verify_issue_patterns_resolved(
+        "A.java", issues, str(tmp_path), original_content=before,
+    )
+    assert result == {"k1": False, "k2": True}
+
+
 def test_verify_unknown_rule_key_defaults_to_resolved(tmp_path):
     _write(tmp_path, "A.java", "whatever content\n")
     issues = [issue("java:S9999", "k1", 1)]

@@ -39,14 +39,42 @@ def _fix_s6204(source: str, issue: dict) -> str | None:
     return _replace_in_range(source, issue["start_line"], issue["end_line"], pattern, ".toList()")
 
 
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+
+
+def _block_comment_line_spans(source: str) -> list[tuple[int, int]]:
+    spans = []
+    for m in _BLOCK_COMMENT_RE.finditer(source):
+        start_line = source.count("\n", 0, m.start()) + 1
+        end_line = source.count("\n", 0, m.end() - 1) + 1
+        spans.append((start_line, end_line))
+    return spans
+
+
 def _fix_s125(source: str, issue: dict) -> str | None:
     """Commented-out code: delete the exact flagged line range outright.
-    S125's own textRange already brackets precisely the commented block
-    Sonar flagged — nothing else in the file is touched."""
+
+    Only safe when that range is the WHOLE violation. For a run of `//`
+    line comments, Sonar's textRange does bracket the entire commented
+    block. For a `/* ... */` block comment it doesn't always -- Sonar can
+    flag just one inner line (e.g. a single statement inside the block)
+    while the rest of the block is left standing. Deleting only that
+    slice leaves a truncated but still-commented remnant behind, which
+    still violates S125 and gets silently re-flagged as a brand-new open
+    issue on the next scan -- confirmed live (AuthControllerTest.java:
+    deleting the flagged `public static void main(...)` line out of a
+    `/* ... System.out.println(...); } */` block left the println/close-
+    brace remnant sitting in the file, still commented out, still
+    flagged). Decline whenever the flagged range is a strict subset of an
+    enclosing block comment so the LLM removes the whole block instead."""
     lines = source.splitlines(keepends=True)
     lo, hi = max(0, issue["start_line"] - 1), min(len(lines), issue["end_line"])
     if lo >= hi:
         return None
+    for comment_start, comment_end in _block_comment_line_spans(source):
+        overlaps = comment_start <= issue["end_line"] and comment_end >= issue["start_line"]
+        if overlaps and (comment_start < issue["start_line"] or comment_end > issue["end_line"]):
+            return None
     del lines[lo:hi]
     return "".join(lines)
 

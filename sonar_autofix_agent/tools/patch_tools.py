@@ -283,9 +283,24 @@ def verify_issue_patterns_resolved(
     that matters. `original_content` (the pre-patch file text, already held
     in session state from before the fix ran) is what makes the "before"
     half of that comparison possible; if it isn't supplied, this falls back
-    to the older, coarser "no violation anywhere left in the file" check."""
+    to the older, coarser "no violation anywhere left in the file" check.
+
+    The aggregate count check alone has its own blind spot: it only checks
+    that the TOTAL occurrence count dropped by enough, not that the
+    specific flagged occurrences are the ones that changed. A fix that
+    edits a different, never-flagged occurrence of the same pattern (e.g.
+    an unflagged `.orElseThrow(() -> new RuntimeException(...))` elsewhere
+    in the file) satisfies the count math while leaving the actually-
+    flagged line untouched — confirmed live: ExpenseService.java's two
+    flagged S112 throw-statements were reported "resolved" because the
+    LLM's edit happened to also touch an unrelated, unflagged
+    RuntimeException instantiation, even though one of the two flagged
+    lines was never changed. Closed by additionally requiring each
+    individual issue's own original flagged line(s) to no longer appear
+    verbatim in the patched file."""
     with open(os.path.join(working_dir, file_path), encoding="utf-8") as f:
         after_source = f.read()
+    original_lines = original_content.splitlines() if original_content else []
 
     by_rule: dict[str, list[dict]] = {}
     for issue in issues:
@@ -304,5 +319,11 @@ def verify_issue_patterns_resolved(
             else:
                 resolved = after_count == 0
         for issue in rule_issues:
-            result[issue["issue_key"]] = resolved
+            issue_resolved = resolved
+            if issue_resolved and count_fn is not None and original_lines:
+                lo = max(0, issue["start_line"] - 1)
+                flagged_text = "\n".join(original_lines[lo:issue["end_line"]]).strip()
+                if flagged_text and flagged_text in after_source:
+                    issue_resolved = False
+            result[issue["issue_key"]] = issue_resolved
     return result
