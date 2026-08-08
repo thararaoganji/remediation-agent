@@ -23,13 +23,32 @@ def test_scanned_branch_falls_back_to_default_when_nothing_fixed():
     (get_quality_ratings on an empty {}). branch=None (falling back to
     the project's default branch, still byte-identical to the new branch
     at that point) is the fix."""
-    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: []}
+    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: [], "ce_edition": False}
     assert _scanned_branch(s) is None
 
 
 def test_scanned_branch_uses_own_branch_once_something_was_fixed():
-    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"]}
+    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"], "ce_edition": False}
     assert _scanned_branch(s) == "my-project_agent_20260101_000000"
+
+
+def test_scanned_branch_always_none_under_ce_edition_even_with_files_fixed():
+    """Regression: Community Edition has no branch-aware analysis at all
+    (Developer+ only) -- trigger_sonar_analysis() never passes
+    -Dsonar.branch.name under ce_edition, so the agent's own branch is
+    never created as a server-side entity in Sonar's data model, no
+    matter how many files got committed. Confirmed live: a 5-file WebGoat
+    run under CE_EDITION still 404'd on /api/measures/component for the
+    agent's own branch name -- FILES_COMPLETED being non-empty is not a
+    valid "this branch was scanned" signal under CE the way it is for
+    Developer+."""
+    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"], "ce_edition": True}
+    assert _scanned_branch(s) is None
+
+
+def test_scanned_branch_defaults_to_ce_edition_when_key_missing():
+    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"]}
+    assert _scanned_branch(s) is None
 
 
 # --- _strip_escalate -----------------------------------------------------

@@ -1022,7 +1022,20 @@ def _scanned_branch(s: dict) -> str | None:
     whatever it was created from, the default branch's own already-
     existing rating/ratio (branch=None, the same "omit branch -> Sonar's
     own default" convention fetch_issues_and_hotspots already relies on)
-    is a valid substitute -- no wasted extra scan needed."""
+    is a valid substitute -- no wasted extra scan needed.
+
+    ce_edition additionally forces None regardless of FILES_COMPLETED:
+    Community Edition has no branch-aware analysis at all (that's a
+    Developer+ feature) -- trigger_sonar_analysis() already never passes
+    -Dsonar.branch.name under ce_edition, so this run's own agent branch
+    was NEVER created as a server-side entity, no matter how many files
+    got committed. Confirmed live: a 5-file WebGoat run under CE_EDITION
+    still 404'd on /api/measures/component for the agent's own branch
+    name, because that branch simply doesn't exist in Sonar's data model
+    under CE, full stop -- FILES_COMPLETED being non-empty was never a
+    valid signal for CE the way it is for Developer+."""
+    if s.get("ce_edition", True):
+        return None
     return s[sk.BRANCH_NAME] if s[sk.FILES_COMPLETED] else None
 
 
