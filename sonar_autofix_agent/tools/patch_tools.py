@@ -333,7 +333,28 @@ def verify_issue_patterns_resolved(
     those five issues were ever left open. The per-line check doesn't
     need a rule-specific pattern to catch this: if an issue's own
     original flagged line is still sitting in the file byte-for-byte,
-    it wasn't fixed, full stop — regardless of which rule flagged it."""
+    it wasn't fixed, full stop — regardless of which rule flagged it.
+
+    That per-line check is occurrence-COUNT based, not a simple substring
+    presence check, for the same reason _VIOLATION_COUNT's own before/after
+    comparison is -- a bare "is this text still anywhere in the file"
+    check can't tell "the flagged occurrence got fixed" from "an unrelated,
+    never-flagged occurrence of byte-identical boilerplate elsewhere in the
+    file is untouched". Confirmed live: be-exps-portal's ExpenseService.java
+    had `.orElseThrow(() -> new RuntimeException(EXPENSE_NOT_FOUND_PREFIX +
+    expenseId));` repeated verbatim at four call sites -- Sonar flagged two
+    of them as S112, the fix correctly replaced exactly those two with
+    IllegalArgumentException (confirmed in the actual commit), but the two
+    OTHER, never-flagged call sites still had the identical original text,
+    so the presence check found it "still in the file" and marked both
+    already-fixed issues unresolved anyway -- triggering a pointless narrow
+    retry (which then failed for its own reasons) and leaving a correct fix
+    permanently flagged for manual review. Counting occurrences per exact
+    flagged text (grouped across issues that happen to share identical
+    text, same as _VIOLATION_COUNT groups by rule) fixes this while still
+    catching the original bug this check exists for: if a flagged line's
+    exact text genuinely persists unchanged, its before/after count for
+    that text doesn't drop, so it's still correctly reported unresolved."""
     with open(os.path.join(working_dir, file_path), encoding="utf-8") as f:
         after_source = f.read()
     original_lines = original_content.splitlines() if original_content else []
@@ -355,11 +376,22 @@ def verify_issue_patterns_resolved(
             else:
                 resolved = after_count == 0
         for issue in rule_issues:
-            issue_resolved = resolved
-            if issue_resolved and original_lines:
-                lo = max(0, issue["start_line"] - 1)
-                flagged_text = "\n".join(original_lines[lo:issue["end_line"]]).strip()
-                if _is_meaningful_flagged_text(flagged_text) and flagged_text in after_source:
-                    issue_resolved = False
-            result[issue["issue_key"]] = issue_resolved
+            result[issue["issue_key"]] = resolved
+
+        if not (resolved and original_lines):
+            continue
+
+        text_groups: dict[str, list[dict]] = {}
+        for issue in rule_issues:
+            lo = max(0, issue["start_line"] - 1)
+            flagged_text = "\n".join(original_lines[lo:issue["end_line"]]).strip()
+            if _is_meaningful_flagged_text(flagged_text):
+                text_groups.setdefault(flagged_text, []).append(issue)
+
+        for flagged_text, group_issues in text_groups.items():
+            before_text_count = original_content.count(flagged_text)
+            after_text_count = after_source.count(flagged_text)
+            if (before_text_count - after_text_count) < len(group_issues):
+                for issue in group_issues:
+                    result[issue["issue_key"]] = False
     return result

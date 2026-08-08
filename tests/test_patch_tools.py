@@ -170,6 +170,38 @@ def test_verify_resolved_when_flagged_occurrence_removed_but_unrelated_one_remai
     assert result == {"k1": True, "k2": True}
 
 
+def test_verify_resolved_when_duplicate_flagged_text_survives_at_unflagged_sites(tmp_path):
+    """Regression: exact live bug (be-exps-portal's ExpenseService.java).
+    Two S112 issues share byte-identical flagged text (the same
+    `.orElseThrow(() -> new RuntimeException(...))` boilerplate line
+    repeated across methods) -- both get genuinely fixed, confirmed by the
+    real commit diff, but the identical text also survives at two OTHER,
+    never-flagged call sites in the file. The old "is this text still
+    present ANYWHERE" check found it still there (from the unflagged
+    sites) and marked both already-fixed issues unresolved, triggering a
+    pointless narrow retry and permanently flagging a correct fix for
+    manual review. An occurrence-COUNT comparison (4 before, 2 after, a
+    drop of 2 matching the 2 issues sharing this text) resolves both."""
+    before = (
+        'void a() { x.orElseThrow(() -> new RuntimeException("missing")); }\n'
+        'void b() { y.orElseThrow(() -> new RuntimeException("missing")); }\n'
+        'void c() { z.orElseThrow(() -> new RuntimeException("missing")); }\n'
+        'void d() { w.orElseThrow(() -> new RuntimeException("missing")); }\n'
+    )
+    after = (
+        'void a() { x.orElseThrow(() -> new RuntimeException("missing")); }\n'
+        'void b() { y.orElseThrow(() -> new RuntimeException("missing")); }\n'
+        'void c() { z.orElseThrow(() -> new IllegalArgumentException("missing")); }\n'
+        'void d() { w.orElseThrow(() -> new IllegalArgumentException("missing")); }\n'
+    )
+    _write(tmp_path, "A.java", after)
+    issues = [issue("java:S112", "k1", 3), issue("java:S112", "k2", 4)]
+    result = patch_tools.verify_issue_patterns_resolved(
+        "A.java", issues, str(tmp_path), original_content=before,
+    )
+    assert result == {"k1": True, "k2": True}
+
+
 def test_verify_unresolved_when_flagged_occurrence_still_present(tmp_path):
     before = 'void a() { throw new RuntimeException("x"); }\n'
     after = before  # not actually fixed
