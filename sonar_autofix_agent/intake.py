@@ -1,7 +1,7 @@
 """
 Conversational front door for the Sonar Auto-Fix Agent.
 
-The rest of the graph (agents.py's pipeline_agent) is a deterministic
+The rest of the graph (the agents package's pipeline_agent) is a deterministic
 run-to-completion pipeline that expects `source` / `source_type` already
 seeded in session.state before it starts — it was never meant to be chatted
 with. This module adds the one conversational step this project actually
@@ -25,7 +25,7 @@ escalate=True from a sub-agent inside a plain SequentialAgent does nothing
 to stop it; the next sub-agent (pipeline_agent's SetupStep) still ran in
 the same turn and crashed on a missing `source` key. IntakeStep now invokes
 pipeline_agent itself — manually, via .run_async(ctx), the same pattern
-CheckpointGate already uses for checkpoint_pipeline in agents.py — only
+CheckpointGate already uses for checkpoint_pipeline (agents/checkpoint.py) — only
 once source/source_type are actually in state. When they aren't, it simply
 returns without invoking anything further, which is the only thing that
 actually stops execution for this turn.
@@ -265,7 +265,7 @@ class IntakeStep(BaseAgent):
             # server reachable with a valid token and an actual analysis
             # under this project key) all deliberately raise before any
             # issue fetch or LLM call and
-            # deliberately are NOT caught inside agents.py — this is the
+            # deliberately are NOT caught inside the agents package — this is the
             # one place that turns that into a clean chat message instead
             # of an unhandled exception reaching adk web's request handler.
             yield Event(

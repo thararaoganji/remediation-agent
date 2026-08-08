@@ -1,5 +1,5 @@
 """
-Direct tests for the BaseAgent orchestration classes in agents.py -- the
+Direct tests for the BaseAgent orchestration classes in the agents package -- the
 part of the codebase test_agents.py's module docstring explicitly scopes
 out ("need a real ADK InvocationContext"). Every bug found live this
 session (NO_SAFE_FIX corruption, the S125 wrong-line miss, the
@@ -224,8 +224,8 @@ def test_retry_unresolved_issues_resolves_a_genuine_miss(tmp_path, monkeypatch):
     _git(["commit", "-m", "init"], str(repo))
 
     diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n class A {\n-  int x = 1;\n+  int x = 2;\n }\n"
-    monkeypatch.setattr(agents, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
-    monkeypatch.setattr(agents, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(agents.fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
+    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {
@@ -250,10 +250,10 @@ def test_retry_unresolved_issues_declines_via_no_safe_fix(tmp_path, monkeypatch)
     _git(["commit", "-m", "init"], str(repo))
 
     monkeypatch.setattr(
-        agents, "_build_fix_llm_agent",
+        agents.fix, "_build_fix_llm_agent",
         lambda: _stub_fix_llm_agent("NO_SAFE_FIX: needs a caller-side contract change"),
     )
-    monkeypatch.setattr(agents, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -279,8 +279,8 @@ def test_retry_unresolved_issues_reverts_on_compile_failure(tmp_path, monkeypatc
     _git(["commit", "-m", "init"], str(repo))
 
     diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n class A {\n-  int x = 1;\n+  int x = 2;\n }\n"
-    monkeypatch.setattr(agents, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
-    monkeypatch.setattr(agents, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=False))
+    monkeypatch.setattr(agents.fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
+    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=False))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}

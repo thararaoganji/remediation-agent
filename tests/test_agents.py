@@ -1,5 +1,5 @@
 """
-agents.py's BaseAgent orchestration classes need a real ADK InvocationContext
+The agents package's BaseAgent orchestration classes need a real ADK InvocationContext
 to exercise directly (see README's "Running tests" section) -- out of scope
 here. This covers the plain, context-free helper functions instead.
 """
