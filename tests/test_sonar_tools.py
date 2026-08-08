@@ -117,50 +117,31 @@ def test_partition_drops_out_of_scope_issues_entirely():
     assert review_queue == []
 
 
-def test_partition_small_batch_keeps_hotspot_after_maintainability():
-    """Below LARGE_PROJECT_ISSUE_THRESHOLD, the default CATEGORY_RANK
-    applies unchanged (Maintainability before Hotspot)."""
+def test_partition_ranks_hotspot_ahead_of_maintainability():
+    """Security Hotspots block the quality gate the same way an unfixed
+    vulnerability does; Maintainability is a debt ratio that tolerates
+    partial progress. This ordering applies unconditionally, regardless
+    of how many issues are in the batch."""
     issues = [
         {"category": "HOTSPOT", "vulnerability_probability": "HIGH", "component_path": "Spot.java", "issue_key": "h1"},
         {"category": "MAINTAINABILITY", "severity": "CRITICAL", "component_path": "Debt.java", "issue_key": "m1"},
     ]
     file_groups, _ = sonar_tools.partition_and_prioritize(issues)
-    assert [g["file"] for g in file_groups] == ["Debt.java", "Spot.java"]
+    assert [g["file"] for g in file_groups] == ["Spot.java", "Debt.java"]
 
 
-def test_partition_large_batch_demotes_maintainability_below_hotspot():
-    """Regression: on a big backlog (e.g. WebGoat's 864 issues), a capped
-    outer_loop can spend its whole iteration budget on files ordered
-    ahead of the ones that actually gate the Sonar quality gate.
-    security_rating/reliability_rating are each driven by the single
-    worst open issue project-wide, and an unreviewed Hotspot blocks the
-    gate the same way -- Maintainability is a debt ratio, not a
-    worst-issue gate, so it should sort last once the backlog is large
-    enough that iteration budget is a real constraint."""
+def test_partition_ranks_all_four_categories_in_order():
+    """Security, then Reliability, then Security Hotspots, then
+    Maintainability -- every file whose worst issue is in an earlier
+    category sorts before every file whose worst issue is in a later one."""
     issues = [
-        {"category": "HOTSPOT", "vulnerability_probability": "HIGH", "component_path": "Spot.java", "issue_key": "h1"},
         {"category": "MAINTAINABILITY", "severity": "CRITICAL", "component_path": "Debt.java", "issue_key": "m1"},
-    ] + [
-        {"category": "MAINTAINABILITY", "severity": "CRITICAL", "component_path": f"Filler{n}.java", "issue_key": f"f{n}"}
-        for n in range(sonar_tools.LARGE_PROJECT_ISSUE_THRESHOLD)
-    ]
-    file_groups, _ = sonar_tools.partition_and_prioritize(issues)
-    assert [g["file"] for g in file_groups[:2]] == ["Spot.java", "Debt.java"]
-
-
-def test_partition_large_batch_still_ranks_security_before_reliability():
-    """The large-project reordering only demotes Maintainability below
-    Hotspot -- it doesn't change Security vs Reliability vs Hotspot
-    relative order."""
-    issues = [
+        {"category": "HOTSPOT", "vulnerability_probability": "HIGH", "component_path": "Spot.java", "issue_key": "h1"},
         {"category": "RELIABILITY", "severity": "CRITICAL", "component_path": "Rel.java", "issue_key": "r1"},
         {"category": "SECURITY", "severity": "CRITICAL", "component_path": "Sec.java", "issue_key": "s1"},
-    ] + [
-        {"category": "MAINTAINABILITY", "severity": "CRITICAL", "component_path": f"Filler{n}.java", "issue_key": f"f{n}"}
-        for n in range(sonar_tools.LARGE_PROJECT_ISSUE_THRESHOLD)
     ]
     file_groups, _ = sonar_tools.partition_and_prioritize(issues)
-    assert [g["file"] for g in file_groups[:2]] == ["Sec.java", "Rel.java"]
+    assert [g["file"] for g in file_groups] == ["Sec.java", "Rel.java", "Spot.java", "Debt.java"]
 
 
 # --- validate_connection / check_project_analyzed (mocked HTTP) ------------
