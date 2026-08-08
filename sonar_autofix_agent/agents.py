@@ -307,6 +307,7 @@ class SetupStep(BaseAgent):
         s.setdefault(sk.FILES_SINCE_CHECKPOINT, 0)
         s.setdefault(sk.FILES_COMPLETED, [])
         s.setdefault(sk.FILES_FLAGGED, [])
+        s.setdefault(sk.FILES_REVERTED_AT_CHECKPOINT, [])
         s.setdefault(sk.ISSUES_FIXED, [])
         s.setdefault(sk.ISSUES_NO_SAFE_FIX, [])
         s.setdefault(sk.CHECKPOINTS, [])
@@ -324,7 +325,9 @@ class SetupStep(BaseAgent):
         # run in git_tools.commit()). Only reconstructs when state is
         # actually empty, so a real same-session resume is untouched.
         if resumed and not s[sk.FILES_COMPLETED]:
-            s[sk.FILES_COMPLETED] = git_tools.completed_files_from_history(working_dir)
+            s[sk.FILES_COMPLETED], s[sk.FILES_REVERTED_AT_CHECKPOINT] = (
+                git_tools.completed_files_from_history(working_dir)
+            )
         verb = "Resumed" if resumed else "Checked out"
         yield Event(author=self.name, content=_msg(f"{verb} branch `{branch_name}`. Fetching Sonar issues next."))
 
@@ -361,8 +364,21 @@ class FetchPrioritizeStep(BaseAgent):
             i for i in review_queue if i["issue_key"] not in existing_review_keys
         )
 
-        completed = set(s[sk.FILES_COMPLETED])
-        remaining = [g for g in ordered if g["file"] not in completed]
+        # FILES_REVERTED_AT_CHECKPOINT (not just FILES_COMPLETED) is also
+        # excluded here -- a file whose fix already broke the full build or
+        # introduced new Sonar issues at a checkpoint earlier in THIS run is
+        # out of scope for automatic re-attempt, not just "not yet done".
+        # Without this, a re-fetch on the next outer_loop iteration sees the
+        # same file as simply missing from FILES_COMPLETED (reverts remove
+        # it from there) and queues the exact same fix again -- confirmed
+        # live: spring-petclinic's VisitController.java S4684 fix broke 6
+        # interconnected files' tests, got bisect-reverted, then got
+        # reattempted identically on every subsequent outer_loop iteration,
+        # each cycle re-running the full test suite up to 7 times to
+        # re-discover the same failure. FILES_FLAGGED already records the
+        # reason for the final report; this is what actually stops the retry.
+        excluded = set(s[sk.FILES_COMPLETED]) | set(s[sk.FILES_REVERTED_AT_CHECKPOINT])
+        remaining = [g for g in ordered if g["file"] not in excluded]
 
         # build_fix_prompt() needs rule_description per issue (Section 6);
         # fetched lazily here, scoped to only the in-scope autofix issues
@@ -966,6 +982,8 @@ class RunFullVerifyStep(BaseAgent):
             for entry in reverted:
                 if entry["file"] in s[sk.FILES_COMPLETED]:
                     s[sk.FILES_COMPLETED].remove(entry["file"])
+                if entry["file"] not in s[sk.FILES_REVERTED_AT_CHECKPOINT]:
+                    s[sk.FILES_REVERTED_AT_CHECKPOINT].append(entry["file"])
                 s[sk.FILES_FLAGGED].append({
                     "file": entry["file"],
                     "reason": revert_reason,
@@ -1034,6 +1052,8 @@ class TriggerAndReconcileScanStep(BaseAgent):
                 reverted_files.append(entry["file"])
                 if entry["file"] in s[sk.FILES_COMPLETED]:
                     s[sk.FILES_COMPLETED].remove(entry["file"])
+                if entry["file"] not in s[sk.FILES_REVERTED_AT_CHECKPOINT]:
+                    s[sk.FILES_REVERTED_AT_CHECKPOINT].append(entry["file"])
                 s[sk.ISSUES_FIXED] = [k for k in s[sk.ISSUES_FIXED] if k not in entry["issue_keys"]]
                 new_count = sum(1 for i in new_issues if i["component_path"] == file)
                 s[sk.FILES_FLAGGED].append({
@@ -1229,7 +1249,7 @@ class MaintainabilityDebtCheckStep(BaseAgent):
             return
 
         candidates = sonar_tools.debt_ratio_expansion_candidates(s.get("temp:all_fetched_issues", []))
-        already_done = set(s[sk.FILES_COMPLETED])
+        already_done = set(s[sk.FILES_COMPLETED]) | set(s[sk.FILES_REVERTED_AT_CHECKPOINT])
         batch_size = s[sk.MAINTAINABILITY_EXPANSION_BATCH_SIZE]
         next_batch = [i for i in candidates if i["component_path"] not in already_done][:batch_size]
 

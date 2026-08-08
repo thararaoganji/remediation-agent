@@ -160,24 +160,32 @@ _FIX_COMMIT_RE = re.compile(r"^fix: sonar issues in (.+)$")
 _REVERT_COMMIT_RE = re.compile(r"^revert: (.+) broke the full build at checkpoint$")
 
 
-def completed_files_from_history(working_dir: str) -> list[str]:
-    """Reconstructs which files this branch has already had successfully
-    committed (and not since reverted) by replaying its own commit log,
-    oldest first, so a later revert commit correctly cancels out its
-    matching earlier fix commit.
+def completed_files_from_history(working_dir: str) -> tuple[list[str], list[str]]:
+    """Reconstructs (completed, reverted) by replaying this branch's own
+    commit log, oldest first, so a later revert commit correctly cancels
+    out its matching earlier fix commit, and a later fix commit correctly
+    re-completes a file that was reverted earlier in the same history.
 
     Exists for find_or_create_branch()'s resume path: InMemorySessionService
     has no cross-invocation persistence, so a genuinely new session resuming
     a branch that already has commits on it (from an earlier, separate
     invocation against the same local repo) would otherwise start
-    FILES_COMPLETED empty — even though the branch it just checked out may
-    already have real fix commits sitting on disk — and silently re-queue
-    and re-fix every one of them from scratch. SetupStep calls this only
-    when session state is actually empty on a resumed branch, so it never
-    overwrites a genuine same-session resume that already has this
-    populated correctly."""
+    FILES_COMPLETED/FILES_REVERTED_AT_CHECKPOINT empty — even though the
+    branch it just checked out may already have real fix commits (and real
+    reverts) sitting on disk — and silently re-queue and re-attempt every
+    one of them from scratch, including ones already known to break the
+    build. SetupStep calls this only when session state is actually empty
+    on a resumed branch, so it never overwrites a genuine same-session
+    resume that already has this populated correctly.
+
+    reverted is "has a revert commit AND isn't back in completed" — a file
+    reverted once but successfully re-fixed by a LATER commit in the same
+    history is correctly NOT in reverted (it's in completed instead); only
+    a file whose most recent outcome was a revert, with no successful
+    re-fix after it, counts."""
     log = _run(["git", "log", "--reverse", "--format=%s"], cwd=working_dir).stdout
     completed: list[str] = []
+    ever_reverted: set[str] = set()
     for line in log.splitlines():
         m = _FIX_COMMIT_RE.match(line)
         if m:
@@ -186,9 +194,13 @@ def completed_files_from_history(working_dir: str) -> list[str]:
                 completed.append(f)
             continue
         m = _REVERT_COMMIT_RE.match(line)
-        if m and m.group(1) in completed:
-            completed.remove(m.group(1))
-    return completed
+        if m:
+            f = m.group(1)
+            ever_reverted.add(f)
+            if f in completed:
+                completed.remove(f)
+    reverted = [f for f in ever_reverted if f not in completed]
+    return completed, reverted
 
 
 def commit(working_dir: str, message: str) -> str | None:

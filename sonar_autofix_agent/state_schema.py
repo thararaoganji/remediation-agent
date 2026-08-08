@@ -28,6 +28,13 @@ FILES_COMPLETED = "files_completed"
 FILES_FLAGGED = "files_flagged_for_manual_review"
 ISSUES_FIXED = "issues_fixed"
 ISSUES_NO_SAFE_FIX = "issues_no_safe_fix"
+# Files whose fix broke the full build or introduced new Sonar issues at a
+# checkpoint, at any point in this run -- excluded from FetchPrioritizeStep's
+# re-fetch permanently (not just for the iteration it happened in), so an
+# out-of-scope fix that keeps failing the same way doesn't get re-attempted
+# identically every outer_loop iteration. See RunFullVerifyStep/
+# TriggerAndReconcileScanStep in agents.py.
+FILES_REVERTED_AT_CHECKPOINT = "files_reverted_at_checkpoint"
 
 # --- Human-review lane (Minor/Low Security & Reliability candidates) ---
 WONT_FIX_REVIEW_QUEUE = "wont_fix_review_queue"        # never auto-resolved

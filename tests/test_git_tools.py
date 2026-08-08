@@ -94,7 +94,7 @@ def test_completed_files_from_history_tracks_fix_commits(git_repo):
     _git(["add", "-A"], str(git_repo))
     _git(["commit", "-m", "fix: sonar issues in B.java"], str(git_repo))
 
-    assert git_tools.completed_files_from_history(str(git_repo)) == ["A.java", "B.java"]
+    assert git_tools.completed_files_from_history(str(git_repo)) == (["A.java", "B.java"], [])
 
 
 def test_completed_files_from_history_revert_cancels_matching_fix(git_repo):
@@ -115,7 +115,34 @@ def test_completed_files_from_history_revert_cancels_matching_fix(git_repo):
     _git(["add", "-A"], str(git_repo))
     _git(["commit", "-m", "revert: A.java broke the full build at checkpoint"], str(git_repo))
 
-    assert git_tools.completed_files_from_history(str(git_repo)) == ["B.java"]
+    # A.java is neither completed (reverted, cancelling its fix commit) nor
+    # eligible for re-attempt (out of scope, per its revert) -- reverted
+    # feeds FILES_REVERTED_AT_CHECKPOINT so a resumed run doesn't re-queue it.
+    assert git_tools.completed_files_from_history(str(git_repo)) == (["B.java"], ["A.java"])
+
+
+def test_completed_files_from_history_later_fix_clears_earlier_revert(git_repo):
+    """Regression: a file reverted once but successfully re-fixed by a
+    LATER commit in the same history must end up in completed, not stuck
+    in reverted forever -- reverted only reflects the file's MOST RECENT
+    outcome, not "was ever reverted at any point"."""
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("y")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "revert: A.java broke the full build at checkpoint"], str(git_repo))
+
+    (git_repo / "A.java").write_text("z")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+
+    assert git_tools.completed_files_from_history(str(git_repo)) == (["A.java"], [])
 
 
 def test_completed_files_from_history_ignores_unrelated_commits(git_repo):
@@ -124,7 +151,7 @@ def test_completed_files_from_history_ignores_unrelated_commits(git_repo):
     _git(["commit", "-m", "init"], str(git_repo))
     _git(["commit", "--allow-empty", "-m", "checkpoint: verified + rescanned clean"], str(git_repo))
 
-    assert git_tools.completed_files_from_history(str(git_repo)) == []
+    assert git_tools.completed_files_from_history(str(git_repo)) == ([], [])
 
 
 # --- commit() no-op semantics ------------------------------------------------
