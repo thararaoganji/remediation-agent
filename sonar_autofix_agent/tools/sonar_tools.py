@@ -260,9 +260,9 @@ def fetch_issues_and_hotspots(sonar_base_url: str, project_key: str, token: str,
     choice here — not a bug. Pass None to read the PROJECT'S DEFAULT branch
     (Sonar's own fallback when `branch` is omitted from the API call): used
     by FetchPrioritizeStep to discover what needs fixing, since a freshly
-    created `{project_key}_agent_*` branch (see git_tools.
-    find_or_create_branch) has no Sonar analysis of its own yet — it hasn't
-    been scanned — so querying it by name 404s. The default branch is the
+    created `{project_key}_agent_*` branch (see git_tools.create_branch)
+    has no Sonar analysis of its own yet — it hasn't been scanned — so
+    querying it by name 404s. The default branch is the
     one thing guaranteed to already have analysis data to start from.
     Pass the actual branch name once the agent's own branch HAS been
     scanned at least once (checkpoint_pipeline's TriggerAndReconcileScanStep

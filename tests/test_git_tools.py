@@ -78,80 +78,36 @@ def test_sanitized_branch_name_is_actually_valid_git_ref():
         assert result.returncode == 0, f"{branch!r} is not a valid git ref (from {raw_key!r})"
 
 
-# --- completed_files_from_history -------------------------------------------
+# --- create_branch -----------------------------------------------------------
 
-def test_completed_files_from_history_tracks_fix_commits(git_repo):
-    for name in ("A.java", "B.java"):
-        (git_repo / name).write_text("x")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "init"], str(git_repo))
-
-    (git_repo / "A.java").write_text("y")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
-
-    (git_repo / "B.java").write_text("z")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "fix: sonar issues in B.java"], str(git_repo))
-
-    assert git_tools.completed_files_from_history(str(git_repo)) == (["A.java", "B.java"], [])
-
-
-def test_completed_files_from_history_revert_cancels_matching_fix(git_repo):
-    for name in ("A.java", "B.java"):
-        (git_repo / name).write_text("x")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "init"], str(git_repo))
-
-    (git_repo / "A.java").write_text("y")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
-
-    (git_repo / "B.java").write_text("z")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "fix: sonar issues in B.java"], str(git_repo))
-
-    (git_repo / "A.java").write_text("x")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "revert: A.java broke the full build at checkpoint"], str(git_repo))
-
-    # A.java is neither completed (reverted, cancelling its fix commit) nor
-    # eligible for re-attempt (out of scope, per its revert) -- reverted
-    # feeds FILES_REVERTED_AT_CHECKPOINT so a resumed run doesn't re-queue it.
-    assert git_tools.completed_files_from_history(str(git_repo)) == (["B.java"], ["A.java"])
-
-
-def test_completed_files_from_history_later_fix_clears_earlier_revert(git_repo):
-    """Regression: a file reverted once but successfully re-fixed by a
-    LATER commit in the same history must end up in completed, not stuck
-    in reverted forever -- reverted only reflects the file's MOST RECENT
-    outcome, not "was ever reverted at any point"."""
+def test_create_branch_creates_and_checks_out_new_branch(git_repo):
     (git_repo / "A.java").write_text("x")
     _git(["add", "-A"], str(git_repo))
     _git(["commit", "-m", "init"], str(git_repo))
 
-    (git_repo / "A.java").write_text("y")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
-
-    (git_repo / "A.java").write_text("x")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "revert: A.java broke the full build at checkpoint"], str(git_repo))
-
-    (git_repo / "A.java").write_text("z")
-    _git(["add", "-A"], str(git_repo))
-    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
-
-    assert git_tools.completed_files_from_history(str(git_repo)) == (["A.java"], [])
+    branch_name = git_tools.create_branch(str(git_repo), "my-project", "20260101_000000")
+    assert branch_name == "my-project_agent_20260101_000000"
+    current = _git(["branch", "--show-current"], str(git_repo)).stdout.strip()
+    assert current == branch_name
 
 
-def test_completed_files_from_history_ignores_unrelated_commits(git_repo):
+def test_create_branch_ignores_an_existing_matching_branch(git_repo):
+    """Regression: create_branch used to look for and resume a matching
+    existing branch first. Removed by explicit request after repeatedly
+    hitting friction from it in practice -- a file already correctly
+    flagged as needing another look would resume into looking "done"
+    forever, with no automatic way back short of deleting the branch by
+    hand. Always creates fresh now, even if a same-named branch from an
+    earlier run already exists on this repo -- git itself will raise if
+    the exact branch name collides (extremely unlikely given the
+    timestamp suffix), this isn't silently resuming into it."""
     (git_repo / "A.java").write_text("x")
     _git(["add", "-A"], str(git_repo))
     _git(["commit", "-m", "init"], str(git_repo))
-    _git(["commit", "--allow-empty", "-m", "checkpoint: verified + rescanned clean"], str(git_repo))
+    _git(["branch", "my-project_agent_20250101_000000"], str(git_repo))  # a stale, unrelated prior branch
 
-    assert git_tools.completed_files_from_history(str(git_repo)) == ([], [])
+    branch_name = git_tools.create_branch(str(git_repo), "my-project", "20260101_000000")
+    assert branch_name == "my-project_agent_20260101_000000"  # new timestamp, not the stale branch
 
 
 # --- commit() no-op semantics ------------------------------------------------

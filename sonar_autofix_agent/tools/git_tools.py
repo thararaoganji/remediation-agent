@@ -140,67 +140,29 @@ def _sanitize_branch_component(value: str) -> str:
     return sanitized or "project"
 
 
-def find_or_create_branch(working_dir: str, sonar_project_key: str, timestamp: str) -> tuple[str, bool]:
-    """Section 3 step 4: branch created exactly once per logical run;
-    re-invocations resume rather than re-create."""
+def create_branch(working_dir: str, sonar_project_key: str, timestamp: str) -> str:
+    """Section 3 step 4: always creates a brand-new
+    {project_key}_agent_{timestamp} branch from the current HEAD.
+
+    Used to look for and resume a matching existing branch first —
+    removed by explicit request after repeatedly hitting friction from
+    it in practice: InMemorySessionService has no cross-invocation
+    persistence, so a genuinely new session resuming a branch with real
+    commits already on it had to reconstruct FILES_COMPLETED /
+    FILES_REVERTED_AT_CHECKPOINT from git history, and a file already
+    correctly flagged as needing another look (broke the build, or
+    verification caught a genuine miss) would otherwise sit "resumed"
+    into looking done forever, with no automatic way back to a real
+    re-attempt short of deleting the branch by hand — which is exactly
+    what ended up happening before every real test run this session. A
+    GitHub source already behaved this way in practice (resolve_source()
+    wipes and re-clones every time, so an existing local branch to
+    resume essentially never exists) — this makes local source match
+    that, rather than being the one path with different semantics."""
     prefix = f"{_sanitize_branch_component(sonar_project_key)}_agent_"
-    existing = _run(["git", "branch", "--list", f"{prefix}*"], cwd=working_dir).stdout.strip()
-
-    if existing:
-        branch_name = existing.lstrip("* ").splitlines()[0].strip()
-        _run(["git", "checkout", branch_name], cwd=working_dir)
-        return branch_name, True
-
     branch_name = f"{prefix}{timestamp}"
     _run(["git", "checkout", "-b", branch_name], cwd=working_dir)
-    return branch_name, False
-
-
-_FIX_COMMIT_RE = re.compile(r"^fix: sonar issues in (.+)$")
-_REVERT_COMMIT_RE = re.compile(r"^revert: (.+) broke the full build at checkpoint$")
-
-
-def completed_files_from_history(working_dir: str) -> tuple[list[str], list[str]]:
-    """Reconstructs (completed, reverted) by replaying this branch's own
-    commit log, oldest first, so a later revert commit correctly cancels
-    out its matching earlier fix commit, and a later fix commit correctly
-    re-completes a file that was reverted earlier in the same history.
-
-    Exists for find_or_create_branch()'s resume path: InMemorySessionService
-    has no cross-invocation persistence, so a genuinely new session resuming
-    a branch that already has commits on it (from an earlier, separate
-    invocation against the same local repo) would otherwise start
-    FILES_COMPLETED/FILES_REVERTED_AT_CHECKPOINT empty — even though the
-    branch it just checked out may already have real fix commits (and real
-    reverts) sitting on disk — and silently re-queue and re-attempt every
-    one of them from scratch, including ones already known to break the
-    build. SetupStep calls this only when session state is actually empty
-    on a resumed branch, so it never overwrites a genuine same-session
-    resume that already has this populated correctly.
-
-    reverted is "has a revert commit AND isn't back in completed" — a file
-    reverted once but successfully re-fixed by a LATER commit in the same
-    history is correctly NOT in reverted (it's in completed instead); only
-    a file whose most recent outcome was a revert, with no successful
-    re-fix after it, counts."""
-    log = _run(["git", "log", "--reverse", "--format=%s"], cwd=working_dir).stdout
-    completed: list[str] = []
-    ever_reverted: set[str] = set()
-    for line in log.splitlines():
-        m = _FIX_COMMIT_RE.match(line)
-        if m:
-            f = m.group(1)
-            if f not in completed:
-                completed.append(f)
-            continue
-        m = _REVERT_COMMIT_RE.match(line)
-        if m:
-            f = m.group(1)
-            ever_reverted.add(f)
-            if f in completed:
-                completed.remove(f)
-    reverted = [f for f in ever_reverted if f not in completed]
-    return completed, reverted
+    return branch_name
 
 
 def commit(working_dir: str, message: str) -> str | None:

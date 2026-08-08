@@ -297,7 +297,7 @@ class SetupStep(BaseAgent):
         sonar_tools.validate_connection(s["sonar_base_url"], s["sonar_token"])
         sonar_tools.check_project_analyzed(s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"])
 
-        branch_name, resumed = git_tools.find_or_create_branch(
+        branch_name = git_tools.create_branch(
             working_dir, s[sk.SONAR_PROJECT_KEY], s.get("timestamp", "")
         )
         s[sk.WORKING_DIR] = working_dir
@@ -316,22 +316,7 @@ class SetupStep(BaseAgent):
         s.setdefault(sk.WONT_FIX_REVIEW_QUEUE, [])
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_ITERATION, 0)
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_BATCH_SIZE, 8)
-        # Resuming a run: ADK's SessionService is relied on to have already
-        # restored the above from persisted state — but InMemorySessionService
-        # has no cross-invocation persistence, so a genuinely new session
-        # resuming a branch with real commits already on it (from an
-        # earlier, separate invocation against the same local repo) would
-        # otherwise start FILES_COMPLETED empty and silently re-fix every
-        # already-fixed file from scratch (observed live — a redundant
-        # re-fix that happened to produce a no-op diff crashed the whole
-        # run in git_tools.commit()). Only reconstructs when state is
-        # actually empty, so a real same-session resume is untouched.
-        if resumed and not s[sk.FILES_COMPLETED]:
-            s[sk.FILES_COMPLETED], s[sk.FILES_REVERTED_AT_CHECKPOINT] = (
-                git_tools.completed_files_from_history(working_dir)
-            )
-        verb = "Resumed" if resumed else "Checked out"
-        yield Event(author=self.name, content=_msg(f"{verb} branch `{branch_name}`. Fetching Sonar issues next."))
+        yield Event(author=self.name, content=_msg(f"Checked out branch `{branch_name}`. Fetching Sonar issues next."))
 
 
 # ---------------------------------------------------------------------------
