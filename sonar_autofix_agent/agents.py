@@ -626,6 +626,110 @@ class ApplyAndVerifyStep(BaseAgent):
             f"Full-file fix for `{group['file']}` generated — verifying."
         ))
 
+    async def _retry_unresolved_issues(
+        self, ctx: InvocationContext, group: dict, working_dir: str, unresolved_keys: list[str],
+    ) -> AsyncGenerator[Event, None]:
+        """One narrow follow-up call, scoped to just the issue(s)
+        verify_issue_patterns_resolved found still unresolved after the
+        main fix -- this was a documented TODO hook ("wire a second,
+        narrower fix_llm_agent invocation here if you hit this in
+        practice") that sat unimplemented until it blocked real progress
+        twice in one session: ExpenseService.java's S112 fix touched an
+        unrelated occurrence and left the actually-flagged line alone,
+        then PetClinicRuntimeHints.java's S125 fix edited the wrong one
+        of two adjacent trailing-comment lines. Both cases are exactly
+        what a focused second prompt is suited for -- naming precisely
+        which issue(s) weren't resolved and where is a meaningfully
+        different, easier task than the original "fix N issues in this
+        file" batch that produced the mistake.
+
+        Applied against the file's CURRENT on-disk content (already
+        reflects whatever DID succeed from the main attempt) as the
+        retry's starting point, not the original pre-fix content --
+        re-doing already-correct changes isn't the goal. Only reverts
+        back to that pre-retry content if the retry's compile check
+        fails; a retry that compiles but only resolves SOME of the
+        unresolved issues still keeps that partial progress rather than
+        discarding it, since it's strictly more correct than not
+        retrying at all and doesn't risk anything the compile check
+        wouldn't already catch.
+
+        Sets state["temp:retry_unresolved_ok"] to {issue_key: resolved}
+        for unresolved_keys (async generators can't `return` a value) --
+        the caller checks it once this generator is fully drained."""
+        s = ctx.session.state
+        with open(os.path.join(working_dir, group["file"]), encoding="utf-8") as f:
+            pre_retry_content = f.read()
+        s["temp:retry_unresolved_ok"] = {k: False for k in unresolved_keys}
+
+        retry_issues = [i for i in group["issues"] if i["issue_key"] in unresolved_keys]
+        adapter = get_adapter(s[sk.LANGUAGE], working_dir)
+        s["temp:fix_prompt"] = build_fix_prompt(
+            file_path=group["file"],
+            language=s[sk.LANGUAGE],
+            file_content=pre_retry_content,
+            issues_bottom_to_top=retry_issues,
+            language_addendum=adapter.get_fix_prompt_addendum(),
+            output_format=(
+                "A PREVIOUS attempt at this file already ran and did NOT actually "
+                "resolve the issue(s) below — each one's flagged code is still present, "
+                "completely unchanged, at the exact line(s) given. Look carefully at "
+                "those specific line numbers before editing anything; do not assume "
+                "the previous attempt's guess at the right location was correct. This "
+                "is a focused retry for ONLY these issue(s), against the file's CURRENT "
+                "content (which already reflects any other, already-successful fixes). "
+                "Output a unified diff, same as before."
+            ),
+        )
+        retry_agent = _build_fix_llm_agent()
+        async for event in retry_agent.run_async(ctx):
+            yield _hide_text(event)
+
+        raw = s.get(sk.PROPOSED_DIFF, "")
+        no_safe_fix_reason = _no_safe_fix_reason(raw)
+        if no_safe_fix_reason is not None:
+            s["temp:no_safe_fix_reason"] = no_safe_fix_reason
+            yield Event(author=self.name, content=_msg(
+                f"Narrow retry for `{group['file']}` declined: {no_safe_fix_reason}"
+            ))
+            return
+
+        applied = patch_tools.apply_diff(raw, working_dir, group["file"])
+        if not applied:
+            content = _extract_code_block(raw).strip()
+            no_safe_fix_reason = _no_safe_fix_reason(content)
+            if no_safe_fix_reason is not None:
+                s["temp:no_safe_fix_reason"] = no_safe_fix_reason
+                yield Event(author=self.name, content=_msg(
+                    f"Narrow retry for `{group['file']}` declined: {no_safe_fix_reason}"
+                ))
+                return
+            if not content or _looks_like_diff(content):
+                yield Event(author=self.name, content=_msg(
+                    f"Narrow retry for `{group['file']}` failed to apply — still flagged for manual review."
+                ))
+                return
+            with open(os.path.join(working_dir, group["file"]), "w", encoding="utf-8") as f:
+                f.write(content)
+
+        result = adapter.quick_compile_check(working_dir, scope=group["file"])
+        if not result.passed:
+            with open(os.path.join(working_dir, group["file"]), "w", encoding="utf-8") as f:
+                f.write(pre_retry_content)
+            yield Event(author=self.name, content=_msg(
+                f"Narrow retry for `{group['file']}` failed to compile — reverted, still flagged for manual review."
+            ))
+            return
+
+        s["temp:retry_unresolved_ok"] = patch_tools.verify_issue_patterns_resolved(
+            group["file"], retry_issues, working_dir, original_content=pre_retry_content,
+        )
+        resolved_count = sum(1 for ok in s["temp:retry_unresolved_ok"].values() if ok)
+        yield Event(author=self.name, content=_msg(
+            f"Narrow retry for `{group['file']}` resolved {resolved_count}/{len(unresolved_keys)} "
+            "previously-unresolved issue(s)."
+        ))
+
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         group = s[sk.CURRENT_FILE_GROUP]
@@ -751,12 +855,16 @@ class ApplyAndVerifyStep(BaseAgent):
         )
         unresolved = [k for k, ok in verification.items() if not ok]
         if unresolved:
-            # Fallback path: narrow single-issue follow-up call, scoped to
-            # just the unresolved issue(s) against the already-patched file.
-            # (Left as a TODO hook — wire a second, narrower fix_llm_agent
-            # invocation here if you hit this in practice; per the 5.2/6.1
-            # resolution this should be rare, not the steady-state path.)
-            s[sk.FILES_FLAGGED].append({"file": group["file"], "reason": f"unresolved after patch: {unresolved}"})
+            async for event in self._retry_unresolved_issues(ctx, group, working_dir, unresolved):
+                yield event
+            retry_result = s.get("temp:retry_unresolved_ok", {})
+            unresolved = [k for k in unresolved if not retry_result.get(k, False)]
+            no_safe_fix_reason = s.pop("temp:no_safe_fix_reason", None)
+            if unresolved:
+                s[sk.FILES_FLAGGED].append({
+                    "file": group["file"],
+                    "reason": no_safe_fix_reason or f"unresolved after patch: {unresolved}",
+                })
 
         commit_sha = git_tools.commit(working_dir, f"fix: sonar issues in {group['file']}")
         s[sk.FILES_COMPLETED].append(group["file"])
