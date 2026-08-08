@@ -73,7 +73,12 @@ class MaintainabilityDebtCheckStep(BaseAgent):
             return
 
         candidates = sonar_tools.debt_ratio_expansion_candidates(s.get("temp:all_fetched_issues", []))
-        already_done = set(s[sk.FILES_COMPLETED]) | set(s[sk.FILES_REVERTED_AT_CHECKPOINT])
+        # Same exclusion set as FetchPrioritizeStep (outer_loop.py) and for
+        # the same reason -- a file already flagged in the main pass (e.g.
+        # NO_SAFE_FIX declined) is out of scope here too, not a fresh
+        # candidate just because it's being considered by a different loop.
+        already_done = set(s[sk.FILES_COMPLETED]) | set(s[sk.FILES_REVERTED_AT_CHECKPOINT]) \
+            | {f["file"] for f in s[sk.FILES_FLAGGED]}
         batch_size = s[sk.MAINTAINABILITY_EXPANSION_BATCH_SIZE]
         next_batch = [i for i in candidates if i["component_path"] not in already_done][:batch_size]
 

@@ -43,20 +43,34 @@ class FetchPrioritizeStep(BaseAgent):
             i for i in review_queue if i["issue_key"] not in existing_review_keys
         )
 
-        # FILES_REVERTED_AT_CHECKPOINT (not just FILES_COMPLETED) is also
-        # excluded here -- a file whose fix already broke the full build or
-        # introduced new Sonar issues at a checkpoint earlier in THIS run is
-        # out of scope for automatic re-attempt, not just "not yet done".
-        # Without this, a re-fetch on the next outer_loop iteration sees the
-        # same file as simply missing from FILES_COMPLETED (reverts remove
-        # it from there) and queues the exact same fix again -- confirmed
-        # live: spring-petclinic's VisitController.java S4684 fix broke 6
+        # FILES_REVERTED_AT_CHECKPOINT and FILES_FLAGGED (not just
+        # FILES_COMPLETED) are also excluded here -- a file whose fix
+        # already broke the full build at a checkpoint, OR that ApplyAndVerifyStep
+        # already gave up on this run (NO_SAFE_FIX decline, diff-apply
+        # failure surviving a full-file retry, a still-failing compile/test
+        # after its one retry), is out of scope for automatic re-attempt,
+        # not just "not yet done". A FILES_FLAGGED entry doesn't always mean
+        # "not done" -- see ApplyAndVerifyStep's "unresolved after patch"
+        # path, which flags AND completes/commits the file in the same
+        # pass -- but excluding on FILES_FLAGGED regardless is harmless in
+        # that case, since FILES_COMPLETED already excludes it too; the
+        # exclusion only matters for the cases where a flag was the file's
+        # ONLY outcome. Without this, a re-fetch on the next outer_loop
+        # iteration sees the file as simply missing from FILES_COMPLETED
+        # and queues the exact same fix again -- confirmed live twice: (1)
+        # spring-petclinic's VisitController.java S4684 fix broke 6
         # interconnected files' tests, got bisect-reverted, then got
-        # reattempted identically on every subsequent outer_loop iteration,
-        # each cycle re-running the full test suite up to 7 times to
-        # re-discover the same failure. FILES_FLAGGED already records the
-        # reason for the final report; this is what actually stops the retry.
-        excluded = set(s[sk.FILES_COMPLETED]) | set(s[sk.FILES_REVERTED_AT_CHECKPOINT])
+        # reattempted identically on every subsequent outer_loop iteration;
+        # (2) be-exps-portal's PasswordEncoderUtil.java (NO_SAFE_FIX-style
+        # flags from ApplyAndVerifyStep, not a checkpoint revert) would have
+        # been re-fetched and re-prompted with the identical issues on every
+        # remaining outer_loop iteration once OuterExitCheck no longer used
+        # FILES_FLAGGED itself to keep the loop alive (see that class) --
+        # this is what actually stops the identical retry, not just the
+        # loop-exit condition. FILES_FLAGGED already records the reason for
+        # the final report regardless.
+        excluded = set(s[sk.FILES_COMPLETED]) | set(s[sk.FILES_REVERTED_AT_CHECKPOINT]) \
+            | {f["file"] for f in s[sk.FILES_FLAGGED]}
         remaining = [g for g in ordered if g["file"] not in excluded]
 
         # build_fix_prompt() needs rule_description per issue (Section 6);
@@ -89,7 +103,17 @@ class OuterExitCheck(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         s[sk.OUTER_ITERATION] += 1
-        remaining = bool(s[sk.ORDERED_FILES_REMAINING]) or bool(s[sk.FILES_FLAGGED])
+        # FILES_FLAGGED deliberately does NOT keep the loop going on its
+        # own anymore -- now that FetchPrioritizeStep also excludes flagged
+        # files from re-fetch (see its docstring), a non-empty FILES_FLAGGED
+        # no longer means "there's more to do", just "something's already
+        # been given up on for this run". Confirmed live: a run whose queue
+        # genuinely emptied after iteration 1 (everything either fixed or
+        # flagged) still burned 4 more full re-fetch cycles, each logging
+        # "0 file(s) queued to fix", solely because FILES_FLAGGED stayed
+        # non-empty -- pure waste, since nothing about state that would
+        # change that outcome changes between iterations.
+        remaining = bool(s[sk.ORDERED_FILES_REMAINING])
         maxed_out = s[sk.OUTER_ITERATION] >= s[sk.MAX_OUTER_ITERATIONS]
         if not remaining or maxed_out:
             reason = "hit max outer iterations" if maxed_out else "file queue empty"

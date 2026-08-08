@@ -38,7 +38,7 @@ from google.genai import types
 
 from sonar_autofix_agent import agents, state_schema as sk
 from sonar_autofix_agent.adapters.base import BuildResult
-from sonar_autofix_agent.agents import ApplyAndVerifyStep, FetchPrioritizeStep, RunFullVerifyStep
+from sonar_autofix_agent.agents import ApplyAndVerifyStep, FetchPrioritizeStep, OuterExitCheck, RunFullVerifyStep
 
 APP_NAME = "test_app"
 
@@ -329,11 +329,88 @@ def test_fetch_prioritize_excludes_reverted_files(monkeypatch):
         sk.WONT_FIX_REVIEW_QUEUE: [],
         sk.FILES_COMPLETED: [],
         sk.FILES_REVERTED_AT_CHECKPOINT: ["Reverted.java"],
+        sk.FILES_FLAGGED: [],
     }
     _, final_state = _run_agent(FetchPrioritizeStep(), initial_state)
 
     remaining_files = [g["file"] for g in final_state[sk.ORDERED_FILES_REMAINING]]
     assert remaining_files == ["Fresh.java"]
+
+
+def test_fetch_prioritize_excludes_flagged_but_not_completed_files(monkeypatch):
+    """Regression: exact live bug (be-exps-portal's PasswordEncoderUtil.java
+    was NO_SAFE_FIX-declined by ApplyAndVerifyStep -- popped off the queue
+    and flagged, but never added to FILES_COMPLETED since it was never
+    actually applied). Without this exclusion, FetchPrioritizeStep's
+    re-fetch on the next outer_loop iteration sees it as simply "not yet
+    done" and queues the identical fix again -- the same repeat-attempt
+    bug FILES_REVERTED_AT_CHECKPOINT was added to close for checkpoint
+    reverts, just via a different code path that skipped FILES_COMPLETED
+    for a different reason."""
+    issues = [
+        {
+            "category": "SECURITY", "severity": "CRITICAL",
+            "component_path": "Declined.java", "issue_key": "d1", "rule_key": "java:S4684",
+        },
+        {
+            "category": "SECURITY", "severity": "CRITICAL",
+            "component_path": "Fresh.java", "issue_key": "f1", "rule_key": "java:S4684",
+        },
+    ]
+    monkeypatch.setattr(agents.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
+    monkeypatch.setattr(agents.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
+
+    initial_state = {
+        "sonar_base_url": "http://localhost:9000",
+        sk.SONAR_PROJECT_KEY: "proj",
+        "sonar_token": "tok",
+        sk.WONT_FIX_REVIEW_QUEUE: [],
+        sk.FILES_COMPLETED: [],
+        sk.FILES_REVERTED_AT_CHECKPOINT: [],
+        sk.FILES_FLAGGED: [{"file": "Declined.java", "reason": "would break the public API contract"}],
+    }
+    _, final_state = _run_agent(FetchPrioritizeStep(), initial_state)
+
+    remaining_files = [g["file"] for g in final_state[sk.ORDERED_FILES_REMAINING]]
+    assert remaining_files == ["Fresh.java"]
+
+
+# --- OuterExitCheck: FILES_FLAGGED alone must not keep the loop alive ------
+
+def test_outer_exit_check_stops_once_queue_is_empty_even_with_files_flagged():
+    """Regression: exact live bug (be-exps-portal run) -- the file queue
+    emptied after outer_loop iteration 1 (everything either fixed or
+    flagged for manual review), but the loop kept re-fetching Sonar issues
+    for 4 more iterations doing nothing ("0 file(s) queued to fix" each
+    time), purely because FILES_FLAGGED was non-empty. FILES_FLAGGED should
+    stop meaning "keep going" now that FetchPrioritizeStep (and
+    MaintainabilityDebtCheckStep) also exclude flagged files from ever
+    repopulating the queue -- see outer_loop.py."""
+    initial_state = {
+        sk.ORDERED_FILES_REMAINING: [],
+        sk.FILES_FLAGGED: [{"file": "A.java", "reason": "still failed to compile"}],
+        sk.OUTER_ITERATION: 0,
+        sk.MAX_OUTER_ITERATIONS: 5,
+    }
+    events, final_state = _run_agent(OuterExitCheck(), initial_state)
+
+    escalated = any(e.actions and e.actions.escalate for e in events)
+    assert escalated is True
+    assert final_state[sk.OUTER_ITERATION] == 1  # stopped on the first pass, not all 5
+
+
+def test_outer_exit_check_keeps_going_while_files_remain():
+    initial_state = {
+        sk.ORDERED_FILES_REMAINING: [{"file": "A.java", "issues": []}],
+        sk.FILES_FLAGGED: [],
+        sk.OUTER_ITERATION: 0,
+        sk.MAX_OUTER_ITERATIONS: 5,
+    }
+    events, final_state = _run_agent(OuterExitCheck(), initial_state)
+
+    escalated = any(e.actions and e.actions.escalate for e in events)
+    assert escalated is False
+    assert final_state[sk.OUTER_ITERATION] == 1
 
 
 # --- RunFullVerifyStep: re-apply-and-verify after bisection -----------------
