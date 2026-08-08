@@ -10,6 +10,7 @@ from google.genai import types
 from sonar_autofix_agent import state_schema as sk
 from sonar_autofix_agent.agents import (
     _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate, _scanned_branch,
+    _no_safe_fix_reason,
 )
 
 
@@ -110,6 +111,38 @@ def test_hide_text_passes_through_non_text_events_unchanged():
 def test_hide_text_passes_through_content_none_unchanged():
     event = Event(author="x", actions=EventActions())
     assert _hide_text(event) is event
+
+
+# --- _no_safe_fix_reason -------------------------------------------------
+
+def test_no_safe_fix_reason_detects_marker_and_extracts_reason():
+    """Regression: the fix prompt tells the model to respond with
+    'NO_SAFE_FIX: <reason>' instead of guessing, but nothing ever detected
+    it -- the refusal text fell through as if it were valid diff/full-file
+    content and got written to disk verbatim. Confirmed live: exactly this
+    text corrupted VisitController.java into invalid Java."""
+    text = (
+        "NO_SAFE_FIX: S4684 cannot be safely fixed without refactoring the "
+        "controller's public API to use DTOs, which breaks existing Spring "
+        "MVC integration tests."
+    )
+    reason = _no_safe_fix_reason(text)
+    assert reason is not None
+    assert reason.startswith("S4684 cannot be safely fixed")
+
+
+def test_no_safe_fix_reason_returns_none_for_normal_diff():
+    diff = "--- a/A.java\n+++ b/A.java\n@@ -1,1 +1,1 @@\n-old\n+new\n"
+    assert _no_safe_fix_reason(diff) is None
+
+
+def test_no_safe_fix_reason_returns_none_for_clean_full_file_content():
+    source = "package a.b;\n\nclass A {\n  void f() {}\n}\n"
+    assert _no_safe_fix_reason(source) is None
+
+
+def test_no_safe_fix_reason_falls_back_when_reason_text_empty():
+    assert _no_safe_fix_reason("NO_SAFE_FIX:") == "no reason given"
 
 
 # --- _looks_like_diff --------------------------------------------------

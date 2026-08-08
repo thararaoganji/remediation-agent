@@ -101,6 +101,33 @@ def _looks_like_diff(text: str) -> bool:
     return bool(_DIFF_ARTIFACT_RE.search(text))
 
 
+_NO_SAFE_FIX_RE = re.compile(r"^\s*NO_SAFE_FIX\s*:?\s*(.*)$", re.MULTILINE)
+
+
+def _no_safe_fix_reason(text: str) -> str | None:
+    """The fix prompt (rule 5) explicitly tells the model to respond with
+    'NO_SAFE_FIX: <one-line reason>' instead of guessing when an issue
+    can't be safely fixed with the context it has -- state_schema.py even
+    has ISSUES_NO_SAFE_FIX reserved for tracking this. But nothing ever
+    actually detected the marker: the refusal text fell through the
+    normal diff/full-file path unrecognized. Confirmed live: a diff
+    attempt correctly failed to apply (plain prose isn't a valid diff,
+    so patch_tools.apply_diff safely rejected it), but the full-file
+    retry's response -- ALSO just 'NO_SAFE_FIX: ...' prose, since the
+    model was refusing the same issue for the same reason -- doesn't
+    match _looks_like_diff() either, so it fell through as if it WERE
+    the complete regenerated file and got written to disk verbatim,
+    corrupting VisitController.java into invalid Java ('class, interface,
+    enum, or record expected') and failing the build on every subsequent
+    checkpoint. Returns the reason text if found, else None -- callers
+    must check this before treating a response as diff or full-file
+    content, not after."""
+    m = _NO_SAFE_FIX_RE.search(text)
+    if not m:
+        return None
+    return m.group(1).strip() or "no reason given"
+
+
 def _extract_code_block(text: str) -> str:
     """fix_llm_agent's responses are consistently prose explanation followed
     by one fenced code block — every response observed live follows this
@@ -572,6 +599,14 @@ class ApplyAndVerifyStep(BaseAgent):
             yield _hide_text(event)
 
         raw = s.get(sk.PROPOSED_DIFF, "")
+        no_safe_fix_reason = _no_safe_fix_reason(raw)
+        if no_safe_fix_reason is not None:
+            s[sk.ISSUES_NO_SAFE_FIX].extend(i["issue_key"] for i in group["issues"])
+            s["temp:no_safe_fix_reason"] = no_safe_fix_reason
+            yield Event(author=self.name, content=_msg(
+                f"Full-file retry for `{group['file']}` declined: {no_safe_fix_reason}"
+            ))
+            return
         content = _extract_code_block(raw).strip()
         if not content:
             return
@@ -597,6 +632,23 @@ class ApplyAndVerifyStep(BaseAgent):
         working_dir = s[sk.WORKING_DIR]
         adapter = get_adapter(s[sk.LANGUAGE], s[sk.WORKING_DIR])
 
+        # Check for a NO_SAFE_FIX refusal before ever touching apply_diff —
+        # plain refusal prose isn't valid diff syntax, so apply_diff would
+        # reject it safely, but only after a confusing "failed to apply"
+        # message and a wasted full-file retry call that (observed live)
+        # just refuses again for the same reason. Catching it here skips
+        # straight to an honest, immediate "declined" outcome instead.
+        if not s.get("temp:skip_llm_fix"):
+            no_safe_fix_reason = _no_safe_fix_reason(s[sk.PROPOSED_DIFF])
+            if no_safe_fix_reason is not None:
+                s[sk.ISSUES_NO_SAFE_FIX].extend(i["issue_key"] for i in group["issues"])
+                s[sk.FILES_FLAGGED].append({"file": group["file"], "reason": no_safe_fix_reason})
+                s[sk.ORDERED_FILES_REMAINING].pop(0)
+                yield Event(author=self.name, content=_msg(
+                    f"Fix for `{group['file']}` declined: {no_safe_fix_reason} — flagged for manual review."
+                ))
+                return
+
         # A deterministic-only fix (FileFixerStep found no remaining
         # issues for the LLM) already wrote the patched content straight
         # to disk — there's no diff to apply, so treat this file as
@@ -617,7 +669,8 @@ class ApplyAndVerifyStep(BaseAgent):
             if not applied:
                 s[sk.FILES_FLAGGED].append({
                     "file": group["file"],
-                    "reason": "diff failed to apply (full-file retry also failed)",
+                    "reason": s.pop("temp:no_safe_fix_reason", None)
+                    or "diff failed to apply (full-file retry also failed)",
                 })
                 s[sk.ORDERED_FILES_REMAINING].pop(0)
                 yield Event(author=self.name, content=_msg(
@@ -645,8 +698,16 @@ class ApplyAndVerifyStep(BaseAgent):
 
         if not result.passed:
             git_tools.revert_file(working_dir, group["file"])
-            s[sk.FILES_FLAGGED].append({"file": group["file"], "reason": result.errors})
+            no_safe_fix_reason = s.pop("temp:no_safe_fix_reason", None)
+            s[sk.FILES_FLAGGED].append({
+                "file": group["file"], "reason": no_safe_fix_reason or result.errors,
+            })
             s[sk.ORDERED_FILES_REMAINING].pop(0)
+            if no_safe_fix_reason is not None:
+                yield Event(author=self.name, content=_msg(
+                    f"Fix for `{group['file']}` declined: {no_safe_fix_reason} — flagged for manual review."
+                ))
+                return
             yield Event(author=self.name, content=_msg(
                 f"Fix for `{group['file']}`{' still' if retried else ''} failed to compile — "
                 "reverted, flagged for manual review."
