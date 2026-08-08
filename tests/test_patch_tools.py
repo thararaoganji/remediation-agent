@@ -205,10 +205,37 @@ def test_verify_unresolved_when_count_math_masks_the_actual_flagged_line(tmp_pat
     assert result == {"k1": False, "k2": True}
 
 
-def test_verify_unknown_rule_key_defaults_to_resolved(tmp_path):
-    _write(tmp_path, "A.java", "whatever content\n")
+def test_verify_unknown_rule_key_resolved_once_flagged_line_changes(tmp_path):
+    _write(tmp_path, "A.java", "changed content\n")
     issues = [issue("java:S9999", "k1", 1)]
     result = patch_tools.verify_issue_patterns_resolved(
         "A.java", issues, str(tmp_path), original_content="whatever content\n",
     )
+    assert result == {"k1": True}
+
+
+def test_verify_unknown_rule_key_unresolved_when_flagged_line_untouched(tmp_path):
+    """Regression: exact live bug (spring-petclinic). S4684 has no
+    _VIOLATION_COUNT entry, so it used to default straight to
+    resolved=True with zero verification. PetController.java's five
+    S4684 (Security) issues were never touched across two separate fix
+    attempts in the same run -- both reported "resolved", the file
+    marked fixed, and Security stayed pinned at D with no record the
+    issues were ever left open. The per-line check needs no rule-specific
+    pattern: if the flagged line is untouched, it wasn't fixed."""
+    _write(tmp_path, "A.java", "whatever content\n")
+    issues = [issue("java:S4684", "k1", 1)]
+    result = patch_tools.verify_issue_patterns_resolved(
+        "A.java", issues, str(tmp_path), original_content="whatever content\n",
+    )
+    assert result == {"k1": False}
+
+
+def test_verify_unknown_rule_key_defaults_to_resolved_without_original_content(tmp_path):
+    """Without original_content, there's nothing to diff the flagged line
+    against -- falls back to the old no-verification default rather than
+    guessing."""
+    _write(tmp_path, "A.java", "whatever content\n")
+    issues = [issue("java:S9999", "k1", 1)]
+    result = patch_tools.verify_issue_patterns_resolved("A.java", issues, str(tmp_path))
     assert result == {"k1": True}

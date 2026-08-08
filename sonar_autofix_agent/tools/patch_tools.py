@@ -297,7 +297,23 @@ def verify_issue_patterns_resolved(
     RuntimeException instantiation, even though one of the two flagged
     lines was never changed. Closed by additionally requiring each
     individual issue's own original flagged line(s) to no longer appear
-    verbatim in the patched file."""
+    verbatim in the patched file.
+
+    That per-line check now runs for EVERY issue, not just ones with a
+    _VIOLATION_COUNT entry — a rule_key with no count_fn used to default
+    straight to resolved=True with literally zero verification, on the
+    reasoning that quick_compile_check passing plus a targeted prompt was
+    enough signal. Confirmed live that it isn't: PetController.java's five
+    S4684 (Security) issues were never touched across two separate fix
+    attempts in the same run (the first tried a real remediation but broke
+    the build and got reverted; the second only fixed an unrelated
+    literal-duplication issue in the same file and silently dropped
+    S4684) — both were reported "resolved" and the file marked fixed,
+    leaving Security pinned at a D rating with no record anywhere that
+    those five issues were ever left open. The per-line check doesn't
+    need a rule-specific pattern to catch this: if an issue's own
+    original flagged line is still sitting in the file byte-for-byte,
+    it wasn't fixed, full stop — regardless of which rule flagged it."""
     with open(os.path.join(working_dir, file_path), encoding="utf-8") as f:
         after_source = f.read()
     original_lines = original_content.splitlines() if original_content else []
@@ -320,7 +336,7 @@ def verify_issue_patterns_resolved(
                 resolved = after_count == 0
         for issue in rule_issues:
             issue_resolved = resolved
-            if issue_resolved and count_fn is not None and original_lines:
+            if issue_resolved and original_lines:
                 lo = max(0, issue["start_line"] - 1)
                 flagged_text = "\n".join(original_lines[lo:issue["end_line"]]).strip()
                 if flagged_text and flagged_text in after_source:
