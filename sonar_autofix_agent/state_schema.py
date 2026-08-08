@@ -47,7 +47,6 @@ MAINTAINABILITY_EXPANSION_BATCH_SIZE = "maintainability_expansion_batch_size"
 CURRENT_FILE_GROUP = "temp:current_file_group"        # {file, issues, clusters}
 CURRENT_FILE_CONTENT = "temp:current_file_content"
 PROPOSED_DIFF = "temp:proposed_diff"
-VERIFICATION_RESULT = "temp:verification_result"      # per-issue pattern-check results
 
 # --- Checkpoint bookkeeping (5.4) ---
 FILES_SINCE_CHECKPOINT = "files_since_checkpoint"

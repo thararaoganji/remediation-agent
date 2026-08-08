@@ -10,7 +10,7 @@ from google.genai import types
 from sonar_autofix_agent import state_schema as sk
 from sonar_autofix_agent.agents import (
     _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate, _scanned_branch,
-    _no_safe_fix_reason,
+    _no_safe_fix_reason, _format_summary,
 )
 
 
@@ -111,6 +111,61 @@ def test_hide_text_passes_through_non_text_events_unchanged():
 def test_hide_text_passes_through_content_none_unchanged():
     event = Event(author="x", actions=EventActions())
     assert _hide_text(event) is event
+
+
+# --- _format_summary ------------------------------------------------------
+
+def _report(**overrides) -> dict:
+    base = {
+        "branch_name": "proj_agent_20260101_000000",
+        "issues_fixed": [],
+        "files_completed": [],
+        "files_flagged_for_manual_review": [],
+        "issues_no_safe_fix": [],
+        "outer_iterations": 1,
+        "hit_max_iterations": False,
+        "checkpoints": [],
+        "final_ratings": {"security_rating": "1.0", "reliability_rating": "1.0", "sqale_rating": "1.0"},
+        "all_categories_a": True,
+        "wont_fix_review_queue": [],
+        "push_result": "not attempted",
+        "duration_seconds": 12.0,
+        "tokens_consumed": {"prompt_tokens": 100, "candidates_tokens": 50, "total_tokens": 150},
+        "note_if_not_a": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def test_format_summary_flagged_entries_show_no_safe_fix_count():
+    """Regression: issues_no_safe_fix was collected in state but never
+    surfaced anywhere in the report -- a reviewer had no way to tell "the
+    model made a judgment call here" apart from "the fix attempt failed
+    for some other reason" without parsing free-text reasons."""
+    report = _report(
+        files_flagged_for_manual_review=[
+            {"file": "A.java", "reason": "cannot be safely fixed without breaking templates"},
+            {"file": "B.java", "reason": "still failed to compile"},
+        ],
+        issues_no_safe_fix=["k1"],
+    )
+    summary = _format_summary(report)
+    assert "Flagged for manual review (2) — 1 declined as unsafe to auto-fix:" in summary
+
+
+def test_format_summary_flagged_entries_omit_count_when_zero_no_safe_fix():
+    report = _report(
+        files_flagged_for_manual_review=[{"file": "B.java", "reason": "still failed to compile"}],
+        issues_no_safe_fix=[],
+    )
+    summary = _format_summary(report)
+    assert "Flagged for manual review (1):" in summary
+    assert "declined as unsafe" not in summary
+
+
+def test_format_summary_no_flagged_section_when_nothing_flagged():
+    summary = _format_summary(_report())
+    assert "Flagged for manual review" not in summary
 
 
 # --- _no_safe_fix_reason -------------------------------------------------

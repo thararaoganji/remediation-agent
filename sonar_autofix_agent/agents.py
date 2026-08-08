@@ -210,7 +210,9 @@ def _format_summary(report: dict) -> str:
 
     flagged = report["files_flagged_for_manual_review"]
     if flagged:
-        lines.append(f"- Flagged for manual review ({len(flagged)}):")
+        no_safe_fix_count = len(report["issues_no_safe_fix"])
+        detail = f" — {no_safe_fix_count} declined as unsafe to auto-fix" if no_safe_fix_count else ""
+        lines.append(f"- Flagged for manual review ({len(flagged)}){detail}:")
         for entry in flagged:
             lines.append(f"  - `{entry['file']}` — {entry['reason']}")
 
@@ -1346,6 +1348,14 @@ class ReportStep(BaseAgent):
             "issues_fixed": s[sk.ISSUES_FIXED],
             "files_completed": s[sk.FILES_COMPLETED],
             "files_flagged_for_manual_review": s[sk.FILES_FLAGGED],
+            # Subset of the issue_keys behind files_flagged_for_manual_review
+            # specifically -- ones the model explicitly judged unsafe to
+            # auto-fix (NO_SAFE_FIX), as opposed to attempted-but-broke-the-
+            # build or attempted-but-verification-caught-a-miss. Lets a
+            # reviewer tell "the model made a judgment call here" apart from
+            # "the fix attempt itself failed" without parsing free-text
+            # reasons in files_flagged_for_manual_review.
+            "issues_no_safe_fix": s[sk.ISSUES_NO_SAFE_FIX],
             "outer_iterations": s[sk.OUTER_ITERATION],
             "hit_max_iterations": s[sk.OUTER_ITERATION] >= s[sk.MAX_OUTER_ITERATIONS],
             "checkpoints": s[sk.CHECKPOINTS],
