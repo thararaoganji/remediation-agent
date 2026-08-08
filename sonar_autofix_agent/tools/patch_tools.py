@@ -268,6 +268,26 @@ _VIOLATION_COUNT = {
 }
 
 
+_STRUCTURAL_ONLY_RE = re.compile(r"[\s{}();,]")
+_MIN_MEANINGFUL_FLAGGED_CHARS = 6
+
+
+def _is_meaningful_flagged_text(flagged_text: str) -> bool:
+    """Guards the per-issue 'is this exact flagged text still present'
+    check below against short, structural-only lines that trivially
+    recur throughout any Java file regardless of whether the actual fix
+    landed. Confirmed live: an S2699 ("add an assertion to this test")
+    fix that genuinely added a real assertion was reported unresolved
+    anyway, because Sonar's flagged range for that rule can be just the
+    method's closing brace -- a bare '}' obviously still appears
+    elsewhere in the file, on every other method's closing line, whether
+    or not THIS method was fixed. Stripping whitespace and common
+    structural punctuation (braces, parens, semicolons, commas) before
+    measuring length filters out exactly that shape of line while still
+    catching real code (identifiers, literals, keywords) as meaningful."""
+    return len(_STRUCTURAL_ONLY_RE.sub("", flagged_text)) >= _MIN_MEANINGFUL_FLAGGED_CHARS
+
+
 def verify_issue_patterns_resolved(
     file_path: str, issues: list[dict], working_dir: str, original_content: str = "",
 ) -> dict[str, bool]:
@@ -339,7 +359,7 @@ def verify_issue_patterns_resolved(
             if issue_resolved and original_lines:
                 lo = max(0, issue["start_line"] - 1)
                 flagged_text = "\n".join(original_lines[lo:issue["end_line"]]).strip()
-                if flagged_text and flagged_text in after_source:
+                if _is_meaningful_flagged_text(flagged_text) and flagged_text in after_source:
                     issue_resolved = False
             result[issue["issue_key"]] = issue_resolved
     return result

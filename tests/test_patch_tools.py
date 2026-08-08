@@ -126,6 +126,19 @@ def test_parse_junit_failures_no_reports_returns_empty(tmp_path):
     assert patch_tools.parse_junit_failures(str(tmp_path)) == []
 
 
+# --- _is_meaningful_flagged_text --------------------------------------------
+
+def test_is_meaningful_flagged_text_rejects_bare_brace():
+    assert patch_tools._is_meaningful_flagged_text("}") is False
+    assert patch_tools._is_meaningful_flagged_text("  }  ") is False
+    assert patch_tools._is_meaningful_flagged_text("});") is False
+
+
+def test_is_meaningful_flagged_text_accepts_real_code():
+    assert patch_tools._is_meaningful_flagged_text('throw new RuntimeException("x");') is True
+    assert patch_tools._is_meaningful_flagged_text("void findAll() {") is True
+
+
 # --- verify_issue_patterns_resolved (count-based before/after) -------------
 
 def _write(tmp_path, rel_path, content):
@@ -229,6 +242,38 @@ def test_verify_unknown_rule_key_unresolved_when_flagged_line_untouched(tmp_path
         "A.java", issues, str(tmp_path), original_content="whatever content\n",
     )
     assert result == {"k1": False}
+
+
+def test_verify_resolved_when_flagged_line_is_a_bare_closing_brace(tmp_path):
+    """Regression: exact live bug (spring-petclinic). S2699's flagged
+    range for a "test has no assertion" issue can be just the method's
+    closing brace. A genuine fix (adding a real assertThat(...) call
+    inside the method body) was reported unresolved anyway, because a
+    bare '}' trivially still appears elsewhere in the file -- on every
+    other method's closing line -- regardless of whether THIS method was
+    actually fixed."""
+    before = (
+        "class T {\n"
+        "  @Test\n"
+        "  void findAll() {\n"
+        "    vets.findAll();\n"
+        "  }\n"
+        "}\n"
+    )
+    after = (
+        "class T {\n"
+        "  @Test\n"
+        "  void findAll() {\n"
+        "    assertThat(vets.findAll()).isNotEmpty();\n"
+        "  }\n"
+        "}\n"
+    )
+    _write(tmp_path, "A.java", after)
+    issues = [issue("java:S2699", "k1", 5, 5)]  # flagged range: just the closing "  }" line
+    result = patch_tools.verify_issue_patterns_resolved(
+        "A.java", issues, str(tmp_path), original_content=before,
+    )
+    assert result == {"k1": True}
 
 
 def test_verify_unknown_rule_key_defaults_to_resolved_without_original_content(tmp_path):
