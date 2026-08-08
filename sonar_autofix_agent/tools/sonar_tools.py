@@ -16,6 +16,21 @@ import requests
 
 CATEGORY_RANK = {"SECURITY": 0, "RELIABILITY": 1, "MAINTAINABILITY": 2, "HOTSPOT": 3}
 
+# On a large backlog, the outer_loop/checkpoint machinery can spend its
+# whole iteration budget (MAX_OUTER_ITERATIONS) working through files in
+# CATEGORY_RANK order before ever reaching the categories that actually
+# gate the Sonar quality gate. security_rating/reliability_rating are each
+# driven by the single WORST open issue project-wide (no partial credit),
+# and a Security Hotspot left unreviewed blocks the gate the same way — so
+# for a big project, those three should all be worked off before
+# Maintainability (a debt RATIO, not a worst-issue gate, and the one
+# category where partial progress across a capped run still keeps sqale_rating
+# fine as long as the ratio stays under threshold). Only demotes
+# MAINTAINABILITY below HOTSPOT relative to the default order; doesn't
+# reorder Security vs Reliability vs Hotspot against each other.
+LARGE_PROJECT_ISSUE_THRESHOLD = 100
+LARGE_PROJECT_CATEGORY_RANK = {"SECURITY": 0, "RELIABILITY": 1, "HOTSPOT": 2, "MAINTAINABILITY": 3}
+
 # Per-category severity floor. SECURITY/RELIABILITY ratings are gated by the
 # single WORST open bug/vulnerability (no partial credit), so hitting A
 # there requires closing every tier down to (but not including) Info.
@@ -290,12 +305,16 @@ def _taxonomy_and_severity(issue: dict) -> tuple[str, str]:
     return "LEGACY", issue["severity"]
 
 
-def classify_issue(issue: dict) -> dict:
+def classify_issue(issue: dict, category_rank: dict = CATEGORY_RANK) -> dict:
     """Single source of truth for the in/out-of-scope + autofix/review split.
     Returns {"in_scope": bool, "action": "autofix"|"review_wont_fix"|None,
-    "rank": (cat_rank, sev_rank) | None}."""
+    "rank": (cat_rank, sev_rank) | None}.
+
+    category_rank defaults to CATEGORY_RANK; partition_and_prioritize()
+    passes LARGE_PROJECT_CATEGORY_RANK instead once the backlog crosses
+    LARGE_PROJECT_ISSUE_THRESHOLD -- see that constant's docstring."""
     cat = issue["category"]
-    cat_rank = CATEGORY_RANK.get(cat)
+    cat_rank = category_rank.get(cat)
     if cat_rank is None:
         return {"in_scope": False, "action": None, "rank": None}
 
@@ -355,10 +374,19 @@ def partition_and_prioritize(issues: list[dict]) -> tuple[list[dict], list[dict]
         called anywhere in the autonomous loop.
     Out-of-scope issues (Info, or below each category's floor) are simply
     dropped from both lists.
+
+    Uses LARGE_PROJECT_CATEGORY_RANK once `issues` crosses
+    LARGE_PROJECT_ISSUE_THRESHOLD, so Maintainability-only files sort
+    after Security/Reliability/Hotspot ones on a big backlog -- otherwise
+    a capped outer_loop can spend its whole iteration budget on files
+    that don't gate the quality gate before reaching the ones that do.
     """
+    category_rank = (
+        LARGE_PROJECT_CATEGORY_RANK if len(issues) > LARGE_PROJECT_ISSUE_THRESHOLD else CATEGORY_RANK
+    )
     autofix, review_queue = [], []
     for i in issues:
-        c = classify_issue(i)
+        c = classify_issue(i, category_rank)
         if not c["in_scope"]:
             continue
         i = {**i, "_rank": c["rank"]}
