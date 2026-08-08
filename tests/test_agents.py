@@ -7,7 +7,7 @@ here. This covers the plain, context-free helper functions instead.
 from google.adk.events import Event, EventActions
 from google.genai import types
 
-from sonar_autofix_agent import state_schema as sk
+from sonar_autofix_agent import agents, state_schema as sk
 from sonar_autofix_agent.agents import (
     _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate, _scanned_branch,
     _no_safe_fix_reason, _format_summary,
@@ -16,40 +16,62 @@ from sonar_autofix_agent.agents import (
 
 # --- _scanned_branch -----------------------------------------------------
 
-def test_scanned_branch_falls_back_to_default_when_nothing_fixed():
+def _state(files_completed, **overrides):
+    s = {
+        sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: files_completed,
+        "sonar_base_url": "http://localhost:9000", sk.SONAR_PROJECT_KEY: "proj", "sonar_token": "tok",
+    }
+    s.update(overrides)
+    return s
+
+
+def test_scanned_branch_falls_back_to_default_when_nothing_fixed(monkeypatch):
     """Regression: a run that fixes zero files never fires a checkpoint,
     so its own agent branch never gets Sonar-analyzed under its own name
     -- querying it directly either crashed
     (get_maintainability_debt_ratio) or silently misreported "all A"
     (get_quality_ratings on an empty {}). branch=None (falling back to
     the project's default branch, still byte-identical to the new branch
-    at that point) is the fix."""
-    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: [], "ce_edition": False}
-    assert _scanned_branch(s) is None
+    at that point) is the fix. Short-circuits before even checking the
+    server -- there's nothing that could have created the branch yet."""
+    def _fail(*a, **kw):
+        raise AssertionError("branch_exists should not be called when nothing was fixed")
+    monkeypatch.setattr(agents.sonar_tools, "branch_exists", _fail)
+    assert _scanned_branch(_state([])) is None
 
 
-def test_scanned_branch_uses_own_branch_once_something_was_fixed():
-    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"], "ce_edition": False}
+def test_scanned_branch_uses_own_branch_when_it_actually_exists_serverside(monkeypatch):
+    monkeypatch.setattr(agents.sonar_tools, "branch_exists", lambda *a, **kw: True)
+    s = _state(["A.java"])
     assert _scanned_branch(s) == "my-project_agent_20260101_000000"
 
 
-def test_scanned_branch_always_none_under_ce_edition_even_with_files_fixed():
-    """Regression: Community Edition has no branch-aware analysis at all
-    (Developer+ only) -- trigger_sonar_analysis() never passes
-    -Dsonar.branch.name under ce_edition, so the agent's own branch is
-    never created as a server-side entity in Sonar's data model, no
-    matter how many files got committed. Confirmed live: a 5-file WebGoat
-    run under CE_EDITION still 404'd on /api/measures/component for the
-    agent's own branch name -- FILES_COMPLETED being non-empty is not a
-    valid "this branch was scanned" signal under CE the way it is for
-    Developer+."""
-    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"], "ce_edition": True}
+def test_scanned_branch_falls_back_to_default_when_branch_was_never_created_serverside(monkeypatch):
+    """Regression: exact live bug (WebGoat, Maven-built) -- a 5-file run
+    committed fine, but the scanner never created the agent's own branch
+    as a distinct server-side entity, so querying it directly 404'd.
+    FILES_COMPLETED being non-empty alone isn't proof the branch exists;
+    only the server knows that."""
+    monkeypatch.setattr(agents.sonar_tools, "branch_exists", lambda *a, **kw: False)
+    s = _state(["A.java"])
     assert _scanned_branch(s) is None
 
 
-def test_scanned_branch_defaults_to_ce_edition_when_key_missing():
-    s = {sk.BRANCH_NAME: "my-project_agent_20260101_000000", sk.FILES_COMPLETED: ["A.java"]}
-    assert _scanned_branch(s) is None
+def test_scanned_branch_ignores_ce_edition_and_trusts_the_server_directly(monkeypatch):
+    """Regression: exact live bug (be-exps-portal, Gradle-built). The old
+    logic hardcoded branch=None whenever ce_edition was true, on the
+    assumption that Community Edition never creates a branch server-side
+    -- but on this exact server, under this exact CE_EDITION=true setting,
+    two Gradle-built projects' own branches DID get created and DID have
+    real, correct ratings (apparently auto-detected from git by the
+    resolved Gradle Sonar plugin version, independent of ce_edition). The
+    old logic reported main's stale security_rating (E) as the run's own
+    result while the run's actual branch -- genuinely rated A -- sat
+    unqueried. ce_edition must no longer override what the server itself
+    reports."""
+    monkeypatch.setattr(agents.sonar_tools, "branch_exists", lambda *a, **kw: True)
+    s = _state(["A.java"], ce_edition=True)
+    assert _scanned_branch(s) == "my-project_agent_20260101_000000"
 
 
 # --- _strip_escalate -----------------------------------------------------

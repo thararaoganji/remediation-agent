@@ -341,6 +341,26 @@ def _get_measures(sonar_base_url: str, project_key: str, token: str, metric_keys
     return {m["metric"]: m["value"] for m in measures if "value" in m}
 
 
+def branch_exists(sonar_base_url: str, project_key: str, branch: str, token: str) -> bool:
+    """GET /api/project_branches/list — whether `branch` has actually been
+    analyzed as its own server-side entity yet. Used instead of trusting
+    the ce_edition flag to predict this: confirmed live that whether a
+    checkpoint's scan actually lands as a distinct named branch (rather
+    than silently overwriting the project's single default-branch
+    analysis) depends on which Sonar scanner plugin/version resolves for
+    a given project, NOT on ce_edition alone — two Gradle-built projects on
+    this exact server, both run under the same CE_EDITION=true setting
+    that deliberately withholds -Dsonar.branch.name from the scan command,
+    still ended up with real, correctly-rated branches of their own
+    (apparently auto-detected from the local git checkout by the resolved
+    Gradle plugin version), while a Maven-built project under the
+    identical setting did not. A static ce_edition-based guess gets this
+    wrong in either direction depending on the project; asking the server
+    directly doesn't."""
+    data = _sonar_get(sonar_base_url, "/api/project_branches/list", token, {"project": project_key})
+    return any(b.get("name") == branch for b in data.get("branches", []))
+
+
 def get_quality_ratings(sonar_base_url: str, project_key: str, token: str, branch: str | None) -> dict:
     """GET /api/measures/component?metricKeys=security_rating,reliability_rating,sqale_rating
     Deliberately requests ONLY IN_SCOPE_RATING_METRICS — duplication and
@@ -354,10 +374,10 @@ def get_quality_ratings(sonar_base_url: str, project_key: str, token: str, branc
     silently reports main's ratings instead of the branch this run is
     actually fixing, which would make the final A-rating check
     meaningless. None IS a legitimate, deliberate choice though — see
-    agents.py's _scanned_branch()) — for a branch with no analysis of its
-    own yet (zero files fixed this run), the default branch's rating is
-    the only real data available, and is still an accurate stand-in since
-    that branch's source hasn't diverged."""
+    agents/maintainability.py's _scanned_branch() — for a branch with no
+    analysis of its own yet (zero files fixed this run), the default
+    branch's rating is the only real data available, and is still an
+    accurate stand-in since that branch's source hasn't diverged."""
     return _get_measures(sonar_base_url, project_key, token, IN_SCOPE_RATING_METRICS, branch)
 
 

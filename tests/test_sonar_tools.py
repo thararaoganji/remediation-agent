@@ -226,3 +226,30 @@ def test_get_maintainability_debt_ratio_raises_when_metric_missing(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"component": {"measures": []}}))
     with pytest.raises(RuntimeError, match="sqale_debt_ratio not returned"):
         sonar_tools.get_maintainability_debt_ratio("http://localhost:9000", "my-key", "token", "some-branch")
+
+
+# --- branch_exists -------------------------------------------------------
+
+def test_branch_exists_true_when_branch_is_in_the_list(monkeypatch):
+    """Regression: exact live bug (be-exps-portal) -- whether the agent's
+    own branch actually got created server-side depends on the resolved
+    Sonar scanner plugin, not on the ce_edition flag (see this function's
+    docstring). Asking the server directly via /api/project_branches/list
+    is what _scanned_branch (agents/maintainability.py) now relies on
+    instead of guessing."""
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({
+        "branches": [{"name": "main"}, {"name": "my-project_agent_20260101_000000"}],
+    }))
+    assert sonar_tools.branch_exists(
+        "http://localhost:9000", "my-key", "my-project_agent_20260101_000000", "token",
+    ) is True
+
+
+def test_branch_exists_false_when_branch_never_got_created(monkeypatch):
+    """Regression: exact live bug (WebGoat, Maven-built) -- a run that
+    committed files fine but whose scanner never created a distinct
+    branch server-side; only 'main' shows up."""
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"branches": [{"name": "main"}]}))
+    assert sonar_tools.branch_exists(
+        "http://localhost:9000", "my-key", "my-project_agent_20260101_000000", "token",
+    ) is False

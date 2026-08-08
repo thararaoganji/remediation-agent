@@ -37,19 +37,24 @@ def _scanned_branch(s: dict) -> str | None:
     own default" convention fetch_issues_and_hotspots already relies on)
     is a valid substitute -- no wasted extra scan needed.
 
-    ce_edition additionally forces None regardless of FILES_COMPLETED:
-    Community Edition has no branch-aware analysis at all (that's a
-    Developer+ feature) -- trigger_sonar_analysis() already never passes
-    -Dsonar.branch.name under ce_edition, so this run's own agent branch
-    was NEVER created as a server-side entity, no matter how many files
-    got committed. Confirmed live: a 5-file WebGoat run under CE_EDITION
-    still 404'd on /api/measures/component for the agent's own branch
-    name, because that branch simply doesn't exist in Sonar's data model
-    under CE, full stop -- FILES_COMPLETED being non-empty was never a
-    valid signal for CE the way it is for Developer+."""
-    if s.get("ce_edition", True):
+    Once something HAS been committed, whether the agent's own branch
+    actually exists as a distinct server-side entity is checked directly
+    (sonar_tools.branch_exists) rather than guessed from ce_edition --
+    that flag turned out not to predict this reliably. Confirmed live on
+    the same server, same CE_EDITION=true setting, same "never pass
+    -Dsonar.branch.name under CE" scan invocation: two Gradle-built
+    projects still ended up with real, correctly-rated branches of their
+    own, while a Maven-built project did not (see branch_exists's
+    docstring). Trusting ce_edition alone previously caused a real report
+    to show main's stale, unfixed security_rating (E) as this run's
+    result, when the run's own branch -- which genuinely existed and was
+    genuinely rated A -- was sitting right there unqueried."""
+    if not s[sk.FILES_COMPLETED]:
         return None
-    return s[sk.BRANCH_NAME] if s[sk.FILES_COMPLETED] else None
+    branch = s[sk.BRANCH_NAME]
+    if sonar_tools.branch_exists(s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], branch, s["sonar_token"]):
+        return branch
+    return None
 
 
 class MaintainabilityDebtCheckStep(BaseAgent):
