@@ -1383,8 +1383,21 @@ class ReportStep(BaseAgent):
                 "single-issue fixes)."
             ),
         }
+        # Explicit state_delta, not just direct assignment -- confirmed
+        # live: ADK's Runner only ever persists a state change into what
+        # session_service.get_session() later returns via an event's own
+        # actions.state_delta. Direct assignment on ctx.session.state
+        # (what this used to do) is visible to any LATER step within the
+        # SAME invocation (they share one live dict by reference), which
+        # is why the actual pipeline never broke -- but this is the very
+        # last event of the whole run, so there IS no later step to see
+        # it, and run_local.py's own post-run
+        # final_session.state.get("final_report") call came back None.
         s["final_report"] = report
-        yield Event(author=self.name, content=_msg(_format_summary(report)))
+        yield Event(
+            author=self.name, content=_msg(_format_summary(report)),
+            actions=EventActions(state_delta={"final_report": report}),
+        )
 
 
 # ---------------------------------------------------------------------------
