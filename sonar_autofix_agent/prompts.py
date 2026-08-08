@@ -70,15 +70,30 @@ on conflict for the rule keys they name):
    self-injection — a self-referencing constructor/field injection risks a
    BeanCurrentlyInCreationException that fails the whole application
    context, breaking the full build, not just this file.
+
+   MANDATORY at every call site that invokes the self-injected field: guard
+   it against being null and fall back to `this`.
+     Violation: return self.createExpense(...);
+     Fix:       return (self != null ? self : this).createExpense(...);
    The self-referencing field is only ever wired by a real Spring context at
    runtime — Mockito's @InjectMocks has no way to satisfy it, so any existing
    Mockito-only unit test (@ExtendWith(MockitoExtension.class), no Spring
-   context) of this class will NullPointerException the moment it calls a
-   method that goes through the self-proxy, even though nothing in the test
-   itself changed. If this class already has such a unit test, you MUST also
-   add `instance.setSelf(instance);` (using this class's actual self-setter
-   name) to that test's @BeforeEach/setup — this is an explicit exception to
-   "fix only the listed file," the same carve-out rule 9 makes for S1948.
+   context) of this class WILL NullPointerException the moment it calls a
+   method that goes through the self-proxy if this guard is missing, even
+   though nothing in the test itself changed. Confirmed live, twice, on the
+   same class in the same project: one fix attempt included this guard and
+   the checkpoint passed; a separate attempt at the identical issue omitted
+   it and broke the checkpoint's unit tests. This is not a stylistic
+   preference — omitting it is the direct cause of a build failure.
+
+   If this class already has a Mockito-only unit test AND its content is
+   actually visible to you in this prompt (it usually will not be — only
+   THIS file's content is provided), you may additionally add
+   `instance.setSelf(instance);` to that test's @BeforeEach/setup as a
+   belt-and-suspenders fix — an explicit exception to "fix only the listed
+   file," the same carve-out rule 9 makes for S1948. The null-safe fallback
+   above is mandatory regardless of whether you do this, since the test
+   file usually isn't available to edit correctly from this prompt alone.
 4. S6208/S6880 (switch expressions): replace if/else chains with a Java 21+
    switch expression (only if the project's language level supports it — see
    the general guidance above). Always handle null safely:
