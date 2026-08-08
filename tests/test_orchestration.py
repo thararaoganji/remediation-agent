@@ -26,6 +26,7 @@ this test suite.
 """
 
 import asyncio
+import os
 import subprocess
 import uuid
 
@@ -37,7 +38,7 @@ from google.genai import types
 
 from sonar_autofix_agent import agents, state_schema as sk
 from sonar_autofix_agent.adapters.base import BuildResult
-from sonar_autofix_agent.agents import ApplyAndVerifyStep, FetchPrioritizeStep
+from sonar_autofix_agent.agents import ApplyAndVerifyStep, FetchPrioritizeStep, RunFullVerifyStep
 
 APP_NAME = "test_app"
 
@@ -133,6 +134,12 @@ def _issue(issue_key="k1", rule_key="java:S4684", start_line=1, end_line=1):
 def _git(args, cwd):
     r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def _git_out(args, cwd):
+    r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    return r.stdout.strip()
 
 
 # --- ApplyAndVerifyStep: NO_SAFE_FIX on the first response -----------------
@@ -327,3 +334,84 @@ def test_fetch_prioritize_excludes_reverted_files(monkeypatch):
 
     remaining_files = [g["file"] for g in final_state[sk.ORDERED_FILES_REMAINING]]
     assert remaining_files == ["Fresh.java"]
+
+
+# --- RunFullVerifyStep: re-apply-and-verify after bisection -----------------
+
+class _GuiltyMarkerAdapter:
+    """Fails verify_build for as long as A.java's on-disk content still
+    contains the guilty fix -- i.e. purely a function of real git/working-
+    tree state, the same way the real per-language adapters' verify_build
+    actually behaves. Lets the test drive RunFullVerifyStep's real revert/
+    restore git_tools calls end-to-end instead of stubbing pass/fail by
+    call count, which wouldn't exercise the actual bisection-then-restore
+    git plumbing this regression lives in."""
+    def verify_build(self, working_dir):
+        with open(os.path.join(working_dir, "A.java")) as f:
+            content = f.read()
+        passed = "GUILTY_MARKER" not in content
+        return BuildResult(passed=passed, errors="" if passed else "boom")
+
+
+def test_checkpoint_bisection_restores_innocent_files_reverted_along_the_way(tmp_path, monkeypatch):
+    """Regression: exact live bug (be-exps-portal's ExpenseService.java --
+    a self-injection NPE only reproducible under Mockito -- was the OLDEST
+    commit in a 6-file checkpoint batch. The reverse-order bisection sweep
+    had to revert 5 entirely unrelated, individually-correct fixes first to
+    reach it, and FILES_REVERTED_AT_CHECKPOINT then permanently blacklisted
+    all 6 from ever being re-fetched, including two BLOCKER-severity ones).
+
+    Here: B.java's fix is committed AFTER A.java's genuinely-guilty fix, so
+    the reverse-order sweep reverts B first (collateral, doesn't fix the
+    build), then A (the real culprit, fixes it) -- B must come back."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], str(repo))
+    _git(["config", "user.email", "t@example.com"], str(repo))
+    _git(["config", "user.name", "T"], str(repo))
+    (repo / "A.java").write_text("original A\n")
+    (repo / "B.java").write_text("original B\n")
+    _git(["add", "-A"], str(repo))
+    _git(["commit", "-m", "init"], str(repo))
+
+    (repo / "A.java").write_text("GUILTY_MARKER content\n")
+    _git(["add", "-A"], str(repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(repo))
+    sha_a = _git_out(["rev-parse", "HEAD"], str(repo))
+
+    (repo / "B.java").write_text("innocent fixed B\n")
+    _git(["add", "-A"], str(repo))
+    _git(["commit", "-m", "fix: sonar issues in B.java"], str(repo))
+    sha_b = _git_out(["rev-parse", "HEAD"], str(repo))
+
+    monkeypatch.setattr(agents.checkpoint, "get_adapter", lambda *a, **kw: _GuiltyMarkerAdapter())
+
+    batch = [
+        {"file": "A.java", "commit_sha": sha_a, "issue_keys": ["ka"]},
+        {"file": "B.java", "commit_sha": sha_b, "issue_keys": ["kb"]},
+    ]
+    initial_state = {
+        sk.WORKING_DIR: str(repo),
+        sk.LANGUAGE: "java-maven",
+        "temp:checkpoint_batch": batch,
+        sk.FILES_COMPLETED: ["A.java", "B.java"],
+        sk.FILES_FLAGGED: [],
+        sk.FILES_REVERTED_AT_CHECKPOINT: [],
+        sk.ISSUES_FIXED: ["ka", "kb"],
+    }
+    _, final_state = _run_agent(RunFullVerifyStep(), initial_state)
+
+    # B.java: collateral damage from the sweep, restored -- stays fixed,
+    # not blacklisted.
+    assert (repo / "B.java").read_text() == "innocent fixed B\n"
+    assert "B.java" not in final_state[sk.FILES_REVERTED_AT_CHECKPOINT]
+    assert "B.java" in final_state[sk.FILES_COMPLETED]
+    assert "kb" in final_state[sk.ISSUES_FIXED]
+    assert not any(f["file"] == "B.java" for f in final_state[sk.FILES_FLAGGED])
+
+    # A.java: the genuine culprit, stays reverted and blacklisted.
+    assert (repo / "A.java").read_text() == "original A\n"
+    assert "A.java" in final_state[sk.FILES_REVERTED_AT_CHECKPOINT]
+    assert "A.java" not in final_state[sk.FILES_COMPLETED]
+    assert "ka" not in final_state[sk.ISSUES_FIXED]
+    assert any(f["file"] == "A.java" for f in final_state[sk.FILES_FLAGGED])

@@ -44,6 +44,7 @@ class RunFullVerifyStep(BaseAgent):
         batch = s.get("temp:checkpoint_batch", [])
         result = adapter.verify_build(working_dir)
         reverted = []
+        restored = []
 
         if not result.passed:
             # Captured before any reverts happen — this is the actual
@@ -85,6 +86,67 @@ class RunFullVerifyStep(BaseAgent):
                 if result.passed:
                     break
 
+            # Re-apply-and-verify: the sweep above stops at the FIRST
+            # revert that restores a passing build, which means every file
+            # reverted before reaching the true culprit is collateral
+            # damage, not evidence of guilt — the culprit just happened to
+            # be older in the batch than they are. Left reverted, they'd
+            # also land in FILES_REVERTED_AT_CHECKPOINT and be permanently
+            # excluded from re-fetch for the rest of the run (see
+            # outer_loop.FetchPrioritizeStep) alongside the actual culprit.
+            # Confirmed live: a self-injection NPE only reproducible under
+            # Mockito (no Spring context) was the oldest commit in a
+            # 6-file batch — the sweep had to revert 5 entirely unrelated,
+            # individually-correct fixes (two of them BLOCKER-severity) to
+            # reach it, and all 6 were then blacklisted for the rest of
+            # the run.
+            #
+            # Tested one at a time against the fully-reverted baseline
+            # (not cumulatively) so this also does the right thing when
+            # MULTIPLE files are simultaneously guilty (a separate live
+            # case: an entity/DTO conversion broke several interconnected
+            # files' tests) — each guilty file still reproduces the
+            # failure on its own regardless of the others' state, so each
+            # independently fails this check and correctly stays reverted.
+            if reverted:
+                for entry in list(reverted):
+                    git_tools.restore_file_from_commit(working_dir, entry["commit_sha"], entry["file"])
+                    retest = adapter.verify_build(working_dir)
+                    if retest.passed:
+                        reverted.remove(entry)
+                        restored.append(entry)
+                    else:
+                        git_tools.revert_file(working_dir, entry["file"])
+
+                if restored:
+                    # Each restored file only proved innocent in isolation
+                    # (one re-applied at a time, all others still
+                    # reverted) — one more full build with all of them
+                    # restored together rules out an interaction bug
+                    # between two "individually innocent" files before
+                    # anything gets committed.
+                    final_check = adapter.verify_build(working_dir)
+                    if final_check.passed:
+                        for entry in restored:
+                            git_tools.commit(
+                                working_dir,
+                                f"fix: sonar issues in {entry['file']} "
+                                "(restored -- unrelated to checkpoint failure)",
+                            )
+                        result = final_check
+                    else:
+                        # Rare: safe fallback to the already-known-good
+                        # all-reverted state from before this pass — none
+                        # of them actually stuck, so they're not "restored"
+                        # for reporting purposes either.
+                        for entry in restored:
+                            git_tools.revert_file(working_dir, entry["file"])
+                            reverted.append(entry)
+                        restored = []
+                        result = adapter.verify_build(working_dir)
+                else:
+                    result = adapter.verify_build(working_dir)
+
             reverted_issue_keys = {k for entry in reverted for k in entry["issue_keys"]}
             revert_reason = "reverted: broke the full build at checkpoint"
             if failing_tests:
@@ -113,13 +175,21 @@ class RunFullVerifyStep(BaseAgent):
                 )
 
         s["temp:checkpoint_batch"] = []
-        if batch and not reverted:
+        restored_note = (
+            f" `{'`, `'.join(e['file'] for e in restored)}` reproduced no failure alone "
+            "and were restored." if restored else ""
+        )
+        if batch and not reverted and not restored:
             msg = f"Checkpoint: full build passed ({len(batch)} file(s) since last checkpoint)."
-        elif reverted:
+        elif reverted or restored:
             s["temp:checkpoint_build_error"] = {"error": original_error, "failing_tests": failing_tests}
             test_detail = f"\nFailing test(s): {'; '.join(failing_tests)}" if failing_tests else ""
+            revert_note = (
+                f"reverted `{'`, `'.join(e['file'] for e in reverted)}`, then passed."
+                if reverted else "reverting each file since the last checkpoint in turn found a passing build."
+            )
             msg = (
-                f"Checkpoint: build failed — reverted `{'`, `'.join(e['file'] for e in reverted)}`, then passed."
+                f"Checkpoint: build failed — {revert_note}{restored_note}"
                 f"{test_detail}\n"
                 f"Build error that triggered the revert:\n```\n{original_error[-1500:]}\n```"
             )

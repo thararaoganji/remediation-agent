@@ -199,6 +199,30 @@ def revert_commit_for_file(working_dir: str, commit_sha: str, file_path: str) ->
     _run(["git", "commit", "-m", f"revert: {file_path} broke the full build at checkpoint"], cwd=working_dir)
 
 
+def restore_file_from_commit(working_dir: str, commit_sha: str, file_path: str) -> None:
+    """Writes file_path's content back to exactly what it was at commit_sha
+    (the original fix commit) — working tree only, index left matching
+    HEAD. Used by checkpoint bisection (agents/checkpoint.py) to test-drive
+    re-applying a reverted file: the caller runs a build against this
+    uncommitted change and either commits it via git_tools.commit()
+    (genuinely innocent, safe to keep — commit() does its own `git add -A`)
+    or discards it via git_tools.revert_file() (still guilty, back to the
+    already-committed revert).
+
+    Deliberately `git show <sha>:<path> >file` rather than
+    `git checkout <sha> -- <path>` (the more obvious inverse of
+    revert_commit_for_file's `~1` checkout): checkout also STAGES the
+    change into the index, which would leave the index out of sync with
+    HEAD — a subsequent revert_file() (`git checkout -- <path>`, which
+    restores the working tree from the INDEX, not HEAD) would then no-op
+    instead of discarding, silently keeping the guilty content. Confirmed
+    live: this exact sequencing bug left a genuinely-guilty file's content
+    on disk after its test-drive was supposed to be discarded."""
+    content = _run(["git", "show", f"{commit_sha}:{file_path}"], cwd=working_dir).stdout
+    with open(os.path.join(working_dir, file_path), "w") as f:
+        f.write(content)
+
+
 def push_branch(working_dir: str, branch_name: str, github_token: str | None = None) -> None:
     """Pushes branch_name to 'origin'. Uses the same per-invocation
     extraheader auth as the initial clone (never persisted to git config)

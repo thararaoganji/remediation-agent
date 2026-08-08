@@ -155,3 +155,53 @@ def test_revert_commit_for_file_only_touches_named_file(git_repo):
     git_tools.revert_commit_for_file(str(git_repo), sha, "A.java")
     assert (git_repo / "A.java").read_text() == "original"
     assert (git_repo / "B.java").read_text() == "unrelated later change"  # untouched
+
+
+# --- restore_file_from_commit -------------------------------------------------
+
+def test_restore_file_from_commit_undoes_a_revert(git_repo):
+    """The exact round trip checkpoint bisection's re-apply-and-verify pass
+    relies on (agents/checkpoint.py's RunFullVerifyStep): a file reverted
+    with revert_commit_for_file can be brought straight back to the fixed
+    content with restore_file_from_commit(working_dir, commit_sha, file),
+    no different than if the revert had never happened."""
+    (git_repo / "A.java").write_text("original")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("the fix")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+    fix_sha = _git(["rev-parse", "HEAD"], str(git_repo)).stdout.strip()
+
+    git_tools.revert_commit_for_file(str(git_repo), fix_sha, "A.java")
+    assert (git_repo / "A.java").read_text() == "original"
+
+    git_tools.restore_file_from_commit(str(git_repo), fix_sha, "A.java")
+    assert (git_repo / "A.java").read_text() == "the fix"
+
+
+def test_restore_file_from_commit_leaves_change_uncommitted(git_repo):
+    """Deliberately staged-but-not-committed -- see the function's
+    docstring: the caller test-drives a build against this change and
+    either commits it (git_tools.commit) or discards it cheaply
+    (git_tools.revert_file) without leaving a throwaway commit either way."""
+    (git_repo / "A.java").write_text("original")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    (git_repo / "A.java").write_text("the fix")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+    fix_sha = _git(["rev-parse", "HEAD"], str(git_repo)).stdout.strip()
+    head_before = _git(["rev-parse", "HEAD"], str(git_repo)).stdout.strip()
+
+    git_tools.revert_commit_for_file(str(git_repo), fix_sha, "A.java")
+    head_after_revert = _git(["rev-parse", "HEAD"], str(git_repo)).stdout.strip()
+    assert head_after_revert != head_before  # revert_commit_for_file does commit
+
+    git_tools.restore_file_from_commit(str(git_repo), fix_sha, "A.java")
+    head_after_restore = _git(["rev-parse", "HEAD"], str(git_repo)).stdout.strip()
+    assert head_after_restore == head_after_revert  # unchanged -- nothing committed
+    status = _git(["status", "--porcelain"], str(git_repo)).stdout.strip()
+    assert "A.java" in status  # but the working tree/index does have a pending change
