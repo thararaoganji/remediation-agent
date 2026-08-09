@@ -78,6 +78,64 @@ def test_sanitized_branch_name_is_actually_valid_git_ref():
         assert result.returncode == 0, f"{branch!r} is not a valid git ref (from {raw_key!r})"
 
 
+# --- _default_branch / resolve_source (local) --------------------------------
+
+def test_default_branch_uses_origin_symbolic_ref_when_present(git_repo):
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["remote", "add", "origin", "https://example.invalid/repo.git"], str(git_repo))
+    # Doesn't require the remote to actually be reachable -- this ref is
+    # just local bookkeeping git itself writes after a real `git clone`.
+    _git(["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/develop"], str(git_repo))
+    assert git_tools._default_branch(str(git_repo)) == "develop"
+
+
+def test_default_branch_falls_back_to_local_main_without_origin(git_repo):
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    assert git_tools._default_branch(str(git_repo)) == "main"
+
+
+def test_default_branch_none_when_nothing_conventional_exists(git_repo):
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["branch", "-m", "main", "trunk"], str(git_repo))
+    assert git_tools._default_branch(str(git_repo)) is None
+
+
+def test_resolve_source_local_switches_off_a_stale_agent_branch(git_repo):
+    """Regression: exact live bug (WebGoat). A local source's working
+    directory persists across separate runs -- unlike the github path
+    (always a fresh clone). If a prior run was interrupted mid-way, it
+    leaves its own {project_key}_agent_* branch checked out with
+    in-progress commits still on it. create_branch()'s `git checkout -b`
+    branches from CURRENT HEAD, so without this reset, the next run
+    silently branches off that stale branch instead of main, inheriting
+    whatever the interrupted run had done (including anything broken that
+    its own checkpoint never got a chance to catch) as if it were part of
+    the original codebase. Confirmed live via `git merge-base` between two
+    consecutive runs' branches -- it landed deep in the earlier run's own
+    fix commits, not back at main."""
+    (git_repo / "A.java").write_text("original\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    _git(["checkout", "-b", "my-project_agent_20260101_000000"], str(git_repo))
+    (git_repo / "A.java").write_text("mid-run, uncommitted-checkpoint change\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "fix: sonar issues in A.java"], str(git_repo))
+    # Left checked out here, as if the process had just been killed.
+
+    working_dir = git_tools.resolve_source(str(git_repo), "local", "/unused")
+
+    current = _git(["branch", "--show-current"], working_dir).stdout.strip()
+    assert current == "main"
+    assert (git_repo / "A.java").read_text() == "original\n"
+
+
 # --- create_branch -----------------------------------------------------------
 
 def test_create_branch_creates_and_checks_out_new_branch(git_repo):

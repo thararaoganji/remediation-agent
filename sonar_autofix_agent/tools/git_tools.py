@@ -64,11 +64,37 @@ def _force_rmtree(path: str) -> None:
     shutil.rmtree(path)
 
 
+def _default_branch(working_dir: str) -> str | None:
+    """Best-effort resolution of the repo's actual default branch (main,
+    master, or whatever else) — `git symbolic-ref refs/remotes/origin/HEAD`
+    when an `origin` remote exists (the standard, reliable source for
+    this), falling back to a local `main` or `master` branch if there's no
+    remote. Returns None if neither is available (an unusual repo with no
+    origin and no conventionally-named branch) — the caller's only
+    remaining option at that point is to leave whatever's checked out
+    alone, same as before this function existed."""
+    # subprocess.run directly, not _run() — no `origin` remote (or no
+    # symbolic-ref recorded for it) is an expected, gracefully-handled
+    # case here, not a failure worth _run()'s raise-on-nonzero-exit.
+    result = subprocess.run(
+        ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=working_dir, capture_output=True, text=True,
+    )
+    if result.returncode == 0 and result.stdout.strip():
+        return result.stdout.strip().rsplit("/", 1)[-1]
+    branches = _run(["git", "branch", "--list", "main", "master"], cwd=working_dir).stdout
+    for candidate in ("main", "master"):
+        if candidate in branches:
+            return candidate
+    return None
+
+
 def resolve_source(source: str, source_type: str, workspace_root: str, github_token: str | None = None) -> str:
     """
     source_type == "local": source is a filesystem path. Verify it's a git
         repo with a clean working tree; if dirty, stash with a labeled
-        entry rather than failing outright.
+        entry rather than failing outright. Then switch to the repo's own
+        default branch before returning, regardless of what's currently
+        checked out.
     source_type == "github": source is a repo URL (https://github.com/owner/repo
         or owner/repo shorthand). Clones into an isolated workspace dir and
         checks out the default branch. github_token is required for private
@@ -85,6 +111,28 @@ def resolve_source(source: str, source_type: str, workspace_root: str, github_to
         if status.stdout.strip():
             label = f"sonar-agent-autostash-{os.getpid()}"
             _run(["git", "stash", "push", "-m", label], cwd=working_dir)
+
+        # Unlike the github path (always a fresh clone, so this is a
+        # non-issue there), a local repo's working directory persists
+        # across separate runs. If a prior run was interrupted (crashed,
+        # Ctrl+C, killed) mid-way, it leaves its own {project_key}_agent_*
+        # branch checked out with its in-progress commits still on it —
+        # create_branch()'s `git checkout -b` branches from CURRENT HEAD,
+        # so without this, the next run silently branches off that stale,
+        # possibly-broken branch instead of main, inheriting its commits
+        # as its own "starting point". Confirmed live: a WebGoat run's
+        # branch turned out to be a direct descendant of an earlier,
+        # interrupted run's branch (`git merge-base` between the two
+        # showed a shared history deep in the older run's own fix commits,
+        # not back at main) — one of the earlier run's fixes had renamed a
+        # field in a way its own checkpoint never caught before being
+        # interrupted, and the new run inherited that unnoticed, broken
+        # rename as if it were part of the original codebase, then spent
+        # its own checkpoint bisection unable to revert past it since that
+        # commit predated the new run's own tracked batch entirely.
+        default_branch = _default_branch(working_dir)
+        if default_branch is not None:
+            _run(["git", "checkout", default_branch], cwd=working_dir)
         return working_dir
 
     if source_type == "github":
