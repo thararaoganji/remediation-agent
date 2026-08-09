@@ -64,6 +64,26 @@ def _looks_like_diff(text: str) -> bool:
     return bool(_DIFF_ARTIFACT_RE.search(text))
 
 
+def _llm_error_message(event: Event) -> str | None:
+    """Event extends google-adk's LlmResponse, so error_code/error_message
+    are set directly on it whenever the model's turn ends with a
+    finish_reason other than STOP (RECITATION, SAFETY, ...) — ADK's own
+    output_key mechanism (LlmAgent.__maybe_save_output_to_state) only
+    writes state_delta[output_key] when event.content has actual text
+    parts, which a blocked turn never has. Confirmed live: WebGoat -- a
+    heavily-forked, extremely well-known OWASP training repo -- triggered
+    Gemini's RECITATION filter on a fix attempt, PROPOSED_DIFF was never
+    written for that turn, and the very next line that unconditionally
+    read s[sk.PROPOSED_DIFF] KeyError'd (or, on a later file in the same
+    run, silently reused a stale diff from an unrelated earlier file --
+    since the key already existed by then, just with old data). Every
+    site that reads PROPOSED_DIFF right after an LLM call must check this
+    first."""
+    if event.error_code is None:
+        return None
+    return f"{event.error_code}: {event.error_message or 'no further detail from the model API'}"
+
+
 _NO_SAFE_FIX_RE = re.compile(r"^\s*NO_SAFE_FIX\s*:?\s*(.*)$", re.MULTILINE)
 
 
@@ -289,8 +309,14 @@ class FixLlmGateStep(BaseAgent):
         # intact) rather than dropping it outright — dropping it would
         # also drop the output_key write that lands PROPOSED_DIFF in
         # session.state; see _hide_text's docstring.
+        llm_call_error = None
         async for event in self.llm_agent.run_async(ctx):
+            llm_call_error = _llm_error_message(event) or llm_call_error
             yield _hide_text(event)
+        # Consumed by ApplyAndVerifyStep before it ever reads PROPOSED_DIFF
+        # -- see _llm_error_message's docstring for why that read can't be
+        # trusted when this is set.
+        s["temp:llm_call_error"] = llm_call_error
 
 
 class ApplyAndVerifyStep(BaseAgent):
@@ -345,8 +371,20 @@ class ApplyAndVerifyStep(BaseAgent):
         # via _hide_text (content stripped, actions/state_delta intact),
         # not dropped outright — dropping it drops the output_key write
         # PROPOSED_DIFF depends on below, same as FixLlmGateStep.
+        llm_call_error = None
         async for event in retry_agent.run_async(ctx):
+            llm_call_error = _llm_error_message(event) or llm_call_error
             yield _hide_text(event)
+
+        if llm_call_error is not None:
+            # Reuses temp:no_safe_fix_reason -- the caller (ApplyAndVerifyStep,
+            # in the "diff failed to apply" branch) already prefers it over
+            # its own generic fallback reason when flagging the file.
+            s["temp:no_safe_fix_reason"] = f"model call failed: {llm_call_error}"
+            yield Event(author=self.name, content=_msg(
+                f"Full-file retry for `{group['file']}` failed: the model call failed ({llm_call_error})."
+            ))
+            return
 
         raw = s.get(sk.PROPOSED_DIFF, "")
         no_safe_fix_reason = _no_safe_fix_reason(raw)
@@ -432,8 +470,19 @@ class ApplyAndVerifyStep(BaseAgent):
             ),
         )
         retry_agent = _build_fix_llm_agent()
+        llm_call_error = None
         async for event in retry_agent.run_async(ctx):
+            llm_call_error = _llm_error_message(event) or llm_call_error
             yield _hide_text(event)
+
+        if llm_call_error is not None:
+            # Reuses temp:no_safe_fix_reason -- the caller already prefers it
+            # over its own generic "unresolved after patch" fallback reason.
+            s["temp:no_safe_fix_reason"] = f"model call failed: {llm_call_error}"
+            yield Event(author=self.name, content=_msg(
+                f"Narrow retry for `{group['file']}` failed: the model call failed ({llm_call_error})."
+            ))
+            return
 
         raw = s.get(sk.PROPOSED_DIFF, "")
         no_safe_fix_reason = _no_safe_fix_reason(raw)
@@ -485,6 +534,24 @@ class ApplyAndVerifyStep(BaseAgent):
         group = s[sk.CURRENT_FILE_GROUP]
         working_dir = s[sk.WORKING_DIR]
         adapter = get_adapter(s[sk.LANGUAGE], s[sk.WORKING_DIR])
+
+        # Checked before anything else even looks at PROPOSED_DIFF -- a
+        # blocked model turn (RECITATION, SAFETY, ...) never writes it, so
+        # reading it here would either KeyError (first file of the run) or
+        # silently reuse a stale diff from a completely unrelated earlier
+        # file (any later file) -- see _llm_error_message's docstring.
+        llm_call_error = s.pop("temp:llm_call_error", None)
+        if llm_call_error is not None:
+            s[sk.FILES_FLAGGED].append({
+                "file": group["file"],
+                "reason": f"model call failed ({llm_call_error}) — no fix was generated",
+            })
+            s[sk.ORDERED_FILES_REMAINING].pop(0)
+            yield Event(author=self.name, content=_msg(
+                f"Fix for `{group['file']}` skipped: the model call failed ({llm_call_error}) — "
+                "flagged for manual review."
+            ))
+            return
 
         # Check for a NO_SAFE_FIX refusal before ever touching apply_diff —
         # plain refusal prose isn't valid diff syntax, so apply_diff would

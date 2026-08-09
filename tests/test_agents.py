@@ -9,8 +9,8 @@ from google.genai import types
 
 from sonar_autofix_agent import agents, state_schema as sk
 from sonar_autofix_agent.agents import (
-    _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _strip_escalate, _scanned_branch,
-    _no_safe_fix_reason, _format_summary,
+    _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _llm_error_message, _strip_escalate,
+    _scanned_branch, _no_safe_fix_reason, _format_summary,
 )
 
 
@@ -133,6 +133,32 @@ def test_hide_text_passes_through_non_text_events_unchanged():
 def test_hide_text_passes_through_content_none_unchanged():
     event = Event(author="x", actions=EventActions())
     assert _hide_text(event) is event
+
+
+# --- _llm_error_message ----------------------------------------------------
+
+def test_llm_error_message_extracts_recitation_block():
+    """Regression: exact live bug (WebGoat) -- Gemini blocked a fix
+    attempt with finish_reason=RECITATION, which ADK surfaces as
+    event.error_code/error_message rather than event.content (which stays
+    empty). Every LLM call site in fix.py must detect this instead of
+    reading session.state[PROPOSED_DIFF], which a blocked turn never
+    writes."""
+    event = Event(author="fix_llm_agent", error_code="RECITATION", error_message=None)
+    assert _llm_error_message(event) == "RECITATION: no further detail from the model API"
+
+
+def test_llm_error_message_includes_error_message_when_present():
+    event = Event(author="fix_llm_agent", error_code="SAFETY", error_message="blocked content")
+    assert _llm_error_message(event) == "SAFETY: blocked content"
+
+
+def test_llm_error_message_none_for_a_normal_response():
+    event = Event(
+        author="fix_llm_agent",
+        content=types.Content(role="model", parts=[types.Part(text="a diff")]),
+    )
+    assert _llm_error_message(event) is None
 
 
 # --- _format_summary ------------------------------------------------------

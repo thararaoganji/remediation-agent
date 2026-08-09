@@ -56,7 +56,7 @@ from .checkpoint import (  # noqa: F401
 from .fix import (  # noqa: F401
     ApplyAndVerifyStep, FileFixerStep, FixLlmGateStep, PerFileLoopStep,
     _build_fix_llm_agent, _build_fix_summary, _build_per_file_loop, _extract_code_block,
-    _hide_text, _java_fqcn, _looks_like_diff, _no_safe_fix_reason, _strip_escalate,
+    _hide_text, _java_fqcn, _llm_error_message, _looks_like_diff, _no_safe_fix_reason, _strip_escalate,
 )
 from .maintainability import MaintainabilityDebtCheckStep, _scanned_branch, maintainability_expansion_loop
 from .outer_loop import FetchPrioritizeStep, OuterExitCheck, outer_loop

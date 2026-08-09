@@ -176,6 +176,74 @@ def test_no_safe_fix_flagged_without_touching_disk_or_compiling(tmp_path):
     assert not (tmp_path / "A.java").exists()  # never written
 
 
+# --- ApplyAndVerifyStep: LLM call itself errored (RECITATION, etc.) --------
+
+def test_llm_call_error_flags_file_without_ever_reading_proposed_diff(tmp_path):
+    """Regression: exact live bug (WebGoat). Gemini blocked a fix attempt
+    with finish_reason=RECITATION (a heavily-forked, well-known repo —
+    plausible the generated fix too closely matched public training
+    data). ADK's own output_key mechanism only writes PROPOSED_DIFF when
+    the response has real content, which a blocked turn never has —
+    FixLlmGateStep sets temp:llm_call_error in that case (see
+    _llm_error_message's docstring), and this must be checked BEFORE
+    PROPOSED_DIFF is ever read. sk.PROPOSED_DIFF is deliberately absent
+    from this test's seed entirely, matching the real first-file-of-the-
+    run scenario where it was never set by any prior turn — reading it
+    unconditionally would KeyError exactly like it did live."""
+    group = {"file": "A.java", "issues": [_issue()]}
+    initial_state = {
+        sk.CURRENT_FILE_GROUP: group,
+        sk.WORKING_DIR: str(tmp_path),
+        sk.LANGUAGE: "java-maven",
+        "temp:llm_call_error": "RECITATION: no further detail from the model API",
+        "temp:skip_llm_fix": False,
+        sk.FILES_FLAGGED: [],
+        sk.ISSUES_NO_SAFE_FIX: [],
+        sk.ORDERED_FILES_REMAINING: [group],
+        sk.CURRENT_FILE_CONTENT: "",
+        sk.FILES_COMPLETED: [],
+        sk.ISSUES_FIXED: [],
+        sk.FILES_SINCE_CHECKPOINT: 0,
+    }
+    events, final_state = _run_agent(ApplyAndVerifyStep(), initial_state)
+
+    assert len(final_state[sk.FILES_FLAGGED]) == 1
+    assert final_state[sk.FILES_FLAGGED][0]["file"] == "A.java"
+    assert "RECITATION" in final_state[sk.FILES_FLAGGED][0]["reason"]
+    assert final_state[sk.ORDERED_FILES_REMAINING] == []
+    assert not (tmp_path / "A.java").exists()  # never written
+    assert final_state.get("llm_call_error") is None  # consumed, not left stale for the next file
+
+
+def test_llm_call_error_does_not_reuse_a_stale_diff_from_an_earlier_file(tmp_path):
+    """Same bug, later-file variant: sk.PROPOSED_DIFF DOES already hold a
+    value here (a previous file's genuinely-successful diff), which a
+    naive fix could misapply against the wrong file's content instead of
+    flagging the error. The stale diff must never reach patch_tools.apply_diff."""
+    (tmp_path / "B.java").write_text("class B { int x = 1; }\n")
+    group = {"file": "B.java", "issues": [_issue()]}
+    initial_state = {
+        sk.CURRENT_FILE_GROUP: group,
+        sk.WORKING_DIR: str(tmp_path),
+        sk.LANGUAGE: "java-maven",
+        sk.PROPOSED_DIFF: "--- a/A.java\n+++ b/A.java\n@@ -1,1 +1,1 @@\n-old\n+new\n",
+        "temp:llm_call_error": "RECITATION: no further detail from the model API",
+        "temp:skip_llm_fix": False,
+        sk.FILES_FLAGGED: [],
+        sk.ISSUES_NO_SAFE_FIX: [],
+        sk.ORDERED_FILES_REMAINING: [group],
+        sk.CURRENT_FILE_CONTENT: "class B { int x = 1; }\n",
+        sk.FILES_COMPLETED: [],
+        sk.ISSUES_FIXED: [],
+        sk.FILES_SINCE_CHECKPOINT: 0,
+    }
+    events, final_state = _run_agent(ApplyAndVerifyStep(), initial_state)
+
+    assert final_state[sk.FILES_FLAGGED][0]["file"] == "B.java"
+    assert "RECITATION" in final_state[sk.FILES_FLAGGED][0]["reason"]
+    assert (tmp_path / "B.java").read_text() == "class B { int x = 1; }\n"  # untouched
+
+
 # --- ApplyAndVerifyStep._retry_unresolved_issues ----------------------------
 
 class _RetryHarness(BaseAgent):
