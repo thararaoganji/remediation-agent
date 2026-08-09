@@ -38,7 +38,9 @@ from google.genai import types
 
 from sonar_autofix_agent import agents, state_schema as sk
 from sonar_autofix_agent.adapters.base import BuildResult
-from sonar_autofix_agent.agents import ApplyAndVerifyStep, FetchPrioritizeStep, OuterExitCheck, RunFullVerifyStep
+from sonar_autofix_agent.agents import (
+    ApplyAndVerifyStep, FetchPrioritizeStep, FixLlmGateStep, OuterExitCheck, RunFullVerifyStep,
+)
 
 APP_NAME = "test_app"
 
@@ -274,6 +276,15 @@ def _stub_fix_llm_agent(diff_text: str):
     return _Stub()
 
 
+def _stub_fix_llm_agent_raising(exc: Exception):
+    class _Stub:
+        async def run_async(self, ctx):
+            if False:  # pragma: no cover -- keeps this an async generator
+                yield
+            raise exc
+    return _Stub()
+
+
 def _fake_adapter(compile_passed: bool):
     class _FakeAdapter:
         def quick_compile_check(self, working_dir, scope):
@@ -364,6 +375,42 @@ def test_retry_unresolved_issues_reverts_on_compile_failure(tmp_path, monkeypatc
     )
     assert final_state["retry_unresolved_ok"] == {"k1": False}
     assert (repo / "A.java").read_text() == original
+
+
+def test_retry_unresolved_issues_captures_a_connection_error_instead_of_crashing(tmp_path, monkeypatch):
+    """Regression: exact live bug (WebGoat) -- a dropped connection
+    (aiohttp.ClientOSError: Connection reset by peer) raised straight out
+    of the LLM agent's async generator, an uncaught exception that
+    unwound through the entire nested BaseAgent/LoopAgent/SequentialAgent
+    stack and killed a run that had already committed 78 files' worth of
+    genuine fixes -- none of which reached PushStep/ReportStep despite
+    being safely on disk. This must be caught at the LLM call site and
+    treated the same as a RECITATION block (this file's attempt failed,
+    not the whole run), not left to propagate."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(["init", "-q"], str(repo))
+    _git(["config", "user.email", "t@example.com"], str(repo))
+    _git(["config", "user.name", "T"], str(repo))
+    original = "class A {\n  int x = 1;\n}\n"
+    (repo / "A.java").write_text(original)
+    _git(["add", "-A"], str(repo))
+    _git(["commit", "-m", "init"], str(repo))
+
+    monkeypatch.setattr(
+        agents.fix, "_build_fix_llm_agent",
+        lambda: _stub_fix_llm_agent_raising(ConnectionResetError("Connection reset by peer")),
+    )
+    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+
+    group = {"file": "A.java", "issues": [_issue(end_line=2)]}
+    initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
+    _, final_state = _run_agent(
+        _RetryHarness(group=group, working_dir=str(repo), unresolved_keys=["k1"]), initial_state,
+    )
+    assert final_state["retry_unresolved_ok"] == {"k1": False}
+    assert "ConnectionResetError" in final_state["no_safe_fix_reason"]
+    assert (repo / "A.java").read_text() == original  # untouched
 
 
 # --- FetchPrioritizeStep: FILES_REVERTED_AT_CHECKPOINT exclusion -----------

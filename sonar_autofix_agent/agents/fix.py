@@ -310,9 +310,23 @@ class FixLlmGateStep(BaseAgent):
         # also drop the output_key write that lands PROPOSED_DIFF in
         # session.state; see _hide_text's docstring.
         llm_call_error = None
-        async for event in self.llm_agent.run_async(ctx):
-            llm_call_error = _llm_error_message(event) or llm_call_error
-            yield _hide_text(event)
+        try:
+            async for event in self.llm_agent.run_async(ctx):
+                llm_call_error = _llm_error_message(event) or llm_call_error
+                yield _hide_text(event)
+        except Exception as e:
+            # A transient failure below ADK's own response handling (a
+            # dropped connection, a timeout after tenacity's retries are
+            # exhausted, ...) raises out of the async generator instead of
+            # coming back as an error-bearing event -- confirmed live: a
+            # WebGoat run died on ClientOSError: Connection reset by peer,
+            # an uncaught exception that unwound all the way out of the
+            # whole pipeline and killed a run that had already fixed 78
+            # files, none of which got the chance to reach PushStep/
+            # ReportStep despite being safely committed. Treated the same
+            # way as a RECITATION block: this file's fix attempt failed,
+            # not the whole run.
+            llm_call_error = f"{type(e).__name__}: {e}"
         # Consumed by ApplyAndVerifyStep before it ever reads PROPOSED_DIFF
         # -- see _llm_error_message's docstring for why that read can't be
         # trusted when this is set.
@@ -372,9 +386,14 @@ class ApplyAndVerifyStep(BaseAgent):
         # not dropped outright — dropping it drops the output_key write
         # PROPOSED_DIFF depends on below, same as FixLlmGateStep.
         llm_call_error = None
-        async for event in retry_agent.run_async(ctx):
-            llm_call_error = _llm_error_message(event) or llm_call_error
-            yield _hide_text(event)
+        try:
+            async for event in retry_agent.run_async(ctx):
+                llm_call_error = _llm_error_message(event) or llm_call_error
+                yield _hide_text(event)
+        except Exception as e:
+            # See FixLlmGateStep's identical guard for why this is caught
+            # here rather than left to crash the whole run.
+            llm_call_error = f"{type(e).__name__}: {e}"
 
         if llm_call_error is not None:
             # Reuses temp:no_safe_fix_reason -- the caller (ApplyAndVerifyStep,
@@ -471,9 +490,14 @@ class ApplyAndVerifyStep(BaseAgent):
         )
         retry_agent = _build_fix_llm_agent()
         llm_call_error = None
-        async for event in retry_agent.run_async(ctx):
-            llm_call_error = _llm_error_message(event) or llm_call_error
-            yield _hide_text(event)
+        try:
+            async for event in retry_agent.run_async(ctx):
+                llm_call_error = _llm_error_message(event) or llm_call_error
+                yield _hide_text(event)
+        except Exception as e:
+            # See FixLlmGateStep's identical guard for why this is caught
+            # here rather than left to crash the whole run.
+            llm_call_error = f"{type(e).__name__}: {e}"
 
         if llm_call_error is not None:
             # Reuses temp:no_safe_fix_reason -- the caller already prefers it
