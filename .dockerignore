@@ -1,0 +1,34 @@
+# Never bake real secrets into an image layer.
+.env
+.env.*
+!.env.example
+
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+.git/
+.gitignore
+.dockerignore
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.vscode/
+.idea/
+.DS_Store
+
+*.log
+.adk/
+
+# Presentation/report artifacts -- irrelevant to the running agent
+*.pptx

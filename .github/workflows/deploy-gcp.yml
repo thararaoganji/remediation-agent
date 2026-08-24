@@ -1,0 +1,74 @@
+# Builds this repo's own agent image and rolls it out to the Cloud Run Job
+# that runs it (see docs/GCP_DEPLOYMENT.md Part 2). This is NOT the agent
+# fixing some other target repo -- it's this repo's own CI/CD, deploying the
+# agent itself whenever its code changes.
+#
+# Auth is via Workload Identity Federation (no long-lived key in GitHub
+# secrets) -- see docs/GCP_DEPLOYMENT.md Part 4 for the one-time GCP-side
+# setup this depends on (workload identity pool/provider + deploy service
+# account). Requires these repo/environment "Variables" (not secrets --
+# none of these values are sensitive on their own):
+#   GCP_PROJECT_ID, GCP_REGION, GCP_WIF_PROVIDER, GCP_DEPLOY_SERVICE_ACCOUNT
+#
+# `gcloud run jobs update` requires the job to already exist -- it's created
+# once, by hand, per docs/GCP_DEPLOYMENT.md 2.3. This workflow only updates
+# the image on an existing job, it never creates one.
+name: Deploy agent to Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "sonar_autofix_agent/**"
+      - "run_local.py"
+      - "requirements.txt"
+      - "Dockerfile"
+      - ".github/workflows/deploy-gcp.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  id-token: write # required for keyless auth via Workload Identity Federation
+
+env:
+  REGION: ${{ vars.GCP_REGION }}
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REPOSITORY: sonar-autofix-repo
+  IMAGE_NAME: sonar-autofix-agent
+  JOB_NAME: sonar-autofix-job
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}"
+          docker build -t "${IMAGE}:${{ github.sha }}" -t "${IMAGE}:latest" .
+
+      - name: Push image
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}"
+          docker push "${IMAGE}:${{ github.sha }}"
+          docker push "${IMAGE}:latest"
+
+      - name: Roll the new image out to the Cloud Run Job
+        run: |
+          IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${{ github.sha }}"
+          gcloud run jobs update "${JOB_NAME}" \
+            --region="${REGION}" \
+            --image="${IMAGE}"

@@ -1,0 +1,54 @@
+# SonarQube (Community Build) + the mc1arke community-branch-plugin + Postgres,
+# for a Compute Engine VM. The plugin patches SonarQube's normally-Commercial
+# branch-analysis feature onto the free Community Build -- see
+# https://github.com/mc1arke/sonarqube-community-branch-plugin -- which is
+# what makes agent runs land on a distinct, per-run branch server-side instead
+# of always reporting against "main".
+#
+# See ../../docs/GCP_DEPLOYMENT.md for the full setup (host sysctls, ulimits,
+# firewall, first-login steps). Needs a sibling `.env` file (NOT the agent's
+# own .env) defining SONAR_DB_PASSWORD -- never commit that file.
+#
+# The image already bakes in the correct SONAR_WEB_JAVAADDITIONALOPTS /
+# SONAR_CE_JAVAADDITIONALOPTS javaagent flags as defaults -- only re-set them
+# yourself if you need to layer on other JVM opts (in which case you must
+# re-include the javaagent line or the plugin silently stops loading).
+version: "3.8"
+
+services:
+  sonarqube:
+    image: mc1arke/sonarqube-with-community-branch-plugin:latest
+    depends_on:
+      - db
+    environment:
+      SONAR_JDBC_URL: jdbc:postgresql://db:5432/sonar
+      SONAR_JDBC_USERNAME: sonar
+      SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD}
+    ports:
+      - "9000:9000"
+    volumes:
+      - sonarqube_data:/opt/sonarqube/data
+      - sonarqube_extensions:/opt/sonarqube/extensions
+      - sonarqube_logs:/opt/sonarqube/logs
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc: 4096
+    restart: unless-stopped
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sonar
+      POSTGRES_PASSWORD: ${SONAR_DB_PASSWORD}
+      POSTGRES_DB: sonar
+    volumes:
+      - postgresql_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+volumes:
+  sonarqube_data:
+  sonarqube_extensions:
+  sonarqube_logs:
+  postgresql_data:
