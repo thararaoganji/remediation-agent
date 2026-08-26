@@ -263,3 +263,68 @@ def test_restore_file_from_commit_leaves_change_uncommitted(git_repo):
     assert head_after_restore == head_after_revert  # unchanged -- nothing committed
     status = _git(["status", "--porcelain"], str(git_repo)).stdout.strip()
     assert "A.java" in status  # but the working tree/index does have a pending change
+
+
+# --- Sanitization and Masking -------------------------------------------------
+
+def test_sanitize_string_masks_authorization_and_urls():
+    text = "error: AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViX3BhdF8x"
+    assert git_tools._sanitize_string(text) == "error: AUTHORIZATION: basic [REDACTED]"
+
+    text_url = "unable to access 'https://github_pat_123456789@github.com/org/repo.git'"
+    assert git_tools._sanitize_string(text_url) == "unable to access 'https://[REDACTED]@github.com/org/repo.git'"
+
+    text_url_user_pass = "unable to access 'https://user:pass@github.com/org/repo.git'"
+    assert git_tools._sanitize_string(text_url_user_pass) == "unable to access 'https://[REDACTED]:[REDACTED]@github.com/org/repo.git'"
+
+
+def test_sanitize_args_masks_args():
+    args = [
+        "git",
+        "-c",
+        "http.https://github.com/.extraheader=AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViX3BhdF8x",
+        "clone",
+        "https://github_pat_foo@github.com/org/repo.git"
+    ]
+    sanitized = git_tools._sanitize_args(args)
+    assert sanitized == [
+        "git",
+        "-c",
+        "http.https://github.com/.extraheader=AUTHORIZATION: basic [REDACTED]",
+        "clone",
+        "https://[REDACTED]@github.com/org/repo.git"
+    ]
+
+
+def test_sanitize_args_masks_custom_extraheader():
+    args = [
+        "git",
+        "-c",
+        "http.extraheader=secret_cookie_value"
+    ]
+    sanitized = git_tools._sanitize_args(args)
+    assert sanitized == [
+        "git",
+        "-c",
+        "http.extraheader=[REDACTED]"
+    ]
+
+
+def test_run_failure_exception_message_is_sanitized(git_repo):
+    import pytest
+    args = [
+        "git",
+        "-c",
+        "http.https://github.com/.extraheader=AUTHORIZATION: basic eC1hY2Nlc3MtdG9rZW46Z2l0aHViX3BhdF8x",
+        "push",
+        "https://foo@github.com/org/repo.git"
+    ]
+    with pytest.raises(RuntimeError) as exc_info:
+        git_tools._run(args, cwd=str(git_repo))
+    
+    exc_message = str(exc_info.value)
+    assert "eC1hY2Nlc3MtdG9rZW4" not in exc_message
+    assert "foo" not in exc_message
+    assert "AUTHORIZATION: basic [REDACTED]" in exc_message
+    assert "https://[REDACTED]@github.com/org/repo.git" in exc_message
+

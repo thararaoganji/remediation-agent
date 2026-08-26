@@ -59,6 +59,20 @@ after each batch so nothing regresses.
 Which repo would you like me to analyze — a local path, or the full GitHub \
 repo URL (the repo whose root contains build.gradle or pom.xml)?"""
 
+DUPLICATE_WELCOME_MESSAGE = """\
+I'm the Sonar Duplicate-Fix Agent. I detect and resolve code duplication \
+in your Java project — local or GitHub — by extracting shared logic into clean helpers.
+
+Which repo would you like me to analyze — a local path, or the full GitHub \
+repo URL (the repo whose root contains build.gradle or pom.xml)?"""
+
+COVERAGE_WELCOME_MESSAGE = """\
+I'm the Sonar Coverage-Enhance Agent. I find uncovered code paths/branches \
+and automatically generate unit tests (JUnit) to boost test coverage.
+
+Which repo would you like me to analyze — a local path, or the full GitHub \
+repo URL (the repo whose root contains build.gradle or pom.xml)?"""
+
 # Shown verbatim, every time, whenever the user's message doesn't resolve
 # to a valid repo — see IntakeStep. Fixed and deterministic rather than
 # whatever intake_llm_agent might phrase, so the scope restriction and

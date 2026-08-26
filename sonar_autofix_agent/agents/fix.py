@@ -276,7 +276,7 @@ def _build_fix_llm_agent() -> LlmAgent:
     single-parent nodes, so each embedding needs its own instance."""
     return LlmAgent(
         name="fix_llm_agent",
-        model="gemini-3.5-flash",
+        model="gemini-3.7-flash",
         instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
         output_key=sk.PROPOSED_DIFF,
         generate_content_config=types.GenerateContentConfig(

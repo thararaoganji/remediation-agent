@@ -568,3 +568,81 @@ def get_issues_created_after(sonar_base_url: str, project_key: str, since_iso: s
         issue["rule_name"] = rule_names.get(issue["rule_key"], issue["rule_key"])
         issues.append(issue)
     return issues
+
+
+def fetch_uncovered_files(sonar_base_url: str, project_key: str, token: str, branch: str | None) -> list[dict]:
+    """GET /api/measures/component_tree - fetches all file components in the project
+    and their coverage metrics, filtering for files with coverage < 100.0 or containing uncovered lines."""
+    params = {
+        "component": project_key,
+        "metricKeys": "coverage,uncovered_lines,uncovered_conditions",
+        "qualifiers": "FIL",
+    }
+    if branch:
+        params["branch"] = branch
+        
+    try:
+        data = _sonar_get(sonar_base_url, "/api/measures/component_tree", token, params)
+    except Exception:
+        return []
+        
+    uncovered_files = []
+    for comp in data.get("components", []):
+        path = comp.get("path") or comp.get("name")
+        measures = {m["metric"]: m.get("value") for m in comp.get("measures", [])}
+        
+        try:
+            coverage_val = float(measures.get("coverage", 100.0))
+            uncovered_lines_val = int(measures.get("uncovered_lines", 0))
+            uncovered_conditions_val = int(measures.get("uncovered_conditions", 0))
+        except (ValueError, TypeError):
+            continue
+            
+        if coverage_val < 100.0 or uncovered_lines_val > 0 or uncovered_conditions_val > 0:
+            uncovered_files.append({
+                "file": path,
+                "coverage": coverage_val,
+                "uncovered_lines": uncovered_lines_val,
+                "uncovered_conditions": uncovered_conditions_val,
+            })
+            
+    uncovered_files.sort(key=lambda x: x["coverage"])
+    return uncovered_files
+
+
+def fetch_duplicated_files(sonar_base_url: str, project_key: str, token: str, branch: str | None) -> list[dict]:
+    """GET /api/measures/component_tree - fetches all file components in the project
+    and their duplication metrics, filtering for files with duplication > 0."""
+    params = {
+        "component": project_key,
+        "metricKeys": "duplicated_lines_density,duplicated_blocks",
+        "qualifiers": "FIL",
+    }
+    if branch:
+        params["branch"] = branch
+        
+    try:
+        data = _sonar_get(sonar_base_url, "/api/measures/component_tree", token, params)
+    except Exception:
+        return []
+        
+    duplicated_files = []
+    for comp in data.get("components", []):
+        path = comp.get("path") or comp.get("name")
+        measures = {m["metric"]: m.get("value") for m in comp.get("measures", [])}
+        
+        try:
+            density_val = float(measures.get("duplicated_lines_density", 0.0))
+            blocks_val = int(measures.get("duplicated_blocks", 0))
+        except (ValueError, TypeError):
+            continue
+            
+        if density_val > 0.0 or blocks_val > 0:
+            duplicated_files.append({
+                "file": path,
+                "duplicated_lines_density": density_val,
+                "duplicated_blocks": blocks_val,
+            })
+            
+    duplicated_files.sort(key=lambda x: x["duplicated_lines_density"], reverse=True)
+    return duplicated_files

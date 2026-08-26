@@ -14,10 +14,51 @@ import stat
 import subprocess
 
 
+def _sanitize_string(text: str) -> str:
+    # 1. Mask AUTHORIZATION: basic <token> or AUTHORIZATION: <token>
+    text = re.sub(
+        r'(AUTHORIZATION:\s*(?:basic\s+)?)[^\s\'"]+',
+        r'\1[REDACTED]',
+        text,
+        flags=re.IGNORECASE
+    )
+    # 2. Mask embedded credentials in URLs (e.g. https://token@github.com)
+    text = re.sub(
+        r'(https?://)([^:@\s\'"]+):([^@\s\'"]+)(@)',
+        r'\1[REDACTED]:[REDACTED]\4',
+        text
+    )
+    text = re.sub(
+        r'(https?://)([^:@\s\'"]+)(@)',
+        r'\1[REDACTED]\3',
+        text
+    )
+    return text
+
+
+def _sanitize_args(args: list[str]) -> list[str]:
+    sanitized = []
+    for arg in args:
+        # Match AUTHORIZATION: basic <base64>
+        if "AUTHORIZATION:" in arg:
+            arg = _sanitize_string(arg)
+        elif "extraheader=" in arg:
+            parts = arg.split("extraheader=", 1)
+            if "[REDACTED]" not in arg:
+                # Mask whatever follows extraheader=
+                arg = parts[0] + "extraheader=[REDACTED]"
+        else:
+            arg = _sanitize_string(arg)
+        sanitized.append(arg)
+    return sanitized
+
+
 def _run(args: list[str], cwd: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
     result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"git command failed: {' '.join(args)}\n{result.stderr}")
+        sanitized_args = _sanitize_args(args)
+        sanitized_stderr = _sanitize_string(result.stderr)
+        raise RuntimeError(f"git command failed: {' '.join(sanitized_args)}\n{sanitized_stderr}")
     return result
 
 
@@ -291,7 +332,7 @@ def push_branch(working_dir: str, branch_name: str, github_token: str | None = N
         raise RuntimeError("no 'origin' remote configured in this repo — nothing to push to")
 
     auth = _github_auth_args(github_token) if github_token else []
-    _run(["git", *auth, "push", "-u", "origin", branch_name], cwd=working_dir)
+    _run(["git", *auth, "push", "-u", "origin", f"HEAD:refs/heads/{branch_name}"], cwd=working_dir)
 
 
 def commit_checkpoint_marker(working_dir: str) -> str:

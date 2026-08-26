@@ -16,7 +16,7 @@ def git_repo(tmp_path):
     mutate the machine's real git config."""
     repo = tmp_path / "repo"
     repo.mkdir()
-    _git(["init", "-q"], str(repo))
+    _git(["init", "-q", "-b", "main"], str(repo))
     _git(["config", "user.email", "test@example.com"], str(repo))
     _git(["config", "user.name", "Test"], str(repo))
     _git(["config", "commit.gpgsign", "false"], str(repo))
