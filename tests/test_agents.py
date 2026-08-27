@@ -1,17 +1,22 @@
 """
-The agents package's BaseAgent orchestration classes need a real ADK InvocationContext
-to exercise directly (see README's "Running tests" section) -- out of scope
-here. This covers the plain, context-free helper functions instead.
+The BaseAgent orchestration classes need a real ADK InvocationContext to
+exercise directly (see README's "Running tests" section) -- out of scope
+here. This covers the plain, context-free helper functions instead:
+core.agents.fix_loop's tool-agnostic helpers, plus techdebt_agent's
+own Sonar-specific ones (_scanned_branch, _format_summary).
 """
 
 from google.adk.events import Event, EventActions
 from google.genai import types
 
-from sonar_autofix_agent import agents, state_schema as sk
-from sonar_autofix_agent.agents import (
-    _looks_like_diff, _extract_code_block, _java_fqcn, _hide_text, _llm_error_message, _strip_escalate,
-    _scanned_branch, _no_safe_fix_reason, _format_summary,
+from core import state_schema as sk
+from core.agents.fix_loop import (
+    _extract_code_block, _hide_text, _java_fqcn, _llm_error_message,
+    _looks_like_diff, _no_safe_fix_reason, _strip_escalate,
 )
+from techdebt_agent import maintainability
+from techdebt_agent.maintainability import _scanned_branch
+from techdebt_agent.report import _format_summary
 
 
 # --- _scanned_branch -----------------------------------------------------
@@ -36,12 +41,12 @@ def test_scanned_branch_falls_back_to_default_when_nothing_fixed(monkeypatch):
     server -- there's nothing that could have created the branch yet."""
     def _fail(*a, **kw):
         raise AssertionError("branch_exists should not be called when nothing was fixed")
-    monkeypatch.setattr(agents.sonar_tools, "branch_exists", _fail)
+    monkeypatch.setattr(maintainability.sonar_tools, "branch_exists", _fail)
     assert _scanned_branch(_state([])) is None
 
 
 def test_scanned_branch_uses_own_branch_when_it_actually_exists_serverside(monkeypatch):
-    monkeypatch.setattr(agents.sonar_tools, "branch_exists", lambda *a, **kw: True)
+    monkeypatch.setattr(maintainability.sonar_tools, "branch_exists", lambda *a, **kw: True)
     s = _state(["A.java"])
     assert _scanned_branch(s) == "my-project_agent_20260101_000000"
 
@@ -52,7 +57,7 @@ def test_scanned_branch_falls_back_to_default_when_branch_was_never_created_serv
     as a distinct server-side entity, so querying it directly 404'd.
     FILES_COMPLETED being non-empty alone isn't proof the branch exists;
     only the server knows that."""
-    monkeypatch.setattr(agents.sonar_tools, "branch_exists", lambda *a, **kw: False)
+    monkeypatch.setattr(maintainability.sonar_tools, "branch_exists", lambda *a, **kw: False)
     s = _state(["A.java"])
     assert _scanned_branch(s) is None
 
@@ -69,7 +74,7 @@ def test_scanned_branch_ignores_ce_edition_and_trusts_the_server_directly(monkey
     result while the run's actual branch -- genuinely rated A -- sat
     unqueried. ce_edition must no longer override what the server itself
     reports."""
-    monkeypatch.setattr(agents.sonar_tools, "branch_exists", lambda *a, **kw: True)
+    monkeypatch.setattr(maintainability.sonar_tools, "branch_exists", lambda *a, **kw: True)
     s = _state(["A.java"], ce_edition=True)
     assert _scanned_branch(s) == "my-project_agent_20260101_000000"
 
@@ -141,9 +146,8 @@ def test_llm_error_message_extracts_recitation_block():
     """Regression: exact live bug (WebGoat) -- Gemini blocked a fix
     attempt with finish_reason=RECITATION, which ADK surfaces as
     event.error_code/error_message rather than event.content (which stays
-    empty). Every LLM call site in fix.py must detect this instead of
-    reading session.state[PROPOSED_DIFF], which a blocked turn never
-    writes."""
+    empty). Every LLM call site must detect this instead of reading
+    session.state[PROPOSED_DIFF], which a blocked turn never writes."""
     event = Event(author="fix_llm_agent", error_code="RECITATION", error_message=None)
     assert _llm_error_message(event) == "RECITATION: no further detail from the model API"
 

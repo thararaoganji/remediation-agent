@@ -135,25 +135,56 @@ Minor/Low code smells sorted by remediation-minutes descending.
 ## Repo layout
 
 ```
-sonar_autofix_agent/
-├── __init__.py           -- exposes root_agent for ADK's CLI/Runner
-├── agents.py              -- the ADK graph (start here)
-├── prompts.py              -- shared fix-prompt skeleton + per-language addenda
+core/                      -- tool-agnostic fix-loop engine, shared by every
+│                              agent regardless of finding source (Sonar today;
+│                              Veracode/Coverity/SBOM/Black Duck are meant to
+│                              plug into this same engine later)
 ├── state_schema.py          -- all session.state keys, one place
-├── adapters/
-│   ├── __init__.py
-│   └── base.py               -- LanguageAdapter interface, Maven + Gradle impls,
-│                                 build-tool auto-detection, preflight checks
+├── adapters/base.py          -- LanguageAdapter interface, Maven + Gradle impls
+├── tools/
+│   ├── git_tools.py            -- local/GitHub source resolution, branch, commit
+│   └── patch_tools.py           -- apply_diff, JUnit failure parsing
+└── agents/
+    ├── fix_loop.py              -- the LLM-call gate, diff/NO_SAFE_FIX helpers
+    ├── checkpoint.py             -- full build verify + bisect-revert
+    ├── outer_loop.py              -- generic "queue empty or max iterations" exit
+    └── report.py                  -- push branch, duration formatting
+
+sonar/                      -- everything specific to SonarQube as a finding
+│                              source, shared across the three agents below.
+│                              Not an agent itself -- deliberately a plain
+│                              (non-agent) package, since adk web/run always
+│                              import the selected agent as a bare top-level
+│                              module with only ITS OWN parent directory on
+│                              sys.path -- nesting an agent inside sonar/
+│                              would put core/ out of reach of its imports.
+│                              Every agent below imports from here as
+│                              `sonar.X`, which only resolves because the
+│                              agents themselves stay at the repo root,
+│                              alongside sonar/ and core/, not inside sonar/.
+├── adapters.py               -- Sonar project-key resolution + scan invocation
+├── setup.py                   -- validates Sonar connection, creates the branch
+├── checkpoint.py                -- re-scan + reconcile new Sonar findings
+├── intake.py                     -- shared conversational front-door plumbing
 └── tools/
-    ├── __init__.py
-    ├── sonar_tools.py         -- fetch/classify/prioritize, ratings, debt ratio
-    ├── patch_tools.py          -- cluster classification, diff apply, verification
-    └── git_tools.py             -- local/GitHub source resolution, branch, commit
+    ├── sonar_tools.py             -- fetch/classify/prioritize, ratings, debt ratio
+    ├── patch_tools.py              -- cluster classification, verification
+    └── deterministic_fixes.py       -- mechanical one-shot rule fixes
+
+techdebt_agent/             -- fixes Security/Reliability/Maintainability issues
+coverage_agent/             -- generates JUnit tests for uncovered lines
+duplicate_agent/            -- refactors out duplicated code blocks
 
 run_local.py               -- entry point: loads .env, seeds session state, runs the graph
 .env.example                -- copy to .env and fill in
 requirements.txt
 ```
+
+Run any single agent directly with `adk run techdebt_agent` (or
+`coverage_agent`/`duplicate_agent`), or browse all three at once with
+`adk web .` from the repo root — `core/` and `sonar/` show up in that same
+listing too, but they aren't agent directories (no `agent.py`), so
+selecting either just errors rather than doing anything.
 
 ---
 
@@ -174,6 +205,7 @@ cp .env.example .env   # fill in the keys below
 | `SOURCE_TYPE` | `local` or `github` |
 | `SOURCE_PATH` | used if `SOURCE_TYPE=local` |
 | `GITHUB_REPO` | used if `SOURCE_TYPE=github` — `owner/repo` or full URL |
+| `SOURCE_BRANCH` | optional — a specific branch to check out and fix instead of the repo's default. That branch must already have its own Sonar analysis (run a scan against it first); a chat user can also just say "on the develop branch" instead of setting this |
 | `GITHUB_TOKEN` | fine-grained PAT, `Contents: Read & write` — only needed to push the fix branch |
 | `WORKSPACE_ROOT` | where GitHub-mode clones land |
 | `LANGUAGE` | `java` (auto-detects Maven vs Gradle) or explicit `java-maven`/`java-gradle` |

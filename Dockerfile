@@ -1,4 +1,4 @@
-# Runs sonar_autofix_agent (run_local.py) to completion in one container.
+# Runs techdebt_agent (run_local.py) to completion in one container.
 # Needs java + mvn + gradle on PATH, not just Python -- SetupStep's preflight
 # check and the adapters' compile/build/test calls shell out to whichever of
 # these the checked-out target project actually uses (adapters/base.py's

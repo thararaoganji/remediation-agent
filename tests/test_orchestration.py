@@ -36,11 +36,16 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from sonar_autofix_agent import agents, state_schema as sk
-from sonar_autofix_agent.adapters.base import BuildResult
-from sonar_autofix_agent.agents import (
-    ApplyAndVerifyStep, FetchPrioritizeStep, FixLlmGateStep, OuterExitCheck, RunFullVerifyStep,
-)
+from core import state_schema as sk
+from core.adapters.base import BuildResult
+from core.agents.checkpoint import RunFullVerifyStep
+from core.agents.fix_loop import FixLlmGateStep
+from core.agents.outer_loop import OuterExitCheck
+from techdebt_agent import fix as techdebt_fix
+from techdebt_agent import outer_loop as techdebt_outer_loop
+from techdebt_agent.fix import ApplyAndVerifyStep
+from techdebt_agent.outer_loop import FetchPrioritizeStep
+from core.agents import checkpoint as core_checkpoint
 
 APP_NAME = "test_app"
 
@@ -310,8 +315,8 @@ def test_retry_unresolved_issues_resolves_a_genuine_miss(tmp_path, monkeypatch):
     _git(["commit", "-m", "init"], str(repo))
 
     diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n class A {\n-  int x = 1;\n+  int x = 2;\n }\n"
-    monkeypatch.setattr(agents.fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(techdebt_fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {
@@ -336,10 +341,10 @@ def test_retry_unresolved_issues_declines_via_no_safe_fix(tmp_path, monkeypatch)
     _git(["commit", "-m", "init"], str(repo))
 
     monkeypatch.setattr(
-        agents.fix, "_build_fix_llm_agent",
+        techdebt_fix, "_build_fix_llm_agent",
         lambda: _stub_fix_llm_agent("NO_SAFE_FIX: needs a caller-side contract change"),
     )
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -365,8 +370,8 @@ def test_retry_unresolved_issues_reverts_on_compile_failure(tmp_path, monkeypatc
     _git(["commit", "-m", "init"], str(repo))
 
     diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n class A {\n-  int x = 1;\n+  int x = 2;\n }\n"
-    monkeypatch.setattr(agents.fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=False))
+    monkeypatch.setattr(techdebt_fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=False))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -398,10 +403,10 @@ def test_retry_unresolved_issues_captures_a_connection_error_instead_of_crashing
     _git(["commit", "-m", "init"], str(repo))
 
     monkeypatch.setattr(
-        agents.fix, "_build_fix_llm_agent",
+        techdebt_fix, "_build_fix_llm_agent",
         lambda: _stub_fix_llm_agent_raising(ConnectionResetError("Connection reset by peer")),
     )
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -434,8 +439,8 @@ def test_fetch_prioritize_excludes_reverted_files(monkeypatch):
             "component_path": "Fresh.java", "issue_key": "f1", "rule_key": "java:S4684",
         },
     ]
-    monkeypatch.setattr(agents.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
-    monkeypatch.setattr(agents.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
 
     initial_state = {
         "sonar_base_url": "http://localhost:9000",
@@ -472,8 +477,8 @@ def test_fetch_prioritize_excludes_flagged_but_not_completed_files(monkeypatch):
             "component_path": "Fresh.java", "issue_key": "f1", "rule_key": "java:S4684",
         },
     ]
-    monkeypatch.setattr(agents.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
-    monkeypatch.setattr(agents.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
 
     initial_state = {
         "sonar_base_url": "http://localhost:9000",
@@ -576,7 +581,7 @@ def test_checkpoint_bisection_restores_innocent_files_reverted_along_the_way(tmp
     _git(["commit", "-m", "fix: sonar issues in B.java"], str(repo))
     sha_b = _git_out(["rev-parse", "HEAD"], str(repo))
 
-    monkeypatch.setattr(agents.checkpoint, "get_adapter", lambda *a, **kw: _GuiltyMarkerAdapter())
+    monkeypatch.setattr(core_checkpoint, "get_adapter", lambda *a, **kw: _GuiltyMarkerAdapter())
 
     batch = [
         {"file": "A.java", "commit_sha": sha_a, "issue_keys": ["ka"]},

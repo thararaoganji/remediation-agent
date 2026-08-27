@@ -1,8 +1,8 @@
 import pytest
 import requests
 
-from sonar_autofix_agent.adapters.base import SonarPreflightError
-from sonar_autofix_agent.tools import sonar_tools
+from sonar.adapters import SonarPreflightError
+from sonar.tools import sonar_tools
 
 
 # --- _parse_effort_minutes ---------------------------------------------------

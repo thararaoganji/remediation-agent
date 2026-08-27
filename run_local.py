@@ -22,10 +22,9 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from sonar_autofix_agent import root_agent
-from sonar_autofix_agent.adapters.base import (
-    ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError,
-)
+from techdebt_agent import root_agent
+from core.adapters.base import ToolNotAvailableError, BuildToolNotDetectedError
+from sonar.adapters import SonarConfigNotFoundError
 
 load_dotenv()
 
@@ -63,6 +62,12 @@ def build_initial_state() -> dict:
         "sonar_token": os.environ["SONAR_TOKEN"],
         "ce_edition": os.environ.get("CE_EDITION", "true").lower() == "true",
         "github_token": os.environ.get("GITHUB_TOKEN") or None,
+        # Optional -- omit or leave unset to use the repo's default branch,
+        # same as before this existed. When set, both the checked-out code
+        # AND the Sonar issues fetched come from this branch specifically
+        # (see SetupStep's preflight check for the "this branch has never
+        # been analyzed" failure mode this guards against).
+        "source_branch": os.environ.get("SOURCE_BRANCH") or None,
         "workspace_root": os.environ.get(
             "WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
         ),

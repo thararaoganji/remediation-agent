@@ -2,7 +2,7 @@ import os
 import stat
 import subprocess
 
-from sonar_autofix_agent.tools import git_tools
+from core.tools import git_tools
 
 
 def _git(args, cwd):
@@ -134,6 +134,102 @@ def test_resolve_source_local_switches_off_a_stale_agent_branch(git_repo):
     current = _git(["branch", "--show-current"], working_dir).stdout.strip()
     assert current == "main"
     assert (git_repo / "A.java").read_text() == "original\n"
+
+
+# --- _checkout_source_branch / resolve_source(source_branch=...) -------------
+
+def test_checkout_source_branch_uses_existing_local_branch(git_repo):
+    (git_repo / "A.java").write_text("on main\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["checkout", "-b", "develop"], str(git_repo))
+    (git_repo / "A.java").write_text("on develop\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "develop work"], str(git_repo))
+    _git(["checkout", "main"], str(git_repo))
+
+    git_tools._checkout_source_branch(str(git_repo), "develop")
+    assert _git(["branch", "--show-current"], str(git_repo)).stdout.strip() == "develop"
+    assert (git_repo / "A.java").read_text() == "on develop\n"
+
+
+def test_checkout_source_branch_tracks_from_origin_when_only_remote_exists(tmp_path):
+    """Mirrors what a real GitHub-clone repo looks like: a branch that
+    exists as a remote-tracking ref (origin/develop) but was never
+    checked out locally -- resolve_source's local path must still be able
+    to reach it, not just branches that already have a local ref."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(["init", "-q", "-b", "main"], str(upstream))
+    _git(["config", "user.email", "t@example.com"], str(upstream))
+    _git(["config", "user.name", "T"], str(upstream))
+    (upstream / "A.java").write_text("on main\n")
+    _git(["add", "-A"], str(upstream))
+    _git(["commit", "-m", "init"], str(upstream))
+    _git(["checkout", "-b", "develop"], str(upstream))
+    (upstream / "A.java").write_text("on develop\n")
+    _git(["add", "-A"], str(upstream))
+    _git(["commit", "-m", "develop work"], str(upstream))
+
+    clone = tmp_path / "clone"
+    _git(["clone", "-q", str(upstream), str(clone)], str(tmp_path))  # clones main only, by default
+
+    git_tools._checkout_source_branch(str(clone), "develop")
+    assert _git(["branch", "--show-current"], str(clone)).stdout.strip() == "develop"
+    assert (clone / "A.java").read_text() == "on develop\n"
+
+
+def test_checkout_source_branch_raises_when_branch_not_found_anywhere(git_repo):
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    import pytest
+    with pytest.raises(RuntimeError, match="not found locally or on origin"):
+        git_tools._checkout_source_branch(str(git_repo), "does-not-exist")
+
+
+def test_resolve_source_local_checks_out_requested_branch_instead_of_default(git_repo):
+    (git_repo / "A.java").write_text("on main\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["checkout", "-b", "release"], str(git_repo))
+    (git_repo / "A.java").write_text("on release\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "release work"], str(git_repo))
+    _git(["checkout", "main"], str(git_repo))
+
+    working_dir = git_tools.resolve_source(str(git_repo), "local", "/unused", source_branch="release")
+
+    assert _git(["branch", "--show-current"], working_dir).stdout.strip() == "release"
+    assert (git_repo / "A.java").read_text() == "on release\n"
+
+
+def test_resolve_source_github_clone_includes_branch_flag(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(args, cwd=None, env=None):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    git_tools.resolve_source(
+        "owner/repo", "github", str(tmp_path), source_branch="release/v2",
+    )
+    assert "--branch" in captured["args"]
+    assert captured["args"][captured["args"].index("--branch") + 1] == "release/v2"
+
+
+def test_resolve_source_github_clone_omits_branch_flag_when_not_given(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(args, cwd=None, env=None):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+    assert "--branch" not in captured["args"]
 
 
 # --- create_branch -----------------------------------------------------------

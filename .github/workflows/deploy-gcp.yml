@@ -19,7 +19,9 @@ on:
   push:
     branches: [main]
     paths:
-      - "sonar_autofix_agent/**"
+      - "techdebt_agent/**"
+      - "sonar/**"
+      - "core/**"
       - "run_local.py"
       - "requirements.txt"
       - "Dockerfile"
