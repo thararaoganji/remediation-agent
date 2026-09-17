@@ -17,6 +17,9 @@ BRANCH_NAME = "branch_name"
 SOURCE_TYPE = "source_type"          # "local" | "github"
 WORKING_DIR = "working_dir"
 LANGUAGE = "language"                # drives which LanguageAdapter tools use
+AGENT_SLUG = "agent_slug"            # "techdebt" | "coverage" | "duplicate" -- isolates each agent's github clone dir
+RUN_BASE_SHA = "run_base_sha"        # HEAD right after the run's branch was created (its base commit)
+COVERAGE_REPORT_NEEDED = "coverage_report_needed"  # coverage agent: run test+jacoco XML before `sonar` so coverage is measured
 
 # --- Outer loop (5.5) ---
 OUTER_ITERATION = "outer_iteration"

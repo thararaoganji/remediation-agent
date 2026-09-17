@@ -197,6 +197,39 @@ def test_verify_unknown_rule_key_unresolved_when_flagged_line_untouched(tmp_path
     assert result == {"k1": False}
 
 
+def test_verify_unresolved_when_this_qualifier_merely_dropped(tmp_path):
+    """Regression: exact live bug (be-exps-portal, a real tech-debt run).
+    java:S6809 ("call transactional methods via an injected dependency
+    instead of directly via 'this'") has no _VIOLATION_COUNT entry, so its
+    only check was the per-line text-presence one -- and the model's
+    "fix" was `this.createExpense(...)` -> `createExpense(...)`, nothing
+    else. That's still exactly the same same-instance self-invocation
+    bypassing Spring's @Transactional proxy as before -- dropping `this.`
+    is the textbook surface-level dodge for this whole class of rule, not
+    a real fix. Unnormalized, the ORIGINAL flagged text (with `this.`) is
+    gone from the file, so the old check reported it resolved; the run
+    committed it, and the issue stayed open on Sonar's side (same
+    underlying code shape), invisible to both the agent's own review
+    queue and the checkpoint's re-scan (not a NEW issue, so reconciliation
+    never looks at it either)."""
+    before = (
+        "    public Expense createExpense(...) {\n"
+        "        return this.createExpense(description, amount, receipt, username, category, expenseDate, false);\n"
+        "    }\n"
+    )
+    after = (
+        "    public Expense createExpense(...) {\n"
+        "        return createExpense(description, amount, receipt, username, category, expenseDate, false);\n"
+        "    }\n"
+    )
+    _write(tmp_path, "A.java", after)
+    issues = [issue("java:S6809", "k1", 2, 2)]
+    result = patch_tools.verify_issue_patterns_resolved(
+        "A.java", issues, str(tmp_path), original_content=before,
+    )
+    assert result == {"k1": False}
+
+
 def test_verify_resolved_when_flagged_line_is_a_bare_closing_brace(tmp_path):
     """Regression: exact live bug (spring-petclinic). S2699's flagged
     range for a "test has no assertion" issue can be just the method's

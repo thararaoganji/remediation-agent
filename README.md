@@ -1,40 +1,43 @@
-# Sonar Auto-Fix Agent (Google ADK)
+# Sonar Remediation Agents (Google ADK)
 
-Autonomous agent that fetches SonarQube findings from a local or GitHub-hosted
-Java project, fixes them file-by-file, verifies the build, and re-scans to
-confirm no regressions — targeting a specific rating outcome, not just "fewer
-issues." Built on Google's Agent Development Kit (ADK).
+Three autonomous agents that take a Java project's SonarQube findings to a
+target outcome — not just "fewer issues" — fixing them file-by-file,
+verifying the build, and re-scanning to confirm no regressions. Built on
+Google's Agent Development Kit (ADK).
 
-**Status: architecture and orchestration are fully wired. Several I/O-layer
-functions are still stubs (`NotImplementedError`) — see [Implementation
-Status](#implementation-status) before assuming this runs end-to-end.**
+| Package | Agent | What it drives |
+|---|---|---|
+| `agent_techdebt/` | **Sonar Tech-Debt Agent** | Security / Reliability / Maintainability ratings → A |
+| `agent_coverage/` | **Sonar Coverage Agent** | Test coverage % up (generates JUnit tests for uncovered lines) |
+| `agent_duplicate/` | **Sonar Duplication Agent** | Duplicated-lines density down (refactors shared logic into helpers) |
+
+All three share one engine (`core/`) and one SonarQube integration layer
+(`sonar/`); only the fetch / prompt / apply-and-verify steps differ.
 
 ---
 
-## What this agent is trying to achieve
+## What the Tech-Debt Agent targets
 
 Not "fix all Sonar issues." Specifically:
 
-- **Security & Reliability ratings → A.** These are gated by the single
-  *worst* open Bug/Vulnerability, not a ratio — so scope here goes all the
-  way down to Minor/Low severity (Info excluded, since it never gates the
-  rating).
-- **Maintainability rating → A.** This is a technical-debt *ratio* (≤5% for
-  A), not a worst-issue threshold. Scope stays at Critical/High/Medium by
-  default; a separate pass only pulls in more Minor/Low code smells if the
+- **Security & Reliability ratings → A.** Gated by the single *worst* open
+  Bug/Vulnerability, not a ratio — so scope goes down to Minor/Low
+  severity (Info excluded, since it never gates the rating).
+- **Maintainability rating → A.** A technical-debt *ratio* (≤5% for A), not
+  a worst-issue threshold. Scope stays at Critical/High/Medium by default;
+  a separate expansion pass pulls in more Minor/Low code smells only if the
   ratio is still over target after the main pass, prioritized by
   remediation-effort (highest debt-minutes first).
-- **Duplication and coverage are explicitly out of scope.** They're metrics,
-  not issues, so they never entered issue-fetching — but `OUT_OF_SCOPE_METRICS`
-  and `IN_SCOPE_RATING_METRICS` in `tools/sonar_tools.py` exist specifically
-  so nothing downstream can accidentally pull them back into the success
-  criterion.
 - **Minor/Low Security & Reliability issues are never auto-resolved.**
   They're routed to a human-review queue (`won't-fix`/`false-positive`
-  candidates) instead of either (a) being silently dropped or (b) having the
-  agent generate a diff for every trivial one. See
-  `tools/sonar_tools.resolve_issue_transition()` — it exists but is
-  deliberately not called anywhere in the autonomous loop.
+  candidates). `sonar_tools.resolve_issue_transition()` exists but is
+  deliberately never called in the autonomous loop — see [Implementation
+  status](#implementation-status).
+- **Duplication and coverage are out of scope for this agent** — they're
+  metrics, not issues, and are handled by the other two agents.
+  `OUT_OF_SCOPE_METRICS` / `IN_SCOPE_RATING_METRICS` in
+  `sonar/tools/sonar_tools.py` guard against anything downstream pulling
+  them back into the success criterion.
 
 ---
 
@@ -42,70 +45,85 @@ Not "fix all Sonar issues." Specifically:
 
 ### Design principle: LLM only where it has to be
 
-`fix_llm_agent` (an ADK `LlmAgent`) is the **only** LLM call in the entire
-graph. Every other decision — prioritization, cluster classification, patch
-application, checkpoint gating, loop exit, tool availability — is a plain
-`BaseAgent` making a deterministic decision from `session.state`. This is
-enforced by the object graph, not just a convention: a `BaseAgent` cannot
-improvise a different orchestration path the way an `LlmAgent` could.
+`fix_llm_agent` (an ADK `LlmAgent`) is the **only** LLM call in the fix
+loop, shared by all three agents. Every other decision — prioritization,
+cluster classification, patch application, checkpoint gating, loop exit,
+tool availability — is a plain `BaseAgent` making a deterministic decision
+from `session.state`. This is enforced by the object graph, not just
+convention: a `BaseAgent` cannot improvise a different orchestration path
+the way an `LlmAgent` could.
 
-### Agent graph
+The intake step also uses a small `LlmAgent` (`sonar/intake.py`), but only
+to extract a repo location from a chat message — a fully pre-seeded run
+(`run_local.py`) never invokes it.
+
+### Tech-Debt Agent graph
 
 ```
-root_agent (SequentialAgent)
-├── SetupStep                     -- resolve source, branch, PREFLIGHT CHECK (fail fast)
-├── outer_loop (LoopAgent, max 5)
-│     ├── FetchPrioritizeStep     -- fetch Sonar issues, classify, build file queue
-│     ├── per_file_loop (LoopAgent)
-│     │     ├── FileFixerStep     -- cluster classification (5.2/6.1 resolution), builds prompt
-│     │     ├── fix_llm_agent     -- ONLY LLM call: generates a unified diff for one file
-│     │     ├── ApplyAndVerifyStep -- apply diff, compile check, pattern-verify, commit
-│     │     └── CheckpointGate    -- fires checkpoint_pipeline every N files
-│     │           └── checkpoint_pipeline (SequentialAgent)
-│     │                 ├── RunFullVerifyStep          -- full build + test suite
-│     │                 └── TriggerAndReconcileScanStep -- re-scan, catch regressions
-│     └── OuterExitCheck          -- escalate when queue empty or max iterations hit
-├── maintainability_expansion_loop (LoopAgent, max 4)
-│     ├── MaintainabilityDebtCheckStep -- checks sqale_debt_ratio, tops up scope if needed
-│     └── per_file_loop (reused)
-├── PushStep                      -- push the fix branch to origin (skips if nothing was committed)
-└── ReportStep                    -- final ratings, review queue, flagged files, push result
+root_agent (techdebt_intake_step)     -- chat front door; skipped when state is pre-seeded
+└── sonar_techdebt_pipeline (SequentialAgent)
+    ├── SetupStep                      -- resolve source, branch, PREFLIGHT CHECK (fail fast)
+    ├── outer_loop (LoopAgent, max 5)
+    │     ├── FetchPrioritizeStep      -- fetch Sonar issues, classify, build file queue
+    │     ├── per_file_loop (LoopAgent)
+    │     │     ├── FileFixerStep      -- cluster classification, builds the fix prompt
+    │     │     ├── fix_llm_agent      -- ONLY LLM call: generates a unified diff for one file
+    │     │     ├── ApplyAndVerifyStep -- apply diff, compile check, pattern-verify, commit
+    │     │     └── CheckpointGate     -- every N files: full build + test, re-scan, catch regressions
+    │     └── OuterExitCheck           -- escalate when queue empty or max iterations hit
+    ├── maintainability_expansion_loop (LoopAgent, max 4)
+    │     └── MaintainabilityDebtCheckStep + per_file_loop  -- tops up scope if debt ratio still over target
+    ├── PushStep                       -- push the fix branch to origin (skips if nothing committed)
+    └── ReportStep                     -- final ratings, review queue, flagged files, push result
 ```
 
-### Why some things are custom `BaseAgent`s instead of ADK's built-in primitives
+The Coverage and Duplication agents follow the same shape:
+`SetupStep → BaselineStep → outer_loop → quality_loop → PushStep → ReportStep`,
+reusing `core/`'s per-file loop and `sonar/`'s checkpoint pipeline.
 
-ADK's `LoopAgent` repeats a fixed sub-agent list — it has no native "iterate
-over a list" or "every N iterations" primitive. Both are implemented as
-explicit state-driven `BaseAgent`s instead of being forced into a shape ADK
-wasn't built for:
+The Coverage agent adds:
+- **Preflight-fails if the project has no JaCoCo** configured (`id 'jacoco'`
+  in `build.gradle`, or `jacoco-maven-plugin` with a `prepare-agent`
+  execution) — without it Sonar reports 0% for every file and there's
+  nothing to measure. That plugin declaration is the *only* build-file
+  change needed: the scan runs `test jacocoTestReport sonar` in one
+  invocation (the `org.sonarqube` plugin never runs `jacocoTestReport`
+  itself), an injected init-script forces the JaCoCo XML report on (off by
+  default in Gradle), and `-Dsonar.coverage.jacoco.xmlReportPaths` is
+  passed explicitly so nothing depends on auto-detection.
+- **`CoverageFinalVerifyStep`** before push: one last full build, giving the
+  model up to 3 passes to fix its own test files against the real error,
+  and resetting the branch to its base commit rather than pushing red if
+  that fails — then the authoritative final coverage scan.
+
+### Why custom `BaseAgent`s instead of ADK's built-in primitives
+
+ADK's `LoopAgent` repeats a fixed sub-agent list — no native "iterate over
+a list" or "every N iterations". Both are explicit state-driven
+`BaseAgent`s:
 
 - **`per_file_loop`'s real exit condition** is `FileFixerStep` popping an
-  empty `ORDERED_FILES_REMAINING` and signaling `escalate=True` — the loop's
-  own `max_iterations` is just a generous ceiling, not the actual control.
+  empty `ORDERED_FILES_REMAINING` and signaling `escalate=True` — the
+  loop's `max_iterations` is just a generous ceiling.
 - **`CheckpointGate`** manually checks `FILES_SINCE_CHECKPOINT` against
-  `CHECKPOINT_BATCH_SIZE` and conditionally dispatches `checkpoint_pipeline`.
+  `CHECKPOINT_BATCH_SIZE` and conditionally dispatches the checkpoint
+  pipeline.
 
 ---
 
-## The 5.2/6.1 resolution (cluster handling)
-
-Original design tension: should overlapping/nested Sonar issues in the same
-file be fixed in one LLM call (matching the batched fix-prompt skeleton) or
-require a re-read-and-relocate cycle (the original per-issue-cluster
-handling)? Resolved as:
+## Cluster handling (overlapping issues in one file)
 
 1. **Classification happens before any LLM call**, deterministically, using
-   `textRange` (`tools/patch_tools.classify_and_prepare_batch`).
+   `textRange` (`sonar/tools/patch_tools.classify_and_prepare_batch`).
 2. **Colliding clusters (partial overlap, not nested) are excluded from the
-   prompt entirely** and flagged for manual review — never sent to the LLM.
+   prompt** and flagged for manual review — never sent to the LLM.
 3. **Independent and nested issues stay in one batched prompt per file** —
-   the model resolves nested cascades itself in a single pass, since it sees
-   the full current file text, not stale offsets.
-4. **The orchestrator's "re-read and relocate" step becomes verification,
-   not regeneration**: `patch_tools.verify_issue_patterns_resolved()` checks
-   each targeted issue's pattern is actually gone after the diff applies. A
-   narrow, single-issue follow-up LLM call only fires if that check fails —
-   the exception path, not the default.
+   the model resolves nested cascades itself in a single pass, since it
+   sees the full current file text, not stale offsets.
+4. **"Re-read and relocate" is verification, not regeneration:**
+   `patch_tools.verify_issue_patterns_resolved()` checks each targeted
+   issue's pattern is actually gone after the diff applies. A narrow
+   single-issue follow-up LLM call fires only if that check fails.
 
 Net effect: LLM calls stay at O(files), not O(issues).
 
@@ -113,22 +131,21 @@ Net effect: LLM calls stay at O(files), not O(issues).
 
 ## Scope logic (severity floors, review lane, debt ratio)
 
-All in `tools/sonar_tools.py`, single source of truth: `classify_issue()`.
+All in `sonar/tools/sonar_tools.py`, single source of truth:
+`classify_issue()`.
 
 | Category | In-scope severities | Action |
 |---|---|---|
 | Security | Blocker/Critical/Major/Minor (legacy) or Blocker/High/Medium/Low (Clean Code) | Minor/Low → review queue; rest → autofix |
 | Reliability | same as Security | same split |
-| Maintainability | Blocker/Critical/Major or Blocker/High/Medium only | autofix (expansion pass below tops up if needed) |
+| Maintainability | Blocker/Critical/Major or Blocker/High/Medium only | autofix (expansion pass tops up if needed) |
 | Hotspots | `vulnerabilityProbability` HIGH/MEDIUM only | autofix |
 
-Info-severity is out of scope everywhere — it never gates a rating.
-
-`partition_and_prioritize()` splits fetched issues into the autofix file
-queue and the `WONT_FIX_REVIEW_QUEUE` (never auto-resolved). The
-Maintainability expansion loop only fires if `sqale_debt_ratio` is still
-above `MAINTAINABILITY_DEBT_RATIO_TARGET` (5.0) after the main pass, pulling
-Minor/Low code smells sorted by remediation-minutes descending.
+Info-severity is out of scope everywhere. `partition_and_prioritize()`
+splits fetched issues into the autofix file queue and the
+`WONT_FIX_REVIEW_QUEUE` (never auto-resolved). The Maintainability
+expansion loop only fires if `sqale_debt_ratio` is still above
+`MAINTAINABILITY_DEBT_RATIO_TARGET` (5.0) after the main pass.
 
 ---
 
@@ -136,55 +153,72 @@ Minor/Low code smells sorted by remediation-minutes descending.
 
 ```
 core/                      -- tool-agnostic fix-loop engine, shared by every
-│                              agent regardless of finding source (Sonar today;
-│                              Veracode/Coverity/SBOM/Black Duck are meant to
-│                              plug into this same engine later)
+│                             agent regardless of finding source (Sonar today;
+│                             Veracode/Coverity/SBOM/Black Duck could plug into
+│                             the same engine later)
 ├── state_schema.py          -- all session.state keys, one place
 ├── adapters/base.py          -- LanguageAdapter interface, Maven + Gradle impls
 ├── tools/
 │   ├── git_tools.py            -- local/GitHub source resolution, branch, commit
-│   └── patch_tools.py           -- apply_diff, JUnit failure parsing
+│   └── patch_tools.py          -- apply_diff, JUnit failure parsing
 └── agents/
-    ├── fix_loop.py              -- the LLM-call gate, diff/NO_SAFE_FIX helpers
-    ├── checkpoint.py             -- full build verify + bisect-revert
-    ├── outer_loop.py              -- generic "queue empty or max iterations" exit
-    └── report.py                  -- push branch, duration formatting
+    ├── fix_loop.py             -- the LLM-call gate, per-file loop, diff/NO_SAFE_FIX helpers
+    ├── checkpoint.py           -- full build verify + bisect-revert
+    ├── outer_loop.py           -- generic "queue empty or max iterations" exit
+    └── report.py               -- push branch, duration formatting
 
-sonar/                      -- everything specific to SonarQube as a finding
-│                              source, shared across the three agents below.
-│                              Not an agent itself -- deliberately a plain
-│                              (non-agent) package, since adk web/run always
-│                              import the selected agent as a bare top-level
-│                              module with only ITS OWN parent directory on
-│                              sys.path -- nesting an agent inside sonar/
-│                              would put core/ out of reach of its imports.
-│                              Every agent below imports from here as
-│                              `sonar.X`, which only resolves because the
-│                              agents themselves stay at the repo root,
-│                              alongside sonar/ and core/, not inside sonar/.
+sonar/                     -- everything specific to SonarQube as a finding
+│                             source, shared across the three agents. A plain
+│                             (non-agent) package: adk web/run import the
+│                             selected agent as a bare top-level module with
+│                             only its own parent dir on sys.path, so the
+│                             agents stay at the repo root alongside sonar/
+│                             and core/, not nested inside sonar/.
 ├── adapters.py               -- Sonar project-key resolution + scan invocation
-├── setup.py                   -- validates Sonar connection, creates the branch
-├── checkpoint.py                -- re-scan + reconcile new Sonar findings
-├── intake.py                     -- shared conversational front-door plumbing
+├── setup.py                  -- SetupStep: validates the Sonar connection, creates the branch
+├── checkpoint.py             -- re-scan + reconcile new Sonar findings
+├── intake.py                 -- shared conversational front door + build_intake_step()
 └── tools/
-    ├── sonar_tools.py             -- fetch/classify/prioritize, ratings, debt ratio
-    ├── patch_tools.py              -- cluster classification, verification
-    └── deterministic_fixes.py       -- mechanical one-shot rule fixes
+    ├── sonar_tools.py          -- fetch/classify/prioritize, ratings, debt ratio, metrics
+    ├── patch_tools.py          -- cluster classification, verification
+    └── deterministic_fixes.py  -- mechanical one-shot rule fixes
 
-techdebt_agent/             -- fixes Security/Reliability/Maintainability issues
-coverage_agent/             -- generates JUnit tests for uncovered lines
-duplicate_agent/            -- refactors out duplicated code blocks
+agent_techdebt/            -- Sonar Tech-Debt Agent (Security/Reliability/Maintainability)
+agent_coverage/            -- Sonar Coverage Agent (JUnit tests for uncovered lines)
+agent_duplicate/           -- Sonar Duplication Agent (extract duplicated blocks)
 
-run_local.py               -- entry point: loads .env, seeds session state, runs the graph
-.env.example                -- copy to .env and fill in
-requirements.txt
+run_local.py               -- entry point: loads .env, seeds session state, runs agent_techdebt
+.env.example               -- copy to .env and fill in
 ```
 
-Run any single agent directly with `adk run techdebt_agent` (or
-`coverage_agent`/`duplicate_agent`), or browse all three at once with
-`adk web .` from the repo root — `core/` and `sonar/` show up in that same
-listing too, but they aren't agent directories (no `agent.py`), so
-selecting either just errors rather than doing anything.
+Run one agent directly with `adk run agent_techdebt` (or `agent_coverage` /
+`agent_duplicate`), or browse all three with `adk web .` from the repo root.
+`core/` and `sonar/` show up in that listing too but aren't agent
+directories (no `agent.py`), so selecting either just errors.
+
+For a real run, use `run_local.py` — not `adk web` / `adk run`. Those are
+built for turn-by-turn chat; this pipeline runs to completion from
+pre-seeded state. (`run_local.py` runs `agent_techdebt`; point it at the
+other two by swapping the import.)
+
+### Per-agent clone isolation
+
+Each agent works on a **separate clone** of a GitHub source, in its own
+sibling workspace dir so the three can run against the same repo without
+colliding on a working tree or branch:
+
+```
+<dirname of WORKSPACE_ROOT>/
+├── sonar_remediation_techdebt/<repo>/
+├── sonar_remediation_coverage/<repo>/
+└── sonar_remediation_duplicate/<repo>/
+```
+
+Wired via `AGENT_SLUG` in each `agent_*/__init__.py` →
+`git_tools.agent_workspace_root()`. **Local source (`SOURCE_TYPE=local`) is
+still edited in place** — no per-agent copy — so two agents pointed at the
+same local path *will* collide; run them one at a time, or point each at
+its own checkout.
 
 ---
 
@@ -193,89 +227,72 @@ selecting either just errors rather than doing anything.
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # fill in the keys below
+cp .env.example .env   # fill in the keys
+python run_local.py
 ```
 
 | `.env` key | Purpose |
 |---|---|
 | `GOOGLE_API_KEY` | Gemini access for `fix_llm_agent` (AI Studio) |
-| `SONAR_BASE_URL` | local Sonar instance, e.g. `http://localhost:9000` |
+| `SONAR_BASE_URL` | SonarQube instance, e.g. `http://localhost:9000` |
 | `SONAR_TOKEN` | Sonar UI → My Account → Security → Generate Token |
-| `CE_EDITION` | `true` → local working-tree scan (Community Edition has no branch analysis) |
+| `CE_EDITION` | `true` → local working-tree scan (leave `true` even on paid editions) |
 | `SOURCE_TYPE` | `local` or `github` |
 | `SOURCE_PATH` | used if `SOURCE_TYPE=local` |
 | `GITHUB_REPO` | used if `SOURCE_TYPE=github` — `owner/repo` or full URL |
-| `SOURCE_BRANCH` | optional — a specific branch to check out and fix instead of the repo's default. That branch must already have its own Sonar analysis (run a scan against it first); a chat user can also just say "on the develop branch" instead of setting this |
-| `GITHUB_TOKEN` | fine-grained PAT, `Contents: Read & write` — only needed to push the fix branch |
-| `WORKSPACE_ROOT` | where GitHub-mode clones land |
+| `GITHUB_TOKEN` | fine-grained PAT, `Contents: Read & write` — only to push the fix branch |
+| `WORKSPACE_ROOT` | base for GitHub-mode clones — each agent clones into its own sibling `sonar_remediation_<agent>/` (see below) |
 | `LANGUAGE` | `java` (auto-detects Maven vs Gradle) or explicit `java-maven`/`java-gradle` |
-| `FIX_LLM_THINKING_LEVEL` | optional, default `LOW` — caps `fix_llm_agent`'s Gemini thinking effort per file (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`). Raise it if fix quality regresses on complex multi-issue files. |
+| `SOURCE_BRANCH` | optional — a specific branch to check out and fix (must already have its own Sonar analysis) |
+| `FIX_LLM_THINKING_LEVEL` | optional, default `LOW` — caps Gemini thinking effort per file (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`) |
 
-Note: `sonar.projectKey` is not an `.env` setting — it's read directly from the
-checked-out repo's `build.gradle`/`build.gradle.kts` (`sonar { properties { property "sonar.projectKey", ... } } }`
-or `gradle.properties`) or `pom.xml` (`<sonar.projectKey>` property, falling back to `groupId:artifactId`),
-so it always matches whatever project key the Sonar plugin itself will scan under.
+`sonar.projectKey` is **not** an `.env` setting — it's read from the
+checked-out repo's `build.gradle`/`gradle.properties` or `pom.xml` so it
+always matches whatever key the Sonar plugin scans under.
 
 ---
 
 ## Prerequisites (checked automatically, fail-fast)
 
-`SetupStep` validates all of these before touching a git branch or fetching a
-single issue — a failure here stops the run immediately with a specific,
-actionable message instead of failing confusingly mid-pipeline (or, worse,
-silently finding 0 issues). Worth self-checking before a run too:
+`SetupStep` validates all of these before touching a git branch or fetching
+an issue — a failure stops the run immediately with an actionable message.
 
 **Tooling** (`ToolNotAvailableError`)
 - `java` on PATH.
-- `mvn`/`gradle` on PATH, *or* the repo ships a working wrapper (`mvnw`/`mvnw.cmd`,
-  `gradlew`/`gradlew.bat` **and** the committed `gradle/wrapper/gradle-wrapper.jar`
-  — a wrapper script without its jar, common when it's gitignored, fails
-  opaquely deep inside a build call otherwise).
+- `mvn`/`gradle` on PATH, *or* the repo ships a working wrapper (`mvnw`,
+  `gradlew` **and** the committed `gradle/wrapper/gradle-wrapper.jar`).
 
 **Repo/build-file configuration** (`BuildToolNotDetectedError` / `SonarConfigNotFoundError`)
-- `pom.xml` or `build.gradle[.kts]` exists at the repo root.
-- It resolves to a Sonar project key — either an explicit `sonar.projectKey`
-  property, or (Maven only) a `groupId`/`artifactId` to fall back to.
+- `pom.xml` or `build.gradle[.kts]` at the repo root.
+- It resolves to a Sonar project key — an explicit `sonar.projectKey`
+  property, or (Maven only) a `groupId`/`artifactId` fallback.
 - Local source only: the given path is a real git repository.
 
-**Sonar server state** (`SonarPreflightError`) — the two easiest to miss,
-since a project key can look completely valid and still fail here:
+**Sonar server state** (`SonarPreflightError`)
 - The server at `SONAR_BASE_URL` is reachable and `SONAR_TOKEN` authenticates
-  (`/api/authentication/validate` always returns HTTP 200 even for a bad
-  token — the actual signal is the `valid` field in the body, not the status
-  code).
+  (the signal is the `valid` field in the body, not the HTTP status).
 - **The resolved project key has at least one analysis already on that
-  server.** A key that resolves cleanly from `pom.xml`/`build.gradle` can
-  still be one nobody has ever scanned — or scanned under a *different*
-  key — and without this check the run would proceed to create a branch and
-  then silently find 0 issues, with nothing telling you why. If this fires,
-  run an initial scan first, e.g.:
+  server.** A key that resolves cleanly from `pom.xml`/`build.gradle` but
+  has never been scanned fails here rather than silently finding 0 issues.
+  Run one manual scan first:
   ```bash
   ./mvnw sonar:sonar -Dsonar.projectKey=<key> -Dsonar.host.url=$SONAR_BASE_URL -Dsonar.token=$SONAR_TOKEN
   # or
   ./gradlew sonar -Dsonar.projectKey=<key> -Dsonar.host.url=$SONAR_BASE_URL -Dsonar.token=$SONAR_TOKEN
   ```
-  then re-run — `sonar.projectKey` only needs to be set on the initial scan;
-  persisting it in `pom.xml`/`build.gradle` afterward keeps every later run
-  (including the ones this agent triggers itself) pointed at the same key.
 
-Not currently pre-checked, still worth confirming yourself: GitHub source
-with a private repo needs a `GITHUB_TOKEN` with read access for the clone
-(currently only surfaces as a clone failure); pushing the fix branch needs
-`Contents: Read & write` on that same token.
+Not pre-checked: a private GitHub repo needs a `GITHUB_TOKEN` with read
+access for the clone; pushing the fix branch needs `Contents: Read & write`.
 
 ---
 
-## Run
+## Deployment
 
-```bash
-python run_local.py
-```
-
-Not `adk web` / `adk run` for real runs — those are built for turn-by-turn
-chat, and this pipeline runs to completion from pre-seeded state rather than
-responding conversationally. `run_local.py` is the actual entry point;
-`adk web` is only useful for poking at `fix_llm_agent` in isolation.
+See [docs/GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md): SonarQube on a Compute
+Engine VM, the agent as a Cloud Run **Job** (run-to-completion, not a
+service), secrets in Secret Manager, and CI/CD via
+`.github/workflows/deploy-gcp.yml` (Workload Identity Federation, no
+long-lived keys). GCP resources are named `sonar-remediation-*`.
 
 ---
 
@@ -286,45 +303,22 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Covers the deterministic logic layer — `tools/deterministic_fixes.py`,
-`tools/patch_tools.py`, `tools/git_tools.py`, `tools/sonar_tools.py`
-(classification/prioritization + preflight checks against mocked HTTP),
-`adapters/base.py`, and `prompts.py` — via real temp git repos and
-filesystem fixtures, no network or LLM calls, so it's fast and hermetic.
-
-Not yet covered: the `BaseAgent` orchestration classes in `agents.py`
-themselves (`FileFixerStep`, `ApplyAndVerifyStep`, `RunFullVerifyStep`,
-etc.). Unit-testing those directly needs a real `InvocationContext`
-(session, agent tree, ADK's own plumbing) rather than a plain mock, since
-they're written against that contract — worth adding as a follow-up, but
-scoped out here in favor of thorough coverage of the pure logic layer,
-which is both the highest-value and lowest-risk-to-test surface.
+Covers the deterministic logic layer — `sonar/tools/*`, `core/tools/*`,
+`core/adapters/base.py`, `agent_techdebt/prompts.py` — plus the `BaseAgent`
+orchestration classes (`tests/test_orchestration.py`,
+`tests/test_multi_agent.py`) driven through a real `Runner` with mocked
+adapters and a stubbed `fix_llm_agent`. No network or live LLM calls, so
+it's fast and hermetic.
 
 ---
 
 ## Implementation status
 
-Everything in `agents.py` is fully wired and real. These are still stubs
-(`raise NotImplementedError`) — the shape of the fix, but not the actual
-HTTP/subprocess call:
+Everything is wired and real. The **one** deliberate exception:
 
-- `tools/sonar_tools.py`: `fetch_issues_and_hotspots`, `get_rule_description`,
-  `trigger_sonar_analysis`, `poll_ce_task_status`,
-  `get_issues_created_after`, `get_quality_ratings`,
-  `get_maintainability_debt_ratio`, `resolve_issue_transition` (intentionally
-  never called autonomously — human-gated by design, not an oversight)
-- `adapters/base.py`: `parse_and_validate_patch` (both Maven and Gradle
-  adapters) — syntax-only diff validation, not yet implemented
-- `tools/patch_tools.py`: `apply_diff`, `verify_issue_patterns_resolved`
-
-Already real, not stubs: `git_tools.py` (full local/GitHub resolution,
-branching, commits), `adapters/base.py`'s `quick_compile_check` /
-`verify_build` / `preflight_check` / build-tool auto-detection for both
-Maven and Gradle, and all of `agents.py`'s orchestration.
-
-**Suggested next step if picking this up:** wire
-`fetch_issues_and_hotspots` + `get_rule_description` first — everything
-downstream (`classify_issue`, the file queue, the fix prompt) depends on the
-shape of what those two return, so getting real data flowing through them
-early surfaces any schema mismatches before more stubs get filled in on top
-of a guess.
+- `sonar/tools/sonar_tools.py::resolve_issue_transition()` raises
+  `NotImplementedError`. It is human-gated by design — the autonomous loop
+  routes Minor/Low Security & Reliability issues to
+  `WONT_FIX_REVIEW_QUEUE` and never transitions an issue's resolution
+  status itself. Wire it to `requests.post` only behind a human
+  confirmation step with an explicit list of issue keys.

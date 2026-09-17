@@ -41,10 +41,10 @@ from core.adapters.base import BuildResult
 from core.agents.checkpoint import RunFullVerifyStep
 from core.agents.fix_loop import FixLlmGateStep
 from core.agents.outer_loop import OuterExitCheck
-from techdebt_agent import fix as techdebt_fix
-from techdebt_agent import outer_loop as techdebt_outer_loop
-from techdebt_agent.fix import ApplyAndVerifyStep
-from techdebt_agent.outer_loop import FetchPrioritizeStep
+from agent_techdebt import fix as techdebt_fix
+from agent_techdebt import outer_loop as techdebt_outer_loop
+from agent_techdebt.fix import ApplyAndVerifyStep
+from agent_techdebt.outer_loop import FetchPrioritizeStep
 from core.agents import checkpoint as core_checkpoint
 
 APP_NAME = "test_app"

@@ -1,5 +1,5 @@
 """Fix-generation prompt for the coverage-enhancement agent — the coverage
-equivalent of sonar/techdebt_agent/prompts.py's build_fix_prompt(). Kept in
+equivalent of agent_techdebt/prompts.py's build_fix_prompt(). Kept in
 this package (not the shared one) since it's a genuinely different task
 shape: writing new test code against an existing production file, not
 patching the production file itself."""

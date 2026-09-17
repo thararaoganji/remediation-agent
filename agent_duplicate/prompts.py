@@ -1,5 +1,5 @@
 """Fix-generation prompt for the duplicate-code agent — the duplication
-equivalent of sonar/techdebt_agent/prompts.py's build_fix_prompt(). Kept in
+equivalent of agent_techdebt/prompts.py's build_fix_prompt(). Kept in
 this package (not the shared one) since the task shape and output format
 (a diff extracting duplicated blocks into a helper) is specific to this
 domain, not a Sonar-rule fix."""

@@ -12,6 +12,11 @@ import re
 import shutil
 import stat
 import subprocess
+import tempfile
+
+# Base for per-agent github clone dirs. Only its parent directory is used
+# (see agent_workspace_root); overridable via the WORKSPACE_ROOT env var.
+DEFAULT_WORKSPACE_ROOT = os.path.join(tempfile.gettempdir(), "sonar_remediation_workspaces")
 
 
 def _sanitize_string(text: str) -> str:
@@ -159,6 +164,23 @@ def _checkout_source_branch(working_dir: str, branch: str) -> None:
         f"Branch '{branch}' not found locally or on origin in {working_dir}. "
         "Check the branch name (case-sensitive) and that it's been pushed to origin."
     )
+
+
+def agent_workspace_root(base_workspace_root: str, agent_slug: str) -> str:
+    """Per-agent clone isolation. Each Sonar agent gets its own workspace
+    dir, a sibling of `base_workspace_root` named `sonar_remediation_<slug>`,
+    so running (say) the coverage and tech-debt agents against the same
+    repo never share a working tree -- separate clones, separate branches,
+    no mid-run collision.
+
+    Only github source is affected: local source is edited in place (see
+    resolve_source), so its callers keep passing SOURCE_PATH directly and
+    never reach this. The base's own basename is discarded, only its parent
+    matters -- `/tmp/sonar_remediation_workspaces` and a stale
+    `/tmp/sonar_autofix_workspaces` both resolve to
+    `/tmp/sonar_remediation_<slug>`."""
+    parent = os.path.dirname(os.path.normpath(base_workspace_root))
+    return os.path.join(parent, f"sonar_remediation_{agent_slug}")
 
 
 def resolve_source(
@@ -316,11 +338,23 @@ def commit(working_dir: str, message: str) -> str | None:
     if not status.stdout.strip():
         return None
     _run(["git", "commit", "-m", message], cwd=working_dir)
+    return current_sha(working_dir)
+
+
+def current_sha(working_dir: str) -> str:
     return _run(["git", "rev-parse", "HEAD"], cwd=working_dir).stdout.strip()
 
 
 def revert_file(working_dir: str, file_path: str) -> None:
     _run(["git", "checkout", "--", file_path], cwd=working_dir)
+
+
+def reset_hard(working_dir: str, sha: str) -> None:
+    """Discards every commit and working-tree change back to `sha`. Only
+    safe on this run's own throwaway agent branch (never the source
+    branch) -- used when a final full build can't be made to pass and the
+    whole run's changes have to be abandoned rather than pushed broken."""
+    _run(["git", "reset", "--hard", sha], cwd=working_dir)
 
 
 def revert_commit_for_file(working_dir: str, commit_sha: str, file_path: str) -> None:

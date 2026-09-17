@@ -1,4 +1,4 @@
-# Runs techdebt_agent (run_local.py) to completion in one container.
+# Runs agent_techdebt (run_local.py) to completion in one container.
 # Needs java + mvn + gradle on PATH, not just Python -- SetupStep's preflight
 # check and the adapters' compile/build/test calls shell out to whichever of
 # these the checked-out target project actually uses (adapters/base.py's
@@ -45,8 +45,10 @@ COPY . .
 
 # Every run needs its own scratch space; Cloud Run Jobs give each execution
 # a fresh container filesystem, so this is safe to keep ephemeral rather
-# than a mounted volume.
-ENV WORKSPACE_ROOT=/tmp/sonar_autofix_workspaces
-RUN mkdir -p "$WORKSPACE_ROOT"
+# than a mounted volume. The agent derives its actual clone dir from this
+# base, per agent (/tmp/sonar_remediation_<slug>/) -- see
+# git_tools.agent_workspace_root; only the parent (/tmp) matters here, and
+# resolve_source() creates the dir itself, so no mkdir needed.
+ENV WORKSPACE_ROOT=/tmp/sonar_remediation_workspaces
 
 ENTRYPOINT ["python3", "run_local.py"]

@@ -62,6 +62,7 @@ def test_setup_step_raises_when_source_branch_has_no_sonar_analysis(tmp_path, mo
 def test_setup_step_proceeds_when_source_branch_has_sonar_analysis(tmp_path, monkeypatch):
     monkeypatch.setattr(setup_mod.git_tools, "resolve_source", lambda *a, **kw: str(tmp_path))
     monkeypatch.setattr(setup_mod.git_tools, "create_branch", lambda *a, **kw: "proj_agent_x")
+    monkeypatch.setattr(setup_mod.git_tools, "current_sha", lambda *a, **kw: "base0000")
     monkeypatch.setattr(setup_mod, "get_adapter", lambda *a, **kw: _FakeAdapter())
     monkeypatch.setattr(setup_mod.sonar_tools, "validate_connection", lambda *a, **kw: None)
     monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)
@@ -76,11 +77,34 @@ def test_setup_step_proceeds_when_source_branch_has_sonar_analysis(tmp_path, mon
     )
 
 
+def test_setup_step_passes_per_agent_workspace_root_to_resolve_source(tmp_path, monkeypatch):
+    """Each agent's github clone must land in its own sonar_remediation_<slug>
+    dir, not one shared across all three -- so a coverage and a tech-debt run
+    against the same repo never collide on a working tree."""
+    captured = {}
+
+    def _fake_resolve(source, source_type, *, workspace_root, **kw):
+        captured["workspace_root"] = workspace_root
+        return str(tmp_path)
+
+    monkeypatch.setattr(setup_mod.git_tools, "resolve_source", _fake_resolve)
+    monkeypatch.setattr(setup_mod.git_tools, "create_branch", lambda *a, **kw: "proj_agent_x")
+    monkeypatch.setattr(setup_mod.git_tools, "current_sha", lambda *a, **kw: "base0000")
+    monkeypatch.setattr(setup_mod, "get_adapter", lambda *a, **kw: _FakeAdapter())
+    monkeypatch.setattr(setup_mod.sonar_tools, "validate_connection", lambda *a, **kw: None)
+    monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)
+
+    state = _base_state(tmp_path, **{sk.AGENT_SLUG: "coverage"})
+    _drain(setup_mod.SetupStep(), state)
+    assert captured["workspace_root"].endswith("sonar_remediation_coverage")
+
+
 def test_setup_step_skips_branch_check_when_no_source_branch_given(tmp_path, monkeypatch):
     """No source_branch -- the ordinary default-branch path -- must not
     even call branch_exists, let alone require it to return True."""
     monkeypatch.setattr(setup_mod.git_tools, "resolve_source", lambda *a, **kw: str(tmp_path))
     monkeypatch.setattr(setup_mod.git_tools, "create_branch", lambda *a, **kw: "proj_agent_x")
+    monkeypatch.setattr(setup_mod.git_tools, "current_sha", lambda *a, **kw: "base0000")
     monkeypatch.setattr(setup_mod, "get_adapter", lambda *a, **kw: _FakeAdapter())
     monkeypatch.setattr(setup_mod.sonar_tools, "validate_connection", lambda *a, **kw: None)
     monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)

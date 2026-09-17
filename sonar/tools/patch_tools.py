@@ -161,6 +161,28 @@ _VIOLATION_COUNT = {
 _STRUCTURAL_ONLY_RE = re.compile(r"[\s{}();,]")
 _MIN_MEANINGFUL_FLAGGED_CHARS = 6
 
+_SELF_QUALIFIER_RE = re.compile(r"\bthis\.(?=[A-Za-z_])")
+
+
+def _normalize_self_qualifier(text: str) -> str:
+    """Strips a bare `this.` qualifier before the per-issue text-presence
+    check compares before/after. Confirmed live: java:S6809 ("call
+    transactional methods via an injected dependency instead of directly
+    via 'this'") has no entry in _VIOLATION_COUNT, so its only check is
+    "does the original flagged text still appear" -- and a real run's
+    "fix" was `this.createExpense(...)` -> `createExpense(...)`, nothing
+    else. That's the textbook surface-level dodge for this entire class of
+    rule (self-invocation bypassing a Spring proxy): the call is exactly
+    as much a same-instance self-invocation with the qualifier dropped as
+    with it, so the underlying violation is unchanged, but the ORIGINAL
+    flagged text is now gone from the file, and the unnormalized check
+    reported it resolved. Normalizing both sides before comparing closes
+    that specific dodge without touching genuine fixes (a real fix -
+    injecting a self-reference, extracting the logic elsewhere - changes
+    far more than one qualifier, so it still reads as changed after this
+    normalization)."""
+    return _SELF_QUALIFIER_RE.sub("", text)
+
 
 def _is_meaningful_flagged_text(flagged_text: str) -> bool:
     """Guards the per-issue 'is this exact flagged text still present'
@@ -212,6 +234,11 @@ def verify_issue_patterns_resolved(
     with open(os.path.join(working_dir, file_path), encoding="utf-8") as f:
         after_source = f.read()
     original_lines = original_content.splitlines() if original_content else []
+    # Normalized once, used only by the per-line presence check below -- see
+    # _normalize_self_qualifier's docstring for why a bare `this.` drop must
+    # not by itself count as "the flagged text is gone".
+    norm_original = _normalize_self_qualifier(original_content) if original_content else ""
+    norm_after = _normalize_self_qualifier(after_source)
 
     by_rule: dict[str, list[dict]] = {}
     for issue in issues:
@@ -240,11 +267,11 @@ def verify_issue_patterns_resolved(
             lo = max(0, issue["start_line"] - 1)
             flagged_text = "\n".join(original_lines[lo:issue["end_line"]]).strip()
             if _is_meaningful_flagged_text(flagged_text):
-                text_groups.setdefault(flagged_text, []).append(issue)
+                text_groups.setdefault(_normalize_self_qualifier(flagged_text), []).append(issue)
 
         for flagged_text, group_issues in text_groups.items():
-            before_text_count = original_content.count(flagged_text)
-            after_text_count = after_source.count(flagged_text)
+            before_text_count = norm_original.count(flagged_text)
+            after_text_count = norm_after.count(flagged_text)
             if (before_text_count - after_text_count) < len(group_issues):
                 for issue in group_issues:
                     result[issue["issue_key"]] = False

@@ -44,6 +44,30 @@ def test_force_rmtree_handles_normal_writable_tree(tmp_path):
     assert not d.exists()
 
 
+# --- agent_workspace_root --------------------------------------------------
+
+def test_agent_workspace_root_gives_each_agent_its_own_sibling_dir():
+    roots = {
+        slug: git_tools.agent_workspace_root("/tmp/sonar_remediation_workspaces", slug)
+        for slug in ("techdebt", "coverage", "duplicate")
+    }
+    assert roots["techdebt"] == os.path.join("/tmp", "sonar_remediation_techdebt")
+    assert roots["coverage"] == os.path.join("/tmp", "sonar_remediation_coverage")
+    assert len(set(roots.values())) == 3  # no two agents share a workspace
+
+
+def test_agent_workspace_root_discards_the_base_basename():
+    # a stale WORKSPACE_ROOT from the old naming still resolves correctly --
+    # only the parent dir is kept, the basename is replaced.
+    assert git_tools.agent_workspace_root("/tmp/sonar_autofix_workspaces", "coverage") == \
+        git_tools.agent_workspace_root("/tmp/sonar_remediation_workspaces", "coverage")
+
+
+def test_agent_workspace_root_tolerates_a_trailing_slash():
+    assert git_tools.agent_workspace_root("/data/myws/", "duplicate") == \
+        os.path.join("/data", "sonar_remediation_duplicate")
+
+
 # --- _sanitize_branch_component ---------------------------------------------
 
 def test_sanitize_branch_component_strips_colon_from_maven_default_key():

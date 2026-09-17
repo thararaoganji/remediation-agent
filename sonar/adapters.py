@@ -12,6 +12,7 @@ unchanged from core.
 
 import os
 import re
+import tempfile
 import xml.etree.ElementTree as ET
 
 from core.adapters.base import (  # noqa: F401 -- re-exported for convenience
@@ -58,6 +59,65 @@ def _parse_ce_task_id(output: str) -> str:
             f"output -- can't poll for processing status. Last output:\n{output[-2000:]}"
         )
     return m.group(1)
+
+
+_GRADLE_JACOCO_XML_INIT = """\
+// Injected by the Sonar agents for one scan only (never written into the
+// repo). Two jobs:
+//  1. Gradle's JaCoCo plugin leaves XML output OFF by default, and the XML
+//     report is exactly what the `sonar` task needs to read coverage.
+//  2. The org.sonarqube plugin does NOT run jacocoTestReport itself, so when
+//     `test jacocoTestReport sonar` are requested together, force `sonar` to
+//     run after the report so it sees fresh coverage in the same build.
+allprojects {
+    plugins.withId('jacoco') {
+        tasks.matching { it.name == 'jacocoTestReport' }.configureEach {
+            reports { xml.required = true }
+        }
+    }
+    tasks.matching { it.name == 'sonar' || it.name == 'sonarqube' }.configureEach {
+        mustRunAfter(tasks.matching { it.name == 'jacocoTestReport' })
+    }
+}
+"""
+
+_GRADLE_JACOCO_XML_PATH = "build/reports/jacoco/test/jacocoTestReport.xml"
+_MAVEN_JACOCO_XML_PATH = "target/site/jacoco/jacoco.xml"
+
+
+def _write_gradle_jacoco_init_script(working_dir: str) -> str:
+    """Writes the init script to a STABLE path (derived from the clone dir),
+    not a random tempfile name. Gradle keys daemon compatibility partly on
+    the set of init-script paths -- a fresh random name every scan defeats
+    daemon reuse and, combined with the agent's many rapid Gradle
+    invocations, trips 'daemon context mismatch' failures."""
+    path = os.path.join(
+        tempfile.gettempdir(), f"sonar-agent-jacoco-{os.path.basename(os.path.normpath(working_dir))}.init.gradle"
+    )
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(_GRADLE_JACOCO_XML_INIT)
+    return path
+
+
+def project_has_coverage_tooling(working_dir: str) -> bool:
+    """True if this project's build is configured to produce a code-coverage
+    report a Sonar scan can consume (JaCoCo for Java). The coverage agent
+    preflights on this: without it every file reads 0% coverage on Sonar and
+    the tests it generates have no measurable effect."""
+    try:
+        build_tool = detect_build_tool(working_dir)
+    except BuildToolNotDetectedError:
+        return False
+    if build_tool == "java-maven":
+        with open(os.path.join(working_dir, "pom.xml"), encoding="utf-8") as f:
+            return "jacoco-maven-plugin" in f.read()
+    for name in ("build.gradle", "build.gradle.kts", "gradle.properties"):
+        path = os.path.join(working_dir, name)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                if re.search(r"jacoco", f.read(), re.IGNORECASE):
+                    return True
+    return False
 
 
 class SonarJavaMavenAdapter(JavaMavenAdapter):
@@ -111,31 +171,53 @@ class SonarJavaMavenAdapter(JavaMavenAdapter):
             f"Stopping before any Sonar fetch or fix generation."
         )
 
-    def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None):
+    def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None, with_coverage=False):
         mvn = self._mvn_cmd(working_dir)
-        # Fully-qualified plugin goal, not the "sonar:sonar" prefix shorthand.
+        # Strictly gated on the caller's flag -- NOT auto-detected from the
+        # project, even though the project can tell us. Confirmed live: a
+        # tech-debt run against a repo the coverage agent had already added
+        # JaCoCo to picked up this extra `test jacoco:report` work it never
+        # asked for and doesn't need, on every single checkpoint scan --
+        # pure added failure surface (an unrelated test flake, a slower
+        # scan) for an agent that was never going to read the coverage
+        # number. Only the coverage agent sets with_coverage=True.
+        jacoco = with_coverage
+
+        # Fully-qualified plugin goals, not the "sonar:sonar" prefix shorthand.
         # Prefix resolution only works if org.sonarsource.scanner.maven is
         # already registered in this Maven install's ~/.m2/settings.xml
-        # <pluginGroups>, or the target project's own pom.xml already
-        # declares sonar-maven-plugin as a build plugin (which registers the
-        # prefix from the reactor itself). Neither holds for a repo that's
-        # never had Sonar wired into its POM. The fully-qualified
-        # groupId:artifactId:goal form resolves directly from the repository
-        # and doesn't depend on either.
+        # <pluginGroups>, or the target project's own pom.xml already declares
+        # the plugin. Neither holds for a repo that's never had Sonar wired in.
+        goals = []
+        if jacoco:
+            goals += ["test", "org.jacoco:jacoco-maven-plugin:report"]
+        goals.append("org.sonarsource.scanner.maven:sonar-maven-plugin:sonar")
+
         args = [
-            mvn, "org.sonarsource.scanner.maven:sonar-maven-plugin:sonar",
+            mvn, *goals,
             f"-Dsonar.host.url={sonar_base_url}", f"-Dsonar.projectKey={project_key}",
             f"-Dsonar.token={sonar_token}",
         ]
+        if jacoco:
+            # -Dmaven.test.failure.ignore so one flaky pre-existing test can't
+            # block the scan; the explicit path removes any reliance on
+            # sonar-maven's own auto-detection.
+            args += [
+                "-Dmaven.test.failure.ignore=true",
+                f"-Dsonar.coverage.jacoco.xmlReportPaths={_MAVEN_JACOCO_XML_PATH}",
+            ]
         if branch:
             args.append(f"-Dsonar.branch.name={branch}")
-        result = _run(args, cwd=working_dir, timeout=900)
-        if result.returncode != 0:
+        result = _run(args, cwd=working_dir, timeout=1200)
+        # The scan itself succeeded if the CE task URL is in the output -- true
+        # even when -Dmaven.test.failure.ignore produced a non-zero exit from
+        # an unrelated failing test.
+        try:
+            return _parse_ce_task_id(result.stdout + result.stderr)
+        except RuntimeError:
             raise RuntimeError(
-                f"Sonar scan failed ({mvn} org.sonarsource.scanner.maven:sonar-maven-plugin:sonar):\n"
-                f"{_combined_output(result)[-3000:]}"
+                f"Sonar scan failed ({mvn} {' '.join(goals)}):\n{_combined_output(result)[-3000:]}"
             )
-        return _parse_ce_task_id(result.stdout + result.stderr)
 
 
 class SonarJavaGradleAdapter(JavaGradleAdapter):
@@ -179,31 +261,69 @@ class SonarJavaGradleAdapter(JavaGradleAdapter):
             f"block in build.gradle. Stopping before any Sonar fetch or fix generation."
         )
 
-    def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None):
+    def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None, with_coverage=False):
         gradle = self._gradle_cmd(working_dir)
-        # --info is required, not cosmetic: this plugin logs its own
-        # "ANALYSIS SUCCESSFUL ... More about the report processing at
-        # .../api/ce/task?id=..." line at INFO level through its embedded
-        # SLF4J logger, which Gradle's default LIFECYCLE log threshold
-        # suppresses -- verified live, the line is simply absent without it.
+        # Strictly gated on the caller's flag -- NOT auto-detected from the
+        # project, even though the project can tell us. Confirmed live: a
+        # tech-debt run against a repo the coverage agent had already added
+        # JaCoCo to picked up this extra `test jacocoTestReport` work it
+        # never asked for and doesn't need, on every single checkpoint scan
+        # -- pure added failure surface (an unrelated test flake, a daemon
+        # hiccup, a slower scan) for an agent that was never going to read
+        # the coverage number. Only the coverage agent sets
+        # with_coverage=True (see sonar/checkpoint.py's
+        # TriggerAndReconcileScanStep and agent_coverage's
+        # CoverageFinalVerifyStep). When org.sonarqube ever ships its own
+        # jacocoTestReport auto-run (it doesn't today -- confirmed via
+        # `gradle sonar --dry-run`, which never schedules it), this whole
+        # branch becomes unnecessary for every agent, not just this one.
+        jacoco = with_coverage
+
+        # --no-daemon: the agent fires many Gradle invocations in quick
+        # succession against ephemeral clones -- the daemon adds cross-run
+        # state (and 'daemon context mismatch' failures) for no benefit here.
+        args = [gradle, "--no-daemon"]
+        init_script = None
+        if jacoco:
+            init_script = _write_gradle_jacoco_init_script(working_dir)
+            args += ["--init-script", init_script, "test", "jacocoTestReport"]
+        args.append("sonar")
+        # --info is required, not cosmetic: the plugin logs its own "ANALYSIS
+        # SUCCESSFUL ... More about the report processing at .../api/ce/task?id="
+        # line at INFO level through its embedded SLF4J logger, which Gradle's
+        # default LIFECYCLE threshold suppresses -- the line is simply absent
+        # without it, and _parse_ce_task_id needs it.
         #
-        # -Dsonar.token= (not the SONAR_TOKEN env var): verified live that
-        # a project's own hardcoded `property "sonar.token", "..."` in the
-        # sonar{} DSL block silently wins over SONAR_TOKEN -- an invalid
-        # env var still authenticated successfully. -D properties DO
-        # correctly override the DSL block, so that's the only reliable
-        # way to guarantee .env's token is what's actually used.
-        args = [
-            gradle, "sonar", "--info",
+        # -Dsonar.token= (not the SONAR_TOKEN env var): a project's own
+        # hardcoded `property "sonar.token", "..."` in the sonar{} DSL block
+        # silently wins over the env var; -D properties DO override the DSL.
+        args += [
+            "--info",
             f"-Dsonar.host.url={sonar_base_url}", f"-Dsonar.projectKey={project_key}",
             f"-Dsonar.token={sonar_token}",
         ]
+        if jacoco:
+            # --continue so one flaky pre-existing test can't block the scan;
+            # the explicit path removes any reliance on the plugin's own
+            # auto-detection of the report location.
+            args += [
+                "--continue",
+                f"-Dsonar.coverage.jacoco.xmlReportPaths={_GRADLE_JACOCO_XML_PATH}",
+            ]
         if branch:
             args.append(f"-Dsonar.branch.name={branch}")
-        result = _run(args, cwd=working_dir, timeout=900)
-        if result.returncode != 0:
-            raise RuntimeError(f"Sonar scan failed (gradle sonar):\n{_combined_output(result)[-3000:]}")
-        return _parse_ce_task_id(result.stdout + result.stderr)
+
+        # init_script is left in place on purpose (stable path, constant
+        # content) -- re-created identically next scan, never committed.
+        result = _run(args, cwd=working_dir, timeout=1200)
+        # The scan itself succeeded if the CE task URL is in the output -- true
+        # even when --continue produced a non-zero exit from an unrelated
+        # failing test elsewhere in the suite.
+        try:
+            return _parse_ce_task_id(result.stdout + result.stderr)
+        except RuntimeError:
+            tasks = " ".join(t for t in ("test", "jacocoTestReport", "sonar") if t in args)
+            raise RuntimeError(f"Sonar scan failed (gradle {tasks}):\n{_combined_output(result)[-4000:]}")
 
 
 ADAPTER_REGISTRY = {

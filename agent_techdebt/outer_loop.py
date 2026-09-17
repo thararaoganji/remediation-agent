@@ -1,5 +1,5 @@
 """Sonar-specific fetch/prioritize step, composed with core's generic
-per-file-loop wrapper and exit check into the autofix agent's outer loop."""
+per-file-loop wrapper and exit check into the tech-debt agent's outer loop."""
 
 from typing import AsyncGenerator
 

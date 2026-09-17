@@ -2,7 +2,7 @@
 reconcile any newly-introduced findings against this checkpoint's own
 commit batch. Composed with core.agents.checkpoint.RunFullVerifyStep (the
 build-verify+bisect half) into one pipeline, shared by all three Sonar
-agents (autofix, coverage, duplicate) via build_checkpoint_gate()."""
+agents (tech-debt, coverage, duplication) via build_checkpoint_gate()."""
 
 import datetime
 from typing import AsyncGenerator
@@ -30,6 +30,7 @@ class TriggerAndReconcileScanStep(BaseAgent):
         task_id = sonar_tools.trigger_sonar_analysis(
             working_dir, s[sk.SONAR_PROJECT_KEY], ce_edition=s.get("ce_edition", True),
             language=s[sk.LANGUAGE], sonar_base_url=s["sonar_base_url"], sonar_token=s["sonar_token"],
+            with_coverage=s.get(sk.COVERAGE_REPORT_NEEDED, False),
         )
         sonar_tools.poll_ce_task_status(s["sonar_base_url"], s["sonar_token"], task_id, timeout_s=600)
         new_issues = sonar_tools.get_issues_created_after(
@@ -102,7 +103,7 @@ class TriggerAndReconcileScanStep(BaseAgent):
 def _build_checkpoint_pipeline() -> SequentialAgent:
     """Factory, not a module-level singleton -- checkpoint_pipeline is
     embedded (via CheckpointGate's `pipeline` field) once per Sonar agent
-    (autofix/coverage/duplicate) and, within autofix specifically, once
+    (tech-debt/coverage/duplication) and, within the tech-debt agent specifically, once
     per per-file-loop instance (main pass + maintainability expansion
     pass) -- same reasoning as core.agents.fix_loop._build_fix_llm_agent's
     docstring: each embedding gets its own instance rather than sharing

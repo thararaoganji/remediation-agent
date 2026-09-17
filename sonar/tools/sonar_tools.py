@@ -482,7 +482,7 @@ def get_rule_description(sonar_base_url: str, rule_key: str, token: str) -> str:
 
 def trigger_sonar_analysis(
     working_dir: str, project_key: str, ce_edition: bool, language: str,
-    sonar_base_url: str, sonar_token: str,
+    sonar_base_url: str, sonar_token: str, with_coverage: bool = False,
 ) -> str:
     """Section 7: if not ce_edition (i.e. Developer+), run a branch-aware
     scan. If ce_edition, run a LOCAL working-tree scan (no sonar.branch.name)
@@ -506,7 +506,9 @@ def trigger_sonar_analysis(
         )
         branch = result.stdout.strip() or None
 
-    return adapter.run_sonar_scan(working_dir, sonar_base_url, sonar_token, project_key, branch=branch)
+    return adapter.run_sonar_scan(
+        working_dir, sonar_base_url, sonar_token, project_key, branch=branch, with_coverage=with_coverage,
+    )
 
 
 def poll_ce_task_status(sonar_base_url: str, token: str, task_id: str, timeout_s: int = 600) -> bool:
@@ -577,7 +579,7 @@ def get_metric_value(sonar_base_url: str, project_key: str, token: str, metric_k
     a fabricated one. Deliberately separate from get_quality_ratings()
     (IN_SCOPE_RATING_METRICS) rather than a fourth metric added there —
     that list exists specifically so duplication/coverage can never
-    silently leak into the autofix agent's own A-rating success
+    silently leak into the tech-debt agent's own A-rating success
     criterion; this is a distinct, explicit call site.
     branch is required to be passed explicitly (no default) — see
     fetch_issues_and_hotspots()'s docstring. Returns None if the metric

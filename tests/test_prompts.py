@@ -1,4 +1,4 @@
-from techdebt_agent.prompts import JAVA_SPRING_ADDENDUM, build_fix_prompt, build_issue_block
+from agent_techdebt.prompts import JAVA_SPRING_ADDENDUM, build_fix_prompt, build_issue_block
 
 
 def _issue(key="k1", rule_key="java:S106"):

@@ -19,7 +19,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "techdebt_agent/**"
+      - "agent_techdebt/**"
       - "sonar/**"
       - "core/**"
       - "run_local.py"
@@ -35,9 +35,9 @@ permissions:
 env:
   REGION: ${{ vars.GCP_REGION }}
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-  REPOSITORY: sonar-autofix-repo
-  IMAGE_NAME: sonar-autofix-agent
-  JOB_NAME: sonar-autofix-job
+  REPOSITORY: sonar-remediation-repo
+  IMAGE_NAME: sonar-remediation-agent
+  JOB_NAME: sonar-remediation-job
 
 jobs:
   deploy:

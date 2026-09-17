@@ -37,6 +37,15 @@ class PushStep(BaseAgent):
         working_dir = s[sk.WORKING_DIR]
         branch_name = s[sk.BRANCH_NAME]
 
+        # A final-verify step that gave up and reset the branch back to its
+        # base sets this -- there is nothing left worth pushing.
+        if s.get("temp:skip_push"):
+            s["temp:push_result"] = s.get("temp:skip_push_reason", "skipped")
+            yield Event(author=self.name, content=_msg(
+                f"Not pushing `{branch_name}` — {s.get('temp:skip_push_reason', 'the run was reverted')}."
+            ))
+            return
+
         # No files fixed and no checkpoints run means the branch has no new
         # commits over its base (e.g. the project was already clean) --
         # pushing an unchanged branch is just noise.

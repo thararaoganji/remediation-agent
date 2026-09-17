@@ -1,13 +1,13 @@
 """Phase V — Fix Duplication Agent pipeline.
 
 Reuses core's tool-agnostic fix-loop engine -- see
-sonar/coverage_agent/enhance_coverage.py's module docstring for the full
+agent_coverage/enhance_coverage.py's module docstring for the full
 reasoning on what's reused as-is (PushStep, OuterExitCheck, PerFileLoopStep,
 FixLlmGateStep, the LLM call plumbing, and the shared sonar/setup.py +
 sonar/checkpoint.py) versus what's genuinely domain-specific below.
 
 Unlike coverage, a duplication fix IS a diff against an existing file — the
-same shape as an autofix fix — so this reuses patch_tools.apply_diff
+same shape as a tech-debt fix — so this reuses patch_tools.apply_diff
 directly rather than the full-file-rewrite approach coverage needs for a
 possibly-brand-new test file.
 
@@ -16,8 +16,8 @@ no LLM call, `time.sleep(2.0)` standing in for real work, only ever the
 single most-duplicated file per run, and a report step with hardcoded fake
 numbers. This replaces it with a real per-file loop: every duplicated file
 gets a genuine LLM-generated refactor, a real compile-check verification,
-and the same checkpoint-gated full build/re-scan safety net every autofix
-file goes through."""
+and the same checkpoint-gated full build/re-scan safety net every tech-debt file
+goes through."""
 
 import os
 import time
@@ -39,8 +39,8 @@ from core.agents.report import PushStep, _format_duration
 from core.tools import git_tools
 from core.tools.patch_tools import apply_diff
 
-from techdebt_agent.fix import _build_per_file_loop as _build_techdebt_per_file_loop
-from techdebt_agent.maintainability import _scanned_branch
+from agent_techdebt.fix import _build_per_file_loop as _build_techdebt_per_file_loop
+from agent_techdebt.maintainability import _scanned_branch
 from sonar.checkpoint import build_checkpoint_gate
 from sonar.setup import SetupStep
 from sonar.tools import sonar_tools
@@ -102,7 +102,7 @@ class DuplicateFetchStep(BaseAgent):
         s = ctx.session.state
         # s.get("source_branch") if this run targeted a specific branch,
         # else None (the project's default) -- see FetchPrioritizeStep's
-        # identical reasoning in techdebt_agent/outer_loop.py.
+        # identical reasoning in agent_techdebt/outer_loop.py.
         duplicated = fetch_duplicated_files(
             s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], s.get("source_branch")
         )
@@ -162,7 +162,7 @@ class DuplicateApplyAndVerifyStep(BaseAgent):
     fix.ApplyAndVerifyStep._retry_full_file: an LLM miscounting unified-diff
     hunk headers is the dominant failure mode, and asking for the whole file
     sidesteps hunk arithmetic entirely). No per-issue narrow retry — unlike
-    autofix, there's no set of discrete issue keys to retry narrowly against,
+    the tech-debt agent, there's no set of discrete issue keys to retry narrowly against,
     just one file-level refactor."""
 
     name: str = "duplicate_apply_and_verify_step"
@@ -291,7 +291,7 @@ class DuplicateApplyAndVerifyStep(BaseAgent):
 
         # Real behavioral verification (does the refactor actually preserve
         # behavior, not just compile) happens at the checkpoint's full
-        # verify_build right after this step, same as every autofix file —
+        # verify_build right after this step, same as every tech-debt file —
         # a compile-only pass here would let a subtly-wrong extraction (e.g.
         # a parameter bound to the wrong variable at one call site) through
         # undetected until then.
@@ -343,9 +343,9 @@ class DuplicateQualityGateStep(BaseAgent):
     that itself reads as duplicated, a magic number pulled out without a
     name) even while genuinely reducing duplication. Scoped to files in
     FILES_COMPLETED only -- pre-existing production-code debt elsewhere in
-    the project is techdebt_agent's job, not this agent's.
+    the project is agent_techdebt's job, not this agent's.
 
-    Reuses techdebt_agent's own per-file loop (FileFixerStep/
+    Reuses agent_techdebt's own per-file loop (FileFixerStep/
     ApplyAndVerifyStep/build_fix_prompt via _build_techdebt_per_file_loop)
     to actually fix what's found -- see CoverageQualityGateStep's identical
     reasoning and its documented quick_compile_check-on-a-non-main-file
@@ -461,14 +461,14 @@ class DuplicateReportStep(BaseAgent):
 
         # dict.fromkeys, not set(): a file can legitimately end up in
         # FILES_COMPLETED twice -- once from this run's own refactor pass,
-        # again from duplicate_quality_loop's reuse of techdebt_agent's
+        # again from duplicate_quality_loop's reuse of agent_techdebt's
         # ApplyAndVerifyStep (which unconditionally appends on success,
         # not knowing this file was already "done" for a different
         # reason) -- de-duped here for display, order preserved.
         files = list(dict.fromkeys(files))
 
         lines = [
-            f"**Sonar Duplicate-Fix complete** — branch `{s.get(sk.BRANCH_NAME, 'unknown')}`",
+            f"**Sonar Duplication fix complete** — branch `{s.get(sk.BRANCH_NAME, 'unknown')}`",
             "",
             f"- Files refactored: {len(files)}" + (f": {', '.join(f'`{f}`' for f in files)}" if files else ""),
             f"- Duplicate blocks resolved: {len(issues)}",

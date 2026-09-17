@@ -1,4 +1,4 @@
-"""Tests for coverage_agent and duplicate_agent's real per-file
+"""Tests for agent_coverage and agent_duplicate's real per-file
 loop architecture (enhance_coverage.py / fix_duplicate.py), which reuses
 core's tool-agnostic fix-loop engine -- see those modules' docstrings for
 what's reused as-is versus what's domain-specific.
@@ -21,6 +21,8 @@ import subprocess
 import time
 import uuid
 
+import pytest
+
 from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
 from google.adk.events import Event, EventActions
 from google.adk.runners import Runner
@@ -30,8 +32,8 @@ from google.genai import types
 from core import state_schema as sk
 from core.adapters.base import BuildResult
 from core.agents.fix_loop import PerFileLoopStep
-from coverage_agent import enhance_coverage
-from duplicate_agent import fix_duplicate
+from agent_coverage import enhance_coverage
+from agent_duplicate import fix_duplicate
 
 APP_NAME = "test_multi_agent"
 
@@ -377,17 +379,36 @@ def test_coverage_full_per_file_loop_end_to_end(git_repo, monkeypatch):
 # --- CoverageBaselineStep -------------------------------------------------
 
 def test_coverage_baseline_step_captures_coverage_before(monkeypatch):
+    monkeypatch.setattr(enhance_coverage, "project_has_coverage_tooling", lambda wd: True)
     monkeypatch.setattr(enhance_coverage, "get_metric_value", lambda *a, **kw: "42.5")
-    initial_state = {sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t"}
+    initial_state = {
+        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x",
+        "sonar_base_url": "http://x", "sonar_token": "t",
+    }
     _, final_state = _run_agent(enhance_coverage.CoverageBaselineStep(), initial_state)
     assert final_state["coverage_before"] == 42.5
+    assert final_state[sk.COVERAGE_REPORT_NEEDED] is True
 
 
 def test_coverage_baseline_step_handles_no_prior_analysis(monkeypatch):
+    monkeypatch.setattr(enhance_coverage, "project_has_coverage_tooling", lambda wd: True)
     monkeypatch.setattr(enhance_coverage, "get_metric_value", lambda *a, **kw: None)
-    initial_state = {sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t"}
+    initial_state = {
+        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x",
+        "sonar_base_url": "http://x", "sonar_token": "t",
+    }
     _, final_state = _run_agent(enhance_coverage.CoverageBaselineStep(), initial_state)
     assert final_state["coverage_before"] is None
+
+
+def test_coverage_baseline_step_fails_fast_without_jacoco(monkeypatch):
+    monkeypatch.setattr(enhance_coverage, "project_has_coverage_tooling", lambda wd: False)
+    initial_state = {
+        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x",
+        "sonar_base_url": "http://x", "sonar_token": "t",
+    }
+    with pytest.raises(enhance_coverage.SonarPreflightError, match="JaCoCo"):
+        _run_agent(enhance_coverage.CoverageBaselineStep(), initial_state)
 
 
 # --- CoverageQualityGateStep -----------------------------------------------
@@ -397,16 +418,27 @@ def test_coverage_quality_gate_escalates_when_nothing_completed():
     assert any(e.actions and e.actions.escalate for e in events)
 
 
-def test_coverage_quality_gate_escalates_when_rating_already_a(monkeypatch):
-    monkeypatch.setattr(enhance_coverage.sonar_tools, "get_quality_ratings", lambda *a, **kw: {"sqale_rating": "1.0"})
+def test_coverage_quality_gate_still_refixes_own_smells_at_rating_a(monkeypatch):
+    """Rating A does NOT mean this run introduced no new smells -- a few
+    minor ones won't drop an A -- so the gate must still fetch and re-queue
+    smells in this run's own files regardless of the project rating."""
     monkeypatch.setattr(enhance_coverage, "_scanned_branch", lambda s: "my-branch")
+    issues = [{
+        "category": "MAINTAINABILITY", "severity": "MINOR",
+        "component_path": "src/test/java/pkg/FooTest.java", "issue_key": "k1", "rule_key": "java:S6068",
+        "rule_name": "eq", "start_line": 1, "end_line": 1, "message": "m",
+    }]
+    monkeypatch.setattr(enhance_coverage.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
+    monkeypatch.setattr(enhance_coverage.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
 
     initial_state = {
-        sk.FILES_COMPLETED: ["FooTest.java"],
+        sk.FILES_COMPLETED: ["src/main/java/pkg/Foo.java"],
+        sk.FILES_FLAGGED: [], sk.FILES_REVERTED_AT_CHECKPOINT: [],
         sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t",
     }
-    events, _ = _run_agent(enhance_coverage.CoverageQualityGateStep(), initial_state)
-    assert any(e.actions and e.actions.escalate for e in events)
+    _, final_state = _run_agent(enhance_coverage.CoverageQualityGateStep(), initial_state)
+    queue = final_state[sk.ORDERED_FILES_REMAINING]
+    assert [q["file"] for q in queue] == ["src/test/java/pkg/FooTest.java"]
 
 
 def test_coverage_quality_gate_escalates_after_iteration_cap(monkeypatch):
@@ -427,7 +459,7 @@ def test_coverage_quality_gate_queues_new_smells_scoped_to_own_files(monkeypatch
     MAINTAINABILITY code smells Sonar found in files THIS coverage run
     wrote -- a different category, or a file this run never touched, is
     out of scope (pre-existing production-code debt belongs to
-    techdebt_agent, not this agent silently expanding into it)."""
+    agent_techdebt, not this agent silently expanding into it)."""
     monkeypatch.setattr(enhance_coverage.sonar_tools, "get_quality_ratings", lambda *a, **kw: {"sqale_rating": "3.0"})
     monkeypatch.setattr(enhance_coverage, "_scanned_branch", lambda s: "my-branch")
 
@@ -485,6 +517,62 @@ def test_coverage_quality_gate_excludes_already_flagged_or_reverted_files(monkey
     }
     events, _ = _run_agent(enhance_coverage.CoverageQualityGateStep(), initial_state)
     assert any(e.actions and e.actions.escalate for e in events)  # nothing left to queue
+
+
+# --- CoverageFinalVerifyStep ---------------------------------------------------
+
+class _FakeBuild:
+    def __init__(self, passes):
+        self._passes = list(passes)
+        self.calls = 0
+
+    def verify_build(self, working_dir, *a, **kw):
+        self.calls += 1
+        result = self._passes[min(self.calls - 1, len(self._passes) - 1)]
+        return BuildResult(passed=result, errors="" if result else "compilation failure: cannot find symbol")
+
+
+def test_coverage_final_verify_passes_first_try_then_scans(monkeypatch):
+    fake = _FakeBuild([True])
+    monkeypatch.setattr(enhance_coverage, "get_adapter", lambda *a, **kw: fake)
+    scanned = {}
+
+    def _fake_trigger(*a, **kw):
+        scanned["with_coverage"] = kw.get("with_coverage")
+        return "task1"
+
+    monkeypatch.setattr(enhance_coverage.sonar_tools, "trigger_sonar_analysis", _fake_trigger)
+    monkeypatch.setattr(enhance_coverage.sonar_tools, "poll_ce_task_status", lambda *a, **kw: True)
+
+    initial_state = {
+        sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-gradle", sk.BRANCH_NAME: "b",
+        sk.FILES_COMPLETED: ["src/main/java/pkg/Foo.java"], sk.RUN_BASE_SHA: "base0",
+        sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t",
+    }
+    _, final_state = _run_agent(enhance_coverage.CoverageFinalVerifyStep(), initial_state)
+    assert final_state["final_build_status"] == "passed"
+    assert scanned["with_coverage"] is True
+    assert not final_state.get("skip_push")
+
+
+def test_coverage_final_verify_reverts_after_exhausting_fix_attempts(monkeypatch):
+    fake = _FakeBuild([False])  # never passes
+    monkeypatch.setattr(enhance_coverage, "get_adapter", lambda *a, **kw: fake)
+    monkeypatch.setattr(enhance_coverage.patch_tools, "parse_junit_failures", lambda *a, **kw: [])
+    monkeypatch.setattr(enhance_coverage, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent("NO_SAFE_FIX: can't"))
+    reset = {}
+    monkeypatch.setattr(enhance_coverage.git_tools, "reset_hard",
+                        lambda wd, sha: reset.update(sha=sha))
+
+    initial_state = {
+        sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-gradle", sk.BRANCH_NAME: "b",
+        sk.FILES_COMPLETED: ["src/main/java/pkg/Foo.java"], sk.RUN_BASE_SHA: "base0",
+        sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t",
+    }
+    _, final_state = _run_agent(enhance_coverage.CoverageFinalVerifyStep(), initial_state)
+    assert reset["sha"] == "base0"
+    assert final_state["skip_push"] is True
+    assert "FAILED" in final_state["final_build_status"]
 
 
 # --- CoverageReportStep: before/after delta --------------------------------

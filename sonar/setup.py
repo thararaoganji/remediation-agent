@@ -1,12 +1,10 @@
-"""Setup step shared by all three Sonar agents (autofix, coverage,
-duplicate): resolves the source, validates the Sonar connection/project
+"""Setup step shared by all three Sonar agents (tech-debt, coverage,
+duplication): resolves the source, validates the Sonar connection/project
 key, creates the run's branch, and seeds default state. Sonar-specific
 (a Veracode/Black Duck setup step would validate against a different API
 entirely), so it lives here rather than in core -- but shared across
 Sonar's own agents rather than duplicated three times."""
 
-import os
-import tempfile
 from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent
@@ -27,11 +25,15 @@ class SetupStep(BaseAgent):
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         source_branch = s.get("source_branch")
+        # workspace_root is normally seeded per-agent by the intake step /
+        # run_local (git_tools.agent_workspace_root, so each agent's github
+        # clone lives in its own sonar_remediation_<slug>/ dir). The
+        # fallback here keeps a directly-invoked pipeline working.
         working_dir = git_tools.resolve_source(
             s["source"],
             s[sk.SOURCE_TYPE],
-            workspace_root=s.get(
-                "workspace_root", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
+            workspace_root=s.get("workspace_root") or git_tools.agent_workspace_root(
+                git_tools.DEFAULT_WORKSPACE_ROOT, s.get(sk.AGENT_SLUG, "techdebt"),
             ),
             github_token=s.get("github_token"),
             source_branch=source_branch,
@@ -91,6 +93,10 @@ class SetupStep(BaseAgent):
         )
         s[sk.WORKING_DIR] = working_dir
         s[sk.BRANCH_NAME] = branch_name
+        # HEAD right after `git checkout -b` == the base commit this run
+        # branched from. A final-verify step that can't get the build
+        # passing resets the branch back to exactly this.
+        s[sk.RUN_BASE_SHA] = git_tools.current_sha(working_dir)
 
         s.setdefault(sk.OUTER_ITERATION, 0)
         s.setdefault(sk.MAX_OUTER_ITERATIONS, 5)

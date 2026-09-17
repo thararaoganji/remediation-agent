@@ -194,14 +194,14 @@ deployment rather than a moving target.
 ```bash
 gcloud services enable artifactregistry.googleapis.com run.googleapis.com secretmanager.googleapis.com
 
-gcloud artifacts repositories create sonar-autofix-repo \
+gcloud artifacts repositories create sonar-remediation-repo \
   --repository-format=docker \
   --location=REGION
 
 gcloud auth configure-docker REGION-docker.pkg.dev
 
-docker build -t REGION-docker.pkg.dev/PROJECT_ID/sonar-autofix-repo/sonar-autofix-agent:latest .
-docker push REGION-docker.pkg.dev/PROJECT_ID/sonar-autofix-repo/sonar-autofix-agent:latest
+docker build -t REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest .
+docker push REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest
 ```
 
 The `Dockerfile` at the repo root installs Java, Maven, *and* Gradle
@@ -220,8 +220,8 @@ printf '%s' 'YOUR_GITHUB_TOKEN'  | gcloud secrets create github-token  --data-fi
 ### 2.3 Create the Cloud Run Job
 
 ```bash
-gcloud run jobs create sonar-autofix-job \
-  --image=REGION-docker.pkg.dev/PROJECT_ID/sonar-autofix-repo/sonar-autofix-agent:latest \
+gcloud run jobs create sonar-remediation-job \
+  --image=REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest \
   --region=REGION \
   --set-env-vars=SONAR_BASE_URL=http://SONARQUBE_VM_IP:9000,SOURCE_TYPE=github,GITHUB_REPO=OWNER/REPO,LANGUAGE=java,CE_EDITION=true \
   --set-secrets=GOOGLE_API_KEY=google-api-key:latest,SONAR_TOKEN=sonar-token:latest,GITHUB_TOKEN=github-token:latest \
@@ -240,17 +240,17 @@ why it failed.
 ### 2.4 Run it
 
 ```bash
-gcloud run jobs execute sonar-autofix-job --region=REGION
+gcloud run jobs execute sonar-remediation-job --region=REGION
 ```
 
 Watch it live:
 
 ```bash
-gcloud run jobs executions list --job=sonar-autofix-job --region=REGION
+gcloud run jobs executions list --job=sonar-remediation-job --region=REGION
 gcloud run jobs executions logs read EXECUTION_NAME --region=REGION
 ```
 
-or via **Cloud Console → Cloud Run → Jobs → sonar-autofix-job → Logs**.
+or via **Cloud Console → Cloud Run → Jobs → sonar-remediation-job → Logs**.
 
 ---
 
@@ -354,18 +354,18 @@ job's *image* current.
 ## 5. Optional: scheduled runs
 
 ```bash
-gcloud iam service-accounts create sonar-autofix-invoker
+gcloud iam service-accounts create sonar-remediation-invoker
 
-gcloud run jobs add-iam-policy-binding sonar-autofix-job \
+gcloud run jobs add-iam-policy-binding sonar-remediation-job \
   --region=REGION \
-  --member="serviceAccount:sonar-autofix-invoker@PROJECT_ID.iam.gserviceaccount.com" \
+  --member="serviceAccount:sonar-remediation-invoker@PROJECT_ID.iam.gserviceaccount.com" \
   --role="roles/run.invoker"
 
-gcloud scheduler jobs create http sonar-autofix-nightly \
+gcloud scheduler jobs create http sonar-remediation-nightly \
   --schedule="0 2 * * *" \
-  --uri="https://REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/sonar-autofix-job:run" \
+  --uri="https://REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/sonar-remediation-job:run" \
   --http-method=POST \
-  --oauth-service-account-email="sonar-autofix-invoker@PROJECT_ID.iam.gserviceaccount.com"
+  --oauth-service-account-email="sonar-remediation-invoker@PROJECT_ID.iam.gserviceaccount.com"
 ```
 
 This is genuinely optional for a first pass — get one manual

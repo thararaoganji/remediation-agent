@@ -2,7 +2,7 @@
 The BaseAgent orchestration classes need a real ADK InvocationContext to
 exercise directly (see README's "Running tests" section) -- out of scope
 here. This covers the plain, context-free helper functions instead:
-core.agents.fix_loop's tool-agnostic helpers, plus techdebt_agent's
+core.agents.fix_loop's tool-agnostic helpers, plus agent_techdebt's
 own Sonar-specific ones (_scanned_branch, _format_summary).
 """
 
@@ -14,9 +14,9 @@ from core.agents.fix_loop import (
     _extract_code_block, _hide_text, _java_fqcn, _llm_error_message,
     _looks_like_diff, _no_safe_fix_reason, _strip_escalate,
 )
-from techdebt_agent import maintainability
-from techdebt_agent.maintainability import _scanned_branch
-from techdebt_agent.report import _format_summary
+from agent_techdebt import maintainability
+from agent_techdebt.maintainability import _scanned_branch
+from agent_techdebt.report import _format_summary
 
 
 # --- _scanned_branch -----------------------------------------------------

@@ -19,7 +19,7 @@ hardcoded fake numbers (token counts, pass/fail counts) that were never
 actually measured. This replaces it with a real per-file loop: every
 uncovered file gets a genuine LLM-generated test file, a real compile +
 test-run verification, and a checkpoint-gated full build/re-scan safety net
-exactly like the autofix agent's own files do."""
+exactly like the tech-debt agent's own files do."""
 
 import os
 import time
@@ -38,15 +38,18 @@ from core.agents.fix_loop import (
 )
 from core.agents.outer_loop import OuterExitCheck
 from core.agents.report import PushStep, _format_duration
-from core.tools import git_tools
+from core.tools import git_tools, patch_tools
 
-from techdebt_agent.fix import _build_per_file_loop as _build_techdebt_per_file_loop
-from techdebt_agent.maintainability import _scanned_branch
+from agent_techdebt.fix import _build_per_file_loop as _build_techdebt_per_file_loop
+from agent_techdebt.maintainability import _scanned_branch
+from sonar.adapters import SonarPreflightError, project_has_coverage_tooling
 from sonar.checkpoint import build_checkpoint_gate
 from sonar.setup import SetupStep
 from sonar.tools import sonar_tools
 from sonar.tools.sonar_tools import fetch_uncovered_files, get_metric_value
 from .prompts import build_coverage_prompt
+
+_MAX_FINAL_BUILD_FIX_ATTEMPTS = 3
 
 
 def _java_test_file_path(file_path: str) -> str:
@@ -63,14 +66,41 @@ def _java_test_file_path(file_path: str) -> str:
 
 
 class CoverageBaselineStep(BaseAgent):
-    """Captures the project's coverage % before this run touches anything,
-    so the final report can show a real before/after delta instead of a
-    lone final number with nothing to compare it to. branch=source_branch
-    (or the project default) -- this run's own branch doesn't exist yet."""
+    """Two jobs before any test gets written: (1) fail fast if the project
+    has no JaCoCo configured -- without it every file reads 0% on Sonar and
+    generated tests have no measurable effect, so there's nothing for this
+    agent to verify; (2) capture the project's coverage % now, so the final
+    report can show a real before/after delta. branch=source_branch (or the
+    project default) -- this run's own branch doesn't exist yet."""
     name: str = "coverage_baseline_step"
 
     async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
+        working_dir = s[sk.WORKING_DIR]
+
+        if not project_has_coverage_tooling(working_dir):
+            raise SonarPreflightError(
+                "This project has no JaCoCo coverage report configured, so Sonar "
+                "reports 0% coverage for every file and the coverage agent has no "
+                "way to measure whether generated tests actually help.\n"
+                "Add JaCoCo to the build, commit it, then re-run:\n"
+                "  Gradle (build.gradle): add `id 'jacoco'` to the plugins { } "
+                "block. That's the minimum -- the agent runs the report and "
+                "forces its XML output on itself. Recommended extra so your own "
+                "`gradle test` also produces it: `test { finalizedBy "
+                "jacocoTestReport }` and `jacocoTestReport { reports { "
+                "xml.required = true } }`.\n"
+                "  Maven (pom.xml): add org.jacoco:jacoco-maven-plugin with BOTH "
+                "a `prepare-agent` execution (binds to the test phase, writes "
+                "the .exec) and a `report` execution -- the plugin alone, "
+                "without prepare-agent, produces no coverage data."
+            )
+
+        # Every checkpoint re-scan and the final scan must regenerate the
+        # JaCoCo XML report before `sonar` runs (see run_sonar_scan) --
+        # otherwise coverage on Sonar never reflects the tests this run adds.
+        s[sk.COVERAGE_REPORT_NEEDED] = True
+
         value = get_metric_value(
             s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], "coverage", s.get("source_branch")
         )
@@ -84,7 +114,7 @@ class CoverageFetchStep(BaseAgent):
     project's uncovered files (already sorted lowest-coverage-first by
     fetch_uncovered_files) and excludes anything this run has already
     completed, flagged, or reverted, same exclusion reasoning as the
-    autofix agent's own FetchPrioritizeStep (see its docstring): a file
+    tech-debt agent's own FetchPrioritizeStep (see its docstring): a file
     already given up on this run shouldn't be silently re-queued forever
     across outer-loop iterations just because it's still "not completed"."""
 
@@ -114,7 +144,7 @@ class CoverageFetchStep(BaseAgent):
 
 class CoverageFileFixerStep(BaseAgent):
     """Coverage's equivalent of fix.FileFixerStep — pops the next file
-    (kept at index 0 until fully handled, same convention as the autofix
+    (kept at index 0 until fully handled, same convention as the tech-debt
     per-file loop), reads the production file plus any existing test file,
     and writes the prompt fix_llm_gate_step will consume."""
 
@@ -389,13 +419,13 @@ coverage_outer_loop = LoopAgent(
 class CoverageQualityGateStep(BaseAgent):
     """Post-pass check, after coverage_outer_loop (and the checkpoint that
     fires when its queue empties has already re-scanned this run's own
-    branch): look for new MAINTAINABILITY code smells Sonar found
-    specifically in the test file(s) THIS run wrote, and re-queue them for
-    a real fix rather than leaving them sitting on the branch. Scoped to
-    files in FILES_COMPLETED only -- pre-existing production-code debt
-    elsewhere in the project is techdebt_agent's job, not this agent's.
+    branch): look for new MAINTAINABILITY code smells Sonar found in the
+    production files this run touched OR the test files it wrote for them,
+    and re-queue them for a real fix rather than leaving them on the
+    branch. Scoped to those files only -- pre-existing debt elsewhere in
+    the project is agent_techdebt's job, not this agent's.
 
-    Reuses techdebt_agent's own per-file loop (FileFixerStep/
+    Reuses agent_techdebt's own per-file loop (FileFixerStep/
     ApplyAndVerifyStep/build_fix_prompt via _build_techdebt_per_file_loop)
     to actually fix what's found -- "fix this Sonar code smell in this
     Java file" is exactly what that machinery already does, well-tested,
@@ -431,20 +461,25 @@ class CoverageQualityGateStep(BaseAgent):
             )
             return
 
-        branch = _scanned_branch(s)
-        ratings = sonar_tools.get_quality_ratings(s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], branch)
-        already_a = ratings.get("sqale_rating") == "1.0"
-        if already_a or maxed_out:
-            reason = "Maintainability rating is A" if already_a else "hit the re-fix iteration cap"
+        if maxed_out:
             yield Event(
                 author=self.name,
-                content=_msg(f"Quality check on this run's own file(s): {reason}."),
+                content=_msg("Quality check on this run's own file(s): hit the re-fix iteration cap."),
                 actions=EventActions(escalate=True),
             )
             return
 
+        branch = _scanned_branch(s)
         all_issues = sonar_tools.fetch_issues_and_hotspots(s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], branch)
-        my_files = set(s[sk.FILES_COMPLETED])
+        # Both the production files this run touched AND the test files it
+        # wrote for them -- a code smell Sonar raises in a generated *test*
+        # file (e.g. java:S6068, a useless Mockito eq()) is exactly the kind
+        # of thing this step exists to clean up, and keying on production
+        # paths alone made it invisible. A high project Maintainability
+        # rating does NOT mean this run introduced no new smells -- a
+        # handful of minor ones won't drop an A -- so this runs regardless
+        # of the current rating.
+        my_files = set(s[sk.FILES_COMPLETED]) | {_java_test_file_path(f) for f in s[sk.FILES_COMPLETED]}
         already_excluded = set(s[sk.FILES_REVERTED_AT_CHECKPOINT]) | {f["file"] for f in s[sk.FILES_FLAGGED]}
         candidates = [
             i for i in all_issues
@@ -455,13 +490,13 @@ class CoverageQualityGateStep(BaseAgent):
         if not candidates:
             yield Event(
                 author=self.name,
-                content=_msg("No new code smells found in this run's own file(s)."),
+                content=_msg("No new code smells in this run's own file(s) — nothing to re-fix."),
                 actions=EventActions(escalate=True),
             )
             return
 
         # rule_description is needed for the fix prompt -- see
-        # techdebt_agent's FetchPrioritizeStep for the identical caching
+        # agent_techdebt's FetchPrioritizeStep for the identical caching
         # reasoning (many issues share the same rule).
         cache = s.setdefault("temp:coverage_rule_description_cache", {})
         for issue in candidates:
@@ -490,6 +525,154 @@ def _build_coverage_quality_loop() -> LoopAgent:
 coverage_quality_loop = _build_coverage_quality_loop()
 
 
+class CoverageFinalVerifyStep(BaseAgent):
+    """The last gate before push. coverage_outer_loop and
+    coverage_quality_loop each already end on a checkpoint that
+    bisect-reverts a file whose own commit broke the build -- but a build
+    can still be left red by an interaction between two individually-fine
+    commits, or by coverage_quality_loop's commits (whose per-file check is
+    only quick_compile_check, which never reaches test-compile). This runs
+    one more full build/test; on failure it gives the model up to
+    _MAX_FINAL_BUILD_FIX_ATTEMPTS passes to fix this run's own test files
+    against the actual error, and if a green build still can't be produced,
+    resets the branch to its base commit so a broken branch is never
+    pushed. Then it triggers the final, authoritative coverage scan the
+    report reads from."""
+    name: str = "coverage_final_verify_step"
+
+    async def _attempt_build_fix(
+        self, ctx: InvocationContext, working_dir: str, build_error: str, failing_tests: list[str],
+    ) -> AsyncGenerator[Event, None]:
+        """One LLM pass over this run's test files implicated by the build
+        failure. Sets temp:final_fix_wrote_something so the caller knows
+        whether a re-verify is worth running."""
+        s = ctx.session.state
+        s["temp:final_fix_wrote_something"] = False
+        prod_by_test = {_java_test_file_path(f): f for f in s[sk.FILES_COMPLETED]}
+
+        # parse_junit_failures yields "<FQCN>#<method>: <message>" -- take the
+        # class, match it to one of this run's test files by simple name.
+        targets: set[str] = set()
+        for failure in failing_tests:
+            simple = failure.split("#", 1)[0].strip().rsplit(".", 1)[-1]
+            targets |= {tf for tf in prod_by_test if os.path.basename(tf) == f"{simple}.java"}
+        # JUnit XML gave nothing usable (a compile failure writes no report) --
+        # fall back to every test file this run wrote that's still on disk.
+        if not targets:
+            targets = {
+                tf for tf in prod_by_test
+                if os.path.isfile(os.path.join(working_dir, *tf.split("/")))
+            }
+
+        for test_file in sorted(targets):
+            test_abs = os.path.join(working_dir, *test_file.split("/"))
+            prod_file = prod_by_test.get(test_file)
+            prod_abs = os.path.join(working_dir, *prod_file.split("/")) if prod_file else None
+            if not (os.path.isfile(test_abs) and prod_abs and os.path.isfile(prod_abs)):
+                continue
+            with open(prod_abs, encoding="utf-8") as f:
+                prod_content = f.read()
+            with open(test_abs, encoding="utf-8") as f:
+                broken_test = f.read()
+
+            s["temp:fix_prompt"] = build_coverage_prompt(
+                file_path=prod_file, file_content=prod_content,
+                coverage=0.0, uncovered_lines=0, uncovered_conditions=0,
+                test_file_path=test_file, existing_test_content=broken_test,
+                previous_attempt=broken_test, previous_error=build_error[-2000:],
+            )
+            llm_error = None
+            async for event in _build_fix_llm_agent().run_async(ctx):
+                llm_error = _llm_error_message(event) or llm_error
+                yield _hide_text(event)
+            if llm_error:
+                yield Event(author=self.name, content=_msg(
+                    f"Model call failed while fixing `{test_file}` ({llm_error})."
+                ))
+                continue
+
+            raw = s.get(sk.PROPOSED_DIFF, "")
+            if _no_safe_fix_reason(raw) is not None:
+                continue
+            content = _extract_code_block(raw).strip()
+            if not content or _looks_like_diff(content):
+                continue
+            with open(test_abs, "w", encoding="utf-8") as f:
+                f.write(content)
+            s["temp:final_fix_wrote_something"] = True
+            yield Event(author=self.name, content=_msg(f"Regenerated `{test_file}` to fix the build."))
+
+    async def _run_async_impl(self, ctx: InvocationContext) -> AsyncGenerator[Event, None]:
+        s = ctx.session.state
+        working_dir = s[sk.WORKING_DIR]
+        adapter = get_adapter(s[sk.LANGUAGE], working_dir)
+
+        if not s[sk.FILES_COMPLETED]:
+            s["temp:final_build_status"] = "not run — nothing committed this run"
+            yield Event(author=self.name, content=_msg(
+                "No files committed this run — skipping final build verification."
+            ))
+            return
+
+        result = adapter.verify_build(working_dir)
+        attempts = 0
+        while not result.passed and attempts < _MAX_FINAL_BUILD_FIX_ATTEMPTS:
+            attempts += 1
+            failing = patch_tools.parse_junit_failures(working_dir)
+            detail = f" (failing test(s): {'; '.join(failing)})" if failing else ""
+            yield Event(author=self.name, content=_msg(
+                f"Final build failed{detail} — fix attempt {attempts}/{_MAX_FINAL_BUILD_FIX_ATTEMPTS}."
+            ))
+            async for event in self._attempt_build_fix(ctx, working_dir, result.errors, failing):
+                yield event
+            if not s.pop("temp:final_fix_wrote_something", False):
+                yield Event(author=self.name, content=_msg(
+                    "Nothing left the model could safely regenerate for this failure."
+                ))
+                break
+            result = adapter.verify_build(working_dir)
+
+        if result.passed:
+            note = f" after {attempts} fix attempt(s)" if attempts else ""
+            if attempts:
+                git_tools.commit(working_dir, "test: fix build failures from coverage additions")
+            s["temp:final_build_status"] = f"passed{note}"
+            yield Event(author=self.name, content=_msg(f"Final build passed{note}."))
+        else:
+            git_tools.reset_hard(working_dir, s[sk.RUN_BASE_SHA])
+            s["temp:skip_push"] = True
+            s["temp:skip_push_reason"] = (
+                f"final build could not be made to pass after {attempts} fix attempt(s) — "
+                "all of this run's changes were reverted"
+            )
+            s["temp:final_build_status"] = (
+                f"FAILED after {attempts} fix attempt(s) — branch reset to base, nothing pushed"
+            )
+            yield Event(author=self.name, content=_msg(
+                f"Final build still failing after {attempts} fix attempt(s) — reset "
+                f"`{s[sk.BRANCH_NAME]}` to its base commit; nothing will be pushed.\n"
+                f"Last build error:\n```\n{result.errors[-1500:]}\n```"
+            ))
+            return
+
+        yield Event(author=self.name, content=_msg(
+            "Running the final Sonar analysis to measure the coverage delta…"
+        ))
+        try:
+            task_id = sonar_tools.trigger_sonar_analysis(
+                working_dir, s[sk.SONAR_PROJECT_KEY], ce_edition=s.get("ce_edition", True),
+                language=s[sk.LANGUAGE], sonar_base_url=s["sonar_base_url"], sonar_token=s["sonar_token"],
+                with_coverage=True,
+            )
+            sonar_tools.poll_ce_task_status(s["sonar_base_url"], s["sonar_token"], task_id, timeout_s=600)
+            yield Event(author=self.name, content=_msg("Final Sonar analysis complete."))
+        except (RuntimeError, TimeoutError) as e:
+            yield Event(author=self.name, content=_msg(
+                f"Final Sonar analysis didn't complete ({e}) — the report falls back to the "
+                "last checkpoint's numbers."
+            ))
+
+
 class CoverageReportStep(BaseAgent):
     name: str = "coverage_report_step"
 
@@ -498,7 +681,7 @@ class CoverageReportStep(BaseAgent):
         duration = time.time() - s.get(sk.RUN_START_TIME, time.time())
         # dict.fromkeys, not set(): a file can legitimately end up in
         # FILES_COMPLETED twice -- once from coverage's own pass, again
-        # from coverage_quality_loop's reuse of techdebt_agent's
+        # from coverage_quality_loop's reuse of agent_techdebt's
         # ApplyAndVerifyStep (which unconditionally appends on success,
         # not knowing this file was already "done" for a different
         # reason) -- de-duped here for display, order preserved.
@@ -507,18 +690,23 @@ class CoverageReportStep(BaseAgent):
         flagged = s.get(sk.FILES_FLAGGED, [])
         tokens = s.get(sk.TOKEN_USAGE, {"prompt_tokens": 0, "candidates_tokens": 0, "total_tokens": 0})
 
+        reverted_run = bool(s.get("temp:skip_push"))
         coverage_value = get_metric_value(
             s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], "coverage", _scanned_branch(s)
         )
         coverage_before = s.get("temp:coverage_before")
-        if coverage_value is None:
-            coverage_line = "unknown (no analysis yet)"
+        if reverted_run:
+            coverage_line = "unchanged — this run was reverted"
+        elif coverage_value is None:
+            coverage_line = "unknown (final analysis did not complete)"
         elif coverage_before is None:
             coverage_line = f"{float(coverage_value):.1f}% (baseline unknown)"
         else:
             delta = float(coverage_value) - coverage_before
             arrow = "+" if delta >= 0 else ""
             coverage_line = f"{coverage_before:.1f}% → {float(coverage_value):.1f}% ({arrow}{delta:.1f} pts)"
+            if abs(delta) < 0.05 and files:
+                coverage_line += "  ⚠ tests were added but coverage did not move — check that JaCoCo XML is enabled"
 
         ratings = sonar_tools.get_quality_ratings(
             s["sonar_base_url"], s[sk.SONAR_PROJECT_KEY], s["sonar_token"], _scanned_branch(s)
@@ -528,7 +716,7 @@ class CoverageReportStep(BaseAgent):
         )
 
         lines = [
-            f"**Sonar Coverage-Enhance complete** — branch `{s.get(sk.BRANCH_NAME, 'unknown')}`",
+            f"**Sonar Coverage fix complete** — branch `{s.get(sk.BRANCH_NAME, 'unknown')}`",
             "",
             f"- Files with new/updated tests: {len(files)}"
             + (f": {', '.join(f'`{f}`' for f in files)}" if files else ""),
@@ -538,6 +726,7 @@ class CoverageReportStep(BaseAgent):
             lines.append(f"- Flagged for manual review ({len(flagged)}):")
             for entry in flagged:
                 lines.append(f"  - `{entry['file']}` — {entry['reason']}")
+        lines.append(f"- Final build: {s.get('temp:final_build_status', 'not verified')}")
         push_result = s.get("temp:push_result", "not attempted")
         lines.append(f"- Push: {push_result}")
         lines.append(
@@ -554,6 +743,6 @@ coverage_pipeline = SequentialAgent(
     name="sonar_coverage_pipeline",
     sub_agents=[
         SetupStep(), CoverageBaselineStep(), coverage_outer_loop, coverage_quality_loop,
-        PushStep(), CoverageReportStep(),
+        CoverageFinalVerifyStep(), PushStep(), CoverageReportStep(),
     ],
 )

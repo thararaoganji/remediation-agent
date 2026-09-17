@@ -20,10 +20,8 @@ instead.
 
 import os
 import platform
-import re
 import shutil
 import subprocess
-import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 

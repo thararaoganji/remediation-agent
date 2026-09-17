@@ -1,5 +1,5 @@
 """
-Runs the sonar-autofix root_agent directly via ADK's Runner, seeding the
+Runs the agent_techdebt root_agent directly via ADK's Runner, seeding the
 session state this pipeline actually needs from .env. `adk web` / `adk run`
 are built for chatting with an agent turn-by-turn — this pipeline isn't
 conversational, it's a deterministic run-to-completion job, so driving it
@@ -15,20 +15,20 @@ import asyncio
 import datetime
 import os
 import sys
-import tempfile
 
 from dotenv import load_dotenv
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from techdebt_agent import root_agent
+from agent_techdebt import AGENT_SLUG, root_agent
 from core.adapters.base import ToolNotAvailableError, BuildToolNotDetectedError
-from sonar.adapters import SonarConfigNotFoundError
+from core.tools import git_tools
+from sonar.adapters import SonarConfigNotFoundError, SonarPreflightError
 
 load_dotenv()
 
-APP_NAME = "sonar_autofix"
+APP_NAME = "sonar_remediation"
 USER_ID = "local_dev"
 SESSION_ID = "local_run_1"
 
@@ -68,8 +68,12 @@ def build_initial_state() -> dict:
         # (see SetupStep's preflight check for the "this branch has never
         # been analyzed" failure mode this guards against).
         "source_branch": os.environ.get("SOURCE_BRANCH") or None,
-        "workspace_root": os.environ.get(
-            "WORKSPACE_ROOT", os.path.join(tempfile.gettempdir(), "sonar_autofix_workspaces")
+        "agent_slug": AGENT_SLUG,
+        # Per-agent clone isolation for github source -- this agent's own
+        # sibling workspace dir (sonar_remediation_<slug>/), not one shared
+        # across all three agents. No effect on local source (edited in place).
+        "workspace_root": git_tools.agent_workspace_root(
+            os.environ.get("WORKSPACE_ROOT") or git_tools.DEFAULT_WORKSPACE_ROOT, AGENT_SLUG
         ),
         # machine-local time, not UTC -- branch names are read by humans,
         # who expect the time on their own clock.
@@ -100,9 +104,16 @@ async def main():
             if err:
                 sys.exit(f"\nStopped: {err}")
             print(f"[{event.author}] {event.content or '(state update)'}")
-    except (ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError) as e:
-        # Raised by SetupStep's preflight check before any Sonar fetch or
-        # LLM call — surface it as a clean stop, not a stack trace.
+    except (
+        ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError, SonarPreflightError,
+        RuntimeError, TimeoutError,
+    ) as e:
+        # Mirrors sonar/intake.py's build_intake_step catch list -- belt and
+        # suspenders in case an exception ever reaches this level instead of
+        # being caught inside the intake step's own try/except (the normal
+        # path). Without this, a mid-run failure (a Sonar scan that failed,
+        # a checkpoint that couldn't recover, git push with no origin) would
+        # print a raw Python traceback instead of a clean, actionable line.
         sys.exit(f"\nStopped: {e}")
 
     final_session = await session_service.get_session(

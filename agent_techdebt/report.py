@@ -24,7 +24,7 @@ def _format_summary(report: dict) -> str:
     deliberately just a comma-joined list of file names, not a per-file
     breakdown -- the individual fix/checkpoint/re-scan events already
     narrated each file's outcome as it happened."""
-    lines = [f"**Sonar Auto-Fix complete** — branch `{report['branch_name']}`", ""]
+    lines = [f"**Sonar Tech-Debt fix complete** — branch `{report['branch_name']}`", ""]
 
     lines.append(f"- Issues fixed: {len(report['issues_fixed'])}")
 
