@@ -35,9 +35,9 @@ def _drain(step, state):
     return asyncio.run(_run())
 
 
-def _base_state(tmp_path, **overrides):
+def _base_state(**overrides):
     state = {
-        "source": str(tmp_path), sk.SOURCE_TYPE: "local", sk.LANGUAGE: "java-maven",
+        "source": "owner/repo", sk.SOURCE_TYPE: "github", sk.LANGUAGE: "java-maven",
         "sonar_base_url": "http://x", "sonar_token": "t", "timestamp": "20260101_000000",
     }
     state.update(overrides)
@@ -57,7 +57,7 @@ def test_setup_step_raises_when_source_branch_has_no_sonar_analysis(tmp_path, mo
     monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)
     monkeypatch.setattr(setup_mod.sonar_tools, "branch_exists", lambda *a, **kw: False)
 
-    state = _base_state(tmp_path, source_branch="develop")
+    state = _base_state(source_branch="develop")
     with pytest.raises(SonarPreflightError, match="develop"):
         _drain(setup_mod.SetupStep(), state)
 
@@ -71,7 +71,7 @@ def test_setup_step_proceeds_when_source_branch_has_sonar_analysis(tmp_path, mon
     monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)
     monkeypatch.setattr(setup_mod.sonar_tools, "branch_exists", lambda *a, **kw: True)
 
-    state = _base_state(tmp_path, source_branch="develop")
+    state = _base_state(source_branch="develop")
     events = _drain(setup_mod.SetupStep(), state)
 
     assert state[sk.BRANCH_NAME] == "proj_agent_x"
@@ -97,7 +97,7 @@ def test_setup_step_passes_per_agent_workspace_root_to_resolve_source(tmp_path, 
     monkeypatch.setattr(setup_mod.sonar_tools, "validate_connection", lambda *a, **kw: None)
     monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)
 
-    state = _base_state(tmp_path, **{sk.AGENT_SLUG: "coverage"})
+    state = _base_state(**{sk.AGENT_SLUG: "coverage"})
     _drain(setup_mod.SetupStep(), state)
     assert captured["workspace_root"].endswith("sonar_remediation_coverage")
 
@@ -116,6 +116,6 @@ def test_setup_step_skips_branch_check_when_no_source_branch_given(tmp_path, mon
         raise AssertionError("branch_exists should not be called when no source_branch was requested")
     monkeypatch.setattr(setup_mod.sonar_tools, "branch_exists", _fail)
 
-    state = _base_state(tmp_path)
+    state = _base_state()
     _drain(setup_mod.SetupStep(), state)
     assert state[sk.BRANCH_NAME] == "proj_agent_x"

@@ -10,7 +10,7 @@ AGENT_SLUG = "techdebt"
 
 WELCOME_MESSAGE = (
     "I'm the Sonar Tech-Debt Agent. I fix SonarQube Security, Reliability "
-    "and Maintainability findings in a Java project — local or GitHub — "
+    "and Maintainability findings in a Java project on GitHub — "
     "file by file, verifying the build and re-scanning after each batch so "
     "nothing regresses.\n\n" + REPO_PROMPT + BRANCH_HINT
 )
@@ -23,7 +23,7 @@ WELCOME_MESSAGE = (
 root_agent = build_intake_step(
     step_name="techdebt_intake_step",
     description=(
-        "Fetches SonarQube findings for a Java project (local or GitHub), "
+        "Fetches SonarQube findings for a Java project on GitHub, "
         "fixes them file-by-file, verifies the build, and re-scans to "
         "confirm no regressions -- targeting Security/Reliability/"
         "Maintainability ratings of A. Send any message to begin."

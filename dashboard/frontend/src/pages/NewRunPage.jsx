@@ -24,7 +24,6 @@ export default function NewRunPage() {
   const [githubCredentials, setGithubCredentials] = useState([])
 
   const [agentType, setAgentType] = useState(AGENT_TYPES[0].value)
-  const [sourceType, setSourceType] = useState('github')
   const [source, setSource] = useState('')
   const [sourceBranch, setSourceBranch] = useState('')
   const [language, setLanguage] = useState(LANGUAGES[0].value)
@@ -58,12 +57,11 @@ export default function NewRunPage() {
     try {
       const run = await api.createRun({
         agent_type: agentType,
-        source_type: sourceType,
         source,
         source_branch: sourceBranch.trim() || null,
         language,
         sonar_server_id: sonarServerId,
-        github_credential_id: sourceType === 'github' ? githubCredentialId || null : null,
+        github_credential_id: githubCredentialId || null,
       })
       navigate(`/runs/${run.id}`)
     } catch (err) {
@@ -73,11 +71,14 @@ export default function NewRunPage() {
   }
 
   const noSonarServers = sonarServers.length === 0
-  const noGithubCredentials = sourceType === 'github' && githubCredentials.length === 0
+  const noGithubCredentials = githubCredentials.length === 0
 
   return (
     <div className="new-run-page">
       <h2>Start a new run</h2>
+      <p className="section-note">
+        The agent always clones this repo fresh into its own tmp workspace — it never analyzes a local checkout.
+      </p>
       {noSonarServers && (
         <p className="warning">
           No Sonar servers configured yet — add one on the <a href="/connections">Connections</a> page first.
@@ -96,21 +97,8 @@ export default function NewRunPage() {
         </label>
 
         <label>
-          Source
-          <select value={sourceType} onChange={(e) => setSourceType(e.target.value)}>
-            <option value="github">GitHub repo</option>
-            <option value="local">Local path (on the running container)</option>
-          </select>
-        </label>
-
-        <label>
-          {sourceType === 'github' ? 'Repository (owner/repo)' : 'Path'}
-          <input
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            placeholder={sourceType === 'github' ? 'owner/repo' : '/path/to/project'}
-            required
-          />
+          Repository (owner/repo)
+          <input value={source} onChange={(e) => setSource(e.target.value)} placeholder="owner/repo" required />
         </label>
 
         <label>
@@ -143,25 +131,23 @@ export default function NewRunPage() {
           </select>
         </label>
 
-        {sourceType === 'github' && (
-          <label>
-            GitHub credential
-            <select value={githubCredentialId} onChange={(e) => setGithubCredentialId(e.target.value)}>
-              <option value="">None (public repo, read-only)</option>
-              {githubCredentials.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name} ({c.api_base_url})
-                </option>
-              ))}
-            </select>
-            {noGithubCredentials && (
-              <span className="field-note">
-                No GitHub credentials configured — fine for a public repo, but the run won't be able to push its
-                fix branch without one.
-              </span>
-            )}
-          </label>
-        )}
+        <label>
+          GitHub credential
+          <select value={githubCredentialId} onChange={(e) => setGithubCredentialId(e.target.value)}>
+            <option value="">None (public repo, read-only)</option>
+            {githubCredentials.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.api_base_url})
+              </option>
+            ))}
+          </select>
+          {noGithubCredentials && (
+            <span className="field-note">
+              No GitHub credentials configured — fine for a public repo, but the run won't be able to push its fix
+              branch without one.
+            </span>
+          )}
+        </label>
 
         <button type="submit" disabled={submitting || noSonarServers || !sonarServerId}>
           {submitting ? 'Starting…' : 'Start run'}

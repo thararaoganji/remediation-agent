@@ -159,7 +159,7 @@ core/                      -- tool-agnostic fix-loop engine, shared by every
 ├── state_schema.py          -- all session.state keys, one place
 ├── adapters/base.py          -- LanguageAdapter interface, Maven + Gradle impls
 ├── tools/
-│   ├── git_tools.py            -- local/GitHub source resolution, branch, commit
+│   ├── git_tools.py            -- GitHub clone into a tmp workspace, branch, commit
 │   └── patch_tools.py          -- apply_diff, JUnit failure parsing
 └── agents/
     ├── fix_loop.py             -- the LLM-call gate, per-file loop, diff/NO_SAFE_FIX helpers
@@ -216,10 +216,10 @@ colliding on a working tree or branch:
 ```
 
 Wired via `AGENT_SLUG` in each `agent_*/__init__.py` →
-`git_tools.agent_workspace_root()`. **Local source (`SOURCE_TYPE=local`) is
-still edited in place** — no per-agent copy — so two agents pointed at the
-same local path *will* collide; run them one at a time, or point each at
-its own checkout.
+`git_tools.agent_workspace_root()`. There's no local-filesystem source mode
+— the agent only ever clones fresh from GitHub into its own tmp workspace,
+never edits a checkout in place, so three agents can safely run against the
+same repo concurrently without colliding.
 
 ---
 
@@ -239,11 +239,9 @@ python run_local.py
 | `SONAR_BASE_URL` | SonarQube instance, e.g. `http://localhost:9000` |
 | `SONAR_TOKEN` | Sonar UI → My Account → Security → Generate Token |
 | `CE_EDITION` | `true` → local working-tree scan (leave `true` even on paid editions) |
-| `SOURCE_TYPE` | `local` or `github` |
-| `SOURCE_PATH` | used if `SOURCE_TYPE=local` |
-| `GITHUB_REPO` | used if `SOURCE_TYPE=github` — `owner/repo` or full URL |
+| `GITHUB_REPO` | `owner/repo` or full URL — the agent always clones this fresh into its own tmp workspace, never edits a local checkout in place |
 | `GITHUB_TOKEN` | fine-grained PAT, `Contents: Read & write` — only to push the fix branch |
-| `WORKSPACE_ROOT` | base for GitHub-mode clones — each agent clones into its own sibling `sonar_remediation_<agent>/` (see below) |
+| `WORKSPACE_ROOT` | base for clones — each agent clones into its own sibling `sonar_remediation_<agent>/` (see below) |
 | `LANGUAGE` | `java` (auto-detects Maven vs Gradle) or explicit `java-maven`/`java-gradle` |
 | `SOURCE_BRANCH` | optional — a specific branch to check out and fix (must already have its own Sonar analysis) |
 | `FIX_LLM_THINKING_LEVEL` | optional, default `LOW` — caps Gemini thinking effort per file (`MINIMAL`/`LOW`/`MEDIUM`/`HIGH`) |

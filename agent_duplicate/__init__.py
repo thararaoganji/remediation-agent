@@ -10,14 +10,14 @@ AGENT_SLUG = "duplicate"
 
 WELCOME_MESSAGE = (
     "I'm the Sonar Duplication Agent. I detect and resolve code "
-    "duplication in your Java project — local or GitHub — by extracting "
+    "duplication in your Java project on GitHub — by extracting "
     "shared logic into clean helpers.\n\n" + REPO_PROMPT + BRANCH_HINT
 )
 
 root_agent = build_intake_step(
     step_name="duplicate_intake_step",
     description=(
-        "Detects code duplication in a Java project (local or GitHub), "
+        "Detects code duplication in a Java project on GitHub, "
         "and automatically extracts shared logic into clean, reusable "
         "helper classes/methods. Send any message to begin."
     ),

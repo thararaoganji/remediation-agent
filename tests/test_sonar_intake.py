@@ -20,27 +20,29 @@ def _ctx():
 
 def test_set_analysis_source_stores_branch_when_given():
     ctx = _ctx()
-    result = set_analysis_source("github", "owner/repo", ctx, source_branch="develop")
+    result = set_analysis_source("owner/repo", ctx, source_branch="develop")
     assert result["source_branch"] == "develop"
     assert ctx.state["source_branch"] == "develop"
+    assert ctx.state["source"] == "owner/repo"
+    assert ctx.state[sk.SOURCE_TYPE] == "github"
 
 
 def test_set_analysis_source_strips_whitespace_from_branch():
     ctx = _ctx()
-    set_analysis_source("github", "owner/repo", ctx, source_branch="  release/v2  ")
+    set_analysis_source("owner/repo", ctx, source_branch="  release/v2  ")
     assert ctx.state["source_branch"] == "release/v2"
 
 
 def test_set_analysis_source_defaults_branch_to_none_when_omitted():
     ctx = _ctx()
-    result = set_analysis_source("github", "owner/repo", ctx)
+    result = set_analysis_source("owner/repo", ctx)
     assert ctx.state["source_branch"] is None
     assert result["source_branch"] == "(default branch)"
 
 
 def test_set_analysis_source_treats_empty_branch_string_as_none():
     ctx = _ctx()
-    set_analysis_source("github", "owner/repo", ctx, source_branch="")
+    set_analysis_source("owner/repo", ctx, source_branch="")
     assert ctx.state["source_branch"] is None
 
 
@@ -112,7 +114,7 @@ def test_intake_step_turns_runtime_error_into_clean_stop_message(monkeypatch):
     a bare 'execution failed', with the actual reason visible nowhere.
     Confirmed live against a real tech-debt run."""
     events = _run_intake_step(
-        _BoomPipeline(), {"source": "/tmp/x", sk.SOURCE_TYPE: "local"}, monkeypatch,
+        _BoomPipeline(), {"source": "owner/repo", sk.SOURCE_TYPE: "github"}, monkeypatch,
     )
     assert any("Analysis stopped: boom: sonar scan failed" in t for t in _event_texts(events))
 
@@ -126,6 +128,6 @@ def test_intake_step_turns_timeout_error_into_clean_stop_message(monkeypatch):
             yield  # pragma: no cover
 
     events = _run_intake_step(
-        _TimeoutPipeline(), {"source": "/tmp/x", sk.SOURCE_TYPE: "local"}, monkeypatch,
+        _TimeoutPipeline(), {"source": "owner/repo", sk.SOURCE_TYPE: "github"}, monkeypatch,
     )
     assert any("Analysis stopped:" in t and "did not finish within 600s" in t for t in _event_texts(events))

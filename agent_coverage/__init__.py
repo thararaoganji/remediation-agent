@@ -17,7 +17,7 @@ WELCOME_MESSAGE = (
 root_agent = build_intake_step(
     step_name="coverage_intake_step",
     description=(
-        "Finds uncovered code paths/branches in a Java project (local or GitHub), "
+        "Finds uncovered code paths/branches in a Java project on GitHub, "
         "and automatically generates targeted JUnit unit tests to boost test coverage. "
         "Send any message to begin."
     ),

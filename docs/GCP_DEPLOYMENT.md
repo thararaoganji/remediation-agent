@@ -261,7 +261,7 @@ for AGENT_TYPE in techdebt coverage duplicate; do
   gcloud run jobs create "sonar-remediation-${AGENT_TYPE}-job" \
     --image="${IMAGE}" \
     --region=REGION \
-    --set-env-vars="AGENT_TYPE=${AGENT_TYPE},SONAR_BASE_URL=http://SONARQUBE_VM_IP:9000,SOURCE_TYPE=github,GITHUB_REPO=OWNER/REPO,LANGUAGE=java,CE_EDITION=true" \
+    --set-env-vars="AGENT_TYPE=${AGENT_TYPE},SONAR_BASE_URL=http://SONARQUBE_VM_IP:9000,GITHUB_REPO=OWNER/REPO,LANGUAGE=java,CE_EDITION=true" \
     --set-secrets=GOOGLE_API_KEY=google-api-key:latest,SONAR_TOKEN=sonar-token:latest,GITHUB_TOKEN=github-token:latest \
     --max-retries=0 \
     --task-timeout=3600 \
@@ -280,9 +280,8 @@ All three jobs can safely target the **same** `GITHUB_REPO` — each agent
 clones into its own sibling workspace dir
 (`sonar_remediation_{techdebt,coverage,duplicate}/`, see README.md's
 "Per-agent clone isolation") and pushes its own branch, so they don't
-collide even if run concurrently. If `SOURCE_TYPE=local` instead, run them
-one at a time (or point each at its own checkout) — local source is edited
-in place with no per-agent copy.
+collide even if run concurrently. There's no local-filesystem source mode
+to worry about here — the agent only ever clones fresh from GitHub.
 
 ### 2.4 Run one
 

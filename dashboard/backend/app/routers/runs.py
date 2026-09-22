@@ -30,18 +30,16 @@ _COLLECTION = "runs"
 
 class RunCreate(BaseModel):
     agent_type: str  # "techdebt" | "coverage" | "duplicate"
-    source_type: str  # "github" | "local" -- the dashboard's New Run form should only ever offer "github" (a "local" path only makes sense for a Job whose image already has the source baked in, not a real dashboard use case)
-    source: str  # "owner/repo" for github, an absolute path for local
+    source: str  # "owner/repo" or a full GitHub URL -- the agent always clones fresh into its own tmp workspace, never analyzes a local checkout
     source_branch: str | None = None
     language: str = "java"
     sonar_server_id: str
-    github_credential_id: str | None = None  # required in practice for source_type="github"; optional so a local/no-push run isn't forced to pick one
+    github_credential_id: str | None = None  # optional -- omit for a public repo the run only needs to read, not push to
 
 
 class RunOut(BaseModel):
     id: str
     agent_type: str
-    source_type: str
     source: str
     source_branch: str | None = None
     language: str
@@ -91,24 +89,19 @@ def create_run(body: RunCreate):
     env = {
         "RUN_ID": run_id,
         "AGENT_TYPE": body.agent_type,
-        "SOURCE_TYPE": body.source_type,
         "LANGUAGE": body.language,
         "SONAR_BASE_URL": sonar_server["base_url"],
         "CE_EDITION": "true" if sonar_server["ce_edition"] else "false",
         "SONAR_TOKEN": secret_manager.access_secret_value(sonar_server["secret_name"]),
+        "GITHUB_REPO": body.source,
     }
-    if body.source_type == "github":
-        env["GITHUB_REPO"] = body.source
-        if github_cred:
-            env["GITHUB_TOKEN"] = secret_manager.access_secret_value(github_cred["secret_name"])
-    else:
-        env["SOURCE_PATH"] = body.source
+    if github_cred:
+        env["GITHUB_TOKEN"] = secret_manager.access_secret_value(github_cred["secret_name"])
     if body.source_branch:
         env["SOURCE_BRANCH"] = body.source_branch
 
     firestore_db.create_doc(_COLLECTION, {
         "agent_type": body.agent_type,
-        "source_type": body.source_type,
         "source": body.source,
         "source_branch": body.source_branch,
         "language": body.language,

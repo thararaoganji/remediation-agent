@@ -48,8 +48,8 @@ BRANCH_HINT = (
 )
 
 REPO_PROMPT = (
-    "Which repo would you like me to analyze — a local path, or the full "
-    "GitHub repo URL (the repo whose root contains build.gradle or pom.xml)?"
+    "Which GitHub repo would you like me to analyze — the full URL or "
+    "\"owner/repo\" (the repo whose root contains build.gradle or pom.xml)?"
 )
 
 # Shown verbatim, every time, whenever the user's message doesn't resolve
@@ -58,18 +58,17 @@ REPO_PROMPT = (
 # decline" behavior are guaranteed, not just instructed and hoped-for.
 SCOPE_REDIRECT_MESSAGE = (
     "I can only help start a Sonar analysis — I'm not able to help with "
-    "anything else. Please share a local path or the full GitHub repo URL "
+    "anything else. Please share the full GitHub repo URL or \"owner/repo\" "
     "(the repo whose root contains build.gradle or pom.xml) you'd like analyzed."
 )
 
 INTAKE_INSTRUCTION = """
 Your only job: read the user's message and decide whether it identifies a
-repository to run a Sonar analysis against — a local filesystem path, or a
-GitHub repo ("owner/repo" or a full URL).
+GitHub repository ("owner/repo" or a full URL) to run a Sonar analysis
+against.
 
 If it clearly does, call `set_analysis_source` with:
-- source_type: "local" or "github"
-- source: the path (if local) or "owner/repo"/URL (if github)
+- source: "owner/repo" or the full URL
 - source_branch: ONLY if the user names a specific branch to use instead of
   the repo's default (e.g. "on the develop branch", "from release/v2",
   "use the feature/x branch") — pass exactly the branch name they gave,
@@ -77,12 +76,12 @@ If it clearly does, call `set_analysis_source` with:
   entirely — do NOT guess a branch name or default to "main"/"master"
   yourself; the caller already has its own correct default for that case.
 
-If it doesn't (greetings, unrelated questions, coding requests, anything
-ambiguous with no clear local-vs-GitHub signal) — do NOT call the tool, and
-do not attempt to answer, help with, or engage with the message in any
-other way. The caller replaces your response with a fixed message in that
-case, so nothing else about your reply matters — just don't call the tool
-unless you have a real path or repo.
+If it doesn't (greetings, unrelated questions, coding requests, a local
+filesystem path, anything ambiguous with no clear GitHub-repo signal) — do
+NOT call the tool, and do not attempt to answer, help with, or engage with
+the message in any other way. The caller replaces your response with a
+fixed message in that case, so nothing else about your reply matters —
+just don't call the tool unless you have a real GitHub repo.
 """
 
 
@@ -108,38 +107,24 @@ def _accumulate_tokens(state: dict, event: Event) -> None:
 
 
 def set_analysis_source(
-    source_type: str, source: str, tool_context: ToolContext, source_branch: str | None = None,
+    source: str, tool_context: ToolContext, source_branch: str | None = None,
 ) -> dict:
-    """Record the repository (and optionally a specific branch) to analyze,
-    and mark intake complete.
+    """Record the GitHub repository (and optionally a specific branch) to
+    analyze, and mark intake complete.
 
     Args:
-        source_type: "local" or "github".
-        source: absolute or ~-relative local path (for "local"), or
-            "owner/repo" / a full GitHub URL (for "github").
+        source: "owner/repo" or a full GitHub URL. The agent always clones
+            this fresh into its own tmp workspace -- never a local path.
         source_branch: a specific branch to use instead of the repo's
             default, if the user named one. Omit if they didn't -- None
             here means "use the default branch", not "unset".
     """
-    source_type = source_type.strip().lower()
-    if source_type not in ("local", "github"):
-        return {"status": "error", "message": "source_type must be 'local' or 'github'."}
-
     source = source.strip()
-    if source_type == "local":
-        expanded = os.path.expanduser(source)
-        if not os.path.isdir(expanded):
-            return {
-                "status": "error",
-                "message": f"'{expanded}' is not a directory that exists on this machine.",
-            }
-        source = expanded
-
     tool_context.state["source"] = source
-    tool_context.state[sk.SOURCE_TYPE] = source_type
+    tool_context.state[sk.SOURCE_TYPE] = "github"
     tool_context.state["source_branch"] = source_branch.strip() if source_branch else None
     return {
-        "status": "ok", "source_type": source_type, "source": source,
+        "status": "ok", "source_type": "github", "source": source,
         "source_branch": tool_context.state["source_branch"] or "(default branch)",
     }
 
@@ -204,8 +189,7 @@ def build_intake_step(
                 # intake actually succeeded.
                 branch_note = f" on branch `{s['source_branch']}`" if s.get("source_branch") else ""
                 yield _model_msg(self.name, (
-                    f"Got it — analyzing the {s[sk.SOURCE_TYPE]} repo at "
-                    f"{s['source']}{branch_note}. {start_phrase}"
+                    f"Got it — analyzing the repo at {s['source']}{branch_note}. {start_phrase}"
                 ))
 
             missing = [k for k in REQUIRED_ENV if not os.environ.get(k)]

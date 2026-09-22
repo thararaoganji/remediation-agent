@@ -14,7 +14,7 @@ Prefix convention (matches ADK's own session-state conventions):
 # --- Set once in Phase I, read everywhere ---
 SONAR_PROJECT_KEY = "sonar_project_key"
 BRANCH_NAME = "branch_name"
-SOURCE_TYPE = "source_type"          # "local" | "github"
+SOURCE_TYPE = "source_type"          # always "github" -- see core.tools.git_tools.resolve_source
 WORKING_DIR = "working_dir"
 LANGUAGE = "language"                # drives which LanguageAdapter tools use
 AGENT_SLUG = "agent_slug"            # "techdebt" | "coverage" | "duplicate" -- isolates each agent's github clone dir

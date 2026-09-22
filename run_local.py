@@ -55,25 +55,19 @@ def load_agent():
 
 
 def build_initial_state(agent_slug: str) -> dict:
-    source_type = os.environ.get("SOURCE_TYPE", "local")
+    # GitHub is the only supported source -- the agent always clones fresh
+    # into its own tmp workspace (git_tools.resolve_source), never edits a
+    # local checkout in place.
     missing = [k for k in REQUIRED if not os.environ.get(k)]
-    if source_type == "github":
-        if not os.environ.get("GITHUB_REPO"):
-            missing.append("GITHUB_REPO")
-    elif source_type == "local":
-        if not os.environ.get("SOURCE_PATH"):
-            missing.append("SOURCE_PATH")
-    else:
-        sys.exit(f"SOURCE_TYPE must be 'local' or 'github', got {source_type!r}")
+    if not os.environ.get("GITHUB_REPO"):
+        missing.append("GITHUB_REPO")
 
     if missing:
         sys.exit(f"Missing required .env keys: {', '.join(missing)}")
 
-    source = os.environ["GITHUB_REPO"] if source_type == "github" else os.environ["SOURCE_PATH"]
-
     return {
-        "source": source,
-        "source_type": source_type,
+        "source": os.environ["GITHUB_REPO"],
+        "source_type": "github",
         # sonar_project_key deliberately NOT seeded here — SetupStep reads
         # it from build.gradle/pom.xml once the source is checked out.
         "language": os.environ["LANGUAGE"],
@@ -88,9 +82,9 @@ def build_initial_state(agent_slug: str) -> dict:
         # been analyzed" failure mode this guards against).
         "source_branch": os.environ.get("SOURCE_BRANCH") or None,
         "agent_slug": agent_slug,
-        # Per-agent clone isolation for github source -- this agent's own
-        # sibling workspace dir (sonar_remediation_<slug>/), not one shared
-        # across all three agents. No effect on local source (edited in place).
+        # Per-agent clone isolation -- this agent's own sibling workspace
+        # dir (sonar_remediation_<slug>/), not one shared across all three
+        # agents.
         "workspace_root": git_tools.agent_workspace_root(
             os.environ.get("WORKSPACE_ROOT") or git_tools.DEFAULT_WORKSPACE_ROOT, agent_slug
         ),

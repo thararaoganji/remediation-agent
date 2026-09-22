@@ -110,62 +110,6 @@ def _force_rmtree(path: str) -> None:
     shutil.rmtree(path)
 
 
-def _default_branch(working_dir: str) -> str | None:
-    """Best-effort resolution of the repo's actual default branch (main,
-    master, or whatever else) — `git symbolic-ref refs/remotes/origin/HEAD`
-    when an `origin` remote exists (the standard, reliable source for
-    this), falling back to a local `main` or `master` branch if there's no
-    remote. Returns None if neither is available (an unusual repo with no
-    origin and no conventionally-named branch) — the caller's only
-    remaining option at that point is to leave whatever's checked out
-    alone, same as before this function existed."""
-    # subprocess.run directly, not _run() — no `origin` remote (or no
-    # symbolic-ref recorded for it) is an expected, gracefully-handled
-    # case here, not a failure worth _run()'s raise-on-nonzero-exit.
-    result = subprocess.run(
-        ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=working_dir, capture_output=True, text=True,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        return result.stdout.strip().rsplit("/", 1)[-1]
-    branches = _run(["git", "branch", "--list", "main", "master"], cwd=working_dir).stdout
-    for candidate in ("main", "master"):
-        if candidate in branches:
-            return candidate
-    return None
-
-
-def _branch_exists_locally(working_dir: str, branch: str) -> bool:
-    return subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=working_dir,
-    ).returncode == 0
-
-
-def _remote_branch_exists(working_dir: str, branch: str) -> bool:
-    return subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=working_dir,
-    ).returncode == 0
-
-
-def _checkout_source_branch(working_dir: str, branch: str) -> None:
-    """Checks out `branch` as this run's starting point instead of the
-    repo's default -- a local branch of that name if one already exists,
-    else tracked fresh from origin/{branch} if that exists, else raises.
-    Deliberately does NOT fall back to the default branch on a miss (the
-    way a missing/unset branch request does elsewhere in this function) --
-    an explicitly-requested branch that doesn't exist should fail loudly
-    and stop the run, not silently analyze the wrong code."""
-    if _branch_exists_locally(working_dir, branch):
-        _run(["git", "checkout", branch], cwd=working_dir)
-        return
-    if _remote_branch_exists(working_dir, branch):
-        _run(["git", "checkout", "-b", branch, f"origin/{branch}"], cwd=working_dir)
-        return
-    raise RuntimeError(
-        f"Branch '{branch}' not found locally or on origin in {working_dir}. "
-        "Check the branch name (case-sensitive) and that it's been pushed to origin."
-    )
-
-
 def agent_workspace_root(base_workspace_root: str, agent_slug: str) -> str:
     """Per-agent clone isolation. Each Sonar agent gets its own workspace
     dir, a sibling of `base_workspace_root` named `sonar_remediation_<slug>`,
@@ -173,10 +117,8 @@ def agent_workspace_root(base_workspace_root: str, agent_slug: str) -> str:
     repo never share a working tree -- separate clones, separate branches,
     no mid-run collision.
 
-    Only github source is affected: local source is edited in place (see
-    resolve_source), so its callers keep passing SOURCE_PATH directly and
-    never reach this. The base's own basename is discarded, only its parent
-    matters -- `/tmp/sonar_remediation_workspaces` and a stale
+    The base's own basename is discarded, only its parent matters --
+    `/tmp/sonar_remediation_workspaces` and a stale
     `/tmp/sonar_autofix_workspaces` both resolve to
     `/tmp/sonar_remediation_<slug>`."""
     parent = os.path.dirname(os.path.normpath(base_workspace_root))
@@ -188,55 +130,20 @@ def resolve_source(
     source_branch: str | None = None,
 ) -> str:
     """
-    source_type == "local": source is a filesystem path. Verify it's a git
-        repo with a clean working tree; if dirty, stash with a labeled
-        entry rather than failing outright. Then switch to source_branch
-        if given, else the repo's own default branch, before returning,
-        regardless of what's currently checked out.
-    source_type == "github": source is a repo URL (https://github.com/owner/repo
-        or owner/repo shorthand). Clones into an isolated workspace dir and
-        checks out source_branch if given, else the default branch.
-        github_token is required for private repos; harmless to pass for
-        public ones too (auth header is simply unused/ignored by GitHub in
-        that case).
+    source_type must be "github": source is a repo URL
+    (https://github.com/owner/repo or owner/repo shorthand). Always a
+    fresh clone into an isolated workspace dir -- never edits a checkout
+    in place -- and checks out source_branch if given, else the remote's
+    own default branch. github_token is required for private repos;
+    harmless to pass for public ones too (auth header is simply
+    unused/ignored by GitHub in that case).
+
+    Local-filesystem sources are deliberately not supported: this agent
+    only ever operates on its own fresh clone in a tmp workspace, never a
+    user's own working directory in place.
+
     Returns the resolved working_dir.
     """
-    if source_type == "local":
-        working_dir = os.path.abspath(os.path.expanduser(source))
-        if not os.path.isdir(os.path.join(working_dir, ".git")):
-            raise RuntimeError(f"{working_dir} is not a git repository")
-
-        status = _run(["git", "status", "--porcelain"], cwd=working_dir)
-        if status.stdout.strip():
-            label = f"sonar-agent-autostash-{os.getpid()}"
-            _run(["git", "stash", "push", "-m", label], cwd=working_dir)
-
-        # Unlike the github path (always a fresh clone, so this is a
-        # non-issue there), a local repo's working directory persists
-        # across separate runs. If a prior run was interrupted (crashed,
-        # Ctrl+C, killed) mid-way, it leaves its own {project_key}_agent_*
-        # branch checked out with its in-progress commits still on it —
-        # create_branch()'s `git checkout -b` branches from CURRENT HEAD,
-        # so without this, the next run silently branches off that stale,
-        # possibly-broken branch instead of main, inheriting its commits
-        # as its own "starting point". Confirmed live: a WebGoat run's
-        # branch turned out to be a direct descendant of an earlier,
-        # interrupted run's branch (`git merge-base` between the two
-        # showed a shared history deep in the older run's own fix commits,
-        # not back at main) — one of the earlier run's fixes had renamed a
-        # field in a way its own checkpoint never caught before being
-        # interrupted, and the new run inherited that unnoticed, broken
-        # rename as if it were part of the original codebase, then spent
-        # its own checkpoint bisection unable to revert past it since that
-        # commit predated the new run's own tracked batch entirely.
-        if source_branch:
-            _checkout_source_branch(working_dir, source_branch)
-        else:
-            default_branch = _default_branch(working_dir)
-            if default_branch is not None:
-                _run(["git", "checkout", default_branch], cwd=working_dir)
-        return working_dir
-
     if source_type == "github":
         if not source.startswith("http"):
             source = f"https://github.com/{source}.git" if not source.endswith(".git") else f"https://github.com/{source}"
@@ -275,7 +182,7 @@ def resolve_source(
         _run(clone_args)
         return working_dir
 
-    raise ValueError(f"Unknown source_type: {source_type!r} (expected 'local' or 'github')")
+    raise ValueError(f"Unknown source_type: {source_type!r} (expected 'github')")
 
 
 _BRANCH_UNSAFE_RE = re.compile(r"[\s~^:?*\[\\]")
