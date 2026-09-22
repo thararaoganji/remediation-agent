@@ -49,6 +49,14 @@ class SetupStep(BaseAgent):
         adapter = get_adapter(s[sk.LANGUAGE], working_dir)
         adapter.preflight_check(working_dir)
         s["temp:resolved_language"] = type(adapter).__name__
+        # Best-effort: read the Java version the project's own pom.xml /
+        # build.gradle[.kts] declares and, if a matching JDK is installed
+        # here, run every compile/test/scan for this project under it
+        # instead of whatever `java` happens to be on PATH -- see
+        # core.adapters.base._java_env(). Falls back to PATH's default JDK
+        # (unchanged prior behavior) when no version is declared or no
+        # matching JDK is installed.
+        java_note = adapter.describe_java_selection(working_dir)
 
         # Read from the build file, not .env: the project key the Sonar
         # plugin actually uses when run_sonar_scan() invokes `gradle sonar`
@@ -113,5 +121,5 @@ class SetupStep(BaseAgent):
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_BATCH_SIZE, 8)
         source_note = f" (based on `{source_branch}`)" if source_branch else ""
         yield Event(author=self.name, content=_msg(
-            f"Checked out branch `{branch_name}`{source_note}. Fetching Sonar issues next."
+            f"Checked out branch `{branch_name}`{source_note} — {java_note}. Fetching Sonar issues next."
         ))

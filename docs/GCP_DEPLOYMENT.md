@@ -3,9 +3,13 @@
 Two independent pieces, in order:
 
 1. **SonarQube** — a long-running server, on a Compute Engine VM (Docker Compose).
-2. **The agent** — a run-to-completion job, as a **Cloud Run Job** (not a Cloud
-   Run *Service* — the agent isn't a request/response server; it fetches,
-   fixes, verifies, and exits, which is exactly what a Job is for).
+2. **The agents** — three run-to-completion jobs (Tech-Debt, Coverage,
+   Duplication), each as its own **Cloud Run Job** (not a Cloud Run
+   *Service* — an agent isn't a request/response server; it fetches, fixes,
+   verifies, and exits, which is exactly what a Job is for). All three run
+   from the **same Docker image**; which agent a given job runs is picked at
+   runtime by that job's `AGENT_TYPE` env var (`techdebt` / `coverage` /
+   `duplicate` — see `run_local.py`).
 
 Everything below uses placeholders in `ALL_CAPS` — replace them with your own
 values. Commands are `gcloud`/`docker`, run from your own machine (both are
@@ -187,7 +191,7 @@ deployment rather than a moving target.
 
 ---
 
-## 2. Containerize and deploy the agent
+## 2. Containerize and deploy the agents
 
 ### 2.1 Build and push the image
 
@@ -205,9 +209,37 @@ docker push REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remedi
 ```
 
 The `Dockerfile` at the repo root installs Java, Maven, *and* Gradle
-alongside Python — the agent's adapters shell out to whichever of those the
-checked-out **target** project actually uses, so both need to be present
-regardless of which one any single run happens to need.
+alongside Python — the adapters shared by all three agents shell out to
+whichever of those the checked-out **target** project actually uses, so both
+need to be present regardless of which one any single run happens to need.
+This single image is reused for all three Cloud Run Jobs below — nothing
+agent-specific is baked into it; `AGENT_TYPE` at run time is what picks
+`agent_techdebt` / `agent_coverage` / `agent_duplicate` (see `run_local.py`).
+
+`SetupStep` also reads the target project's own `pom.xml`/`build.gradle`
+for its declared Java version and builds/tests/scans it under a matching
+JDK instead of always using the base image's 21 — see
+`core/adapters/jdk_provisioning.py`. The image deliberately does **not**
+bundle every JDK version for this (Cloud Run Jobs pull the image fresh on
+every execution, so that size cost would land on every single run); instead
+any version other than 21 is downloaded from
+[Adoptium](https://api.adoptium.net)'s own API the first time a run
+actually needs it, cached under `/tmp` for the rest of that execution's
+container, and used from then on. This means:
+
+- The **first** run against a project on, say, Java 17 pays a one-time
+  download (tens of seconds, depending on network — Adoptium's JDK
+  tarballs run 150–250MB); every later compile/test/scan call in that same
+  execution reuses the cached copy.
+- This needs outbound internet access to `api.adoptium.net`. The default
+  Cloud Run Jobs networking (§3's "simple" path) already has this; if you
+  later lock egress down to a VPC connector (§3's "recommended" path) for
+  reaching the SonarQube VM, make sure that VPC still has a path to the
+  public internet (a Cloud NAT, or an explicit allow for Adoptium) or Java
+  versions other than 21 will silently fall back to 21, which may not
+  compile the target project correctly.
+- If every target project you run this against is on the same Java version
+  anyway, none of this matters — it'll never trigger a download.
 
 ### 2.2 Store secrets
 
@@ -217,18 +249,25 @@ printf '%s' 'YOUR_SONAR_TOKEN'    | gcloud secrets create sonar-token    --data-
 printf '%s' 'YOUR_GITHUB_TOKEN'  | gcloud secrets create github-token  --data-file=-
 ```
 
-### 2.3 Create the Cloud Run Job
+### 2.3 Create the three Cloud Run Jobs
+
+One job per agent, same image, differing only in the job name and
+`AGENT_TYPE` (`techdebt` / `coverage` / `duplicate`):
 
 ```bash
-gcloud run jobs create sonar-remediation-job \
-  --image=REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest \
-  --region=REGION \
-  --set-env-vars=SONAR_BASE_URL=http://SONARQUBE_VM_IP:9000,SOURCE_TYPE=github,GITHUB_REPO=OWNER/REPO,LANGUAGE=java,CE_EDITION=true \
-  --set-secrets=GOOGLE_API_KEY=google-api-key:latest,SONAR_TOKEN=sonar-token:latest,GITHUB_TOKEN=github-token:latest \
-  --max-retries=0 \
-  --task-timeout=3600 \
-  --memory=2Gi \
-  --cpu=2
+IMAGE=REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest
+
+for AGENT_TYPE in techdebt coverage duplicate; do
+  gcloud run jobs create "sonar-remediation-${AGENT_TYPE}-job" \
+    --image="${IMAGE}" \
+    --region=REGION \
+    --set-env-vars="AGENT_TYPE=${AGENT_TYPE},SONAR_BASE_URL=http://SONARQUBE_VM_IP:9000,SOURCE_TYPE=github,GITHUB_REPO=OWNER/REPO,LANGUAGE=java,CE_EDITION=true" \
+    --set-secrets=GOOGLE_API_KEY=google-api-key:latest,SONAR_TOKEN=sonar-token:latest,GITHUB_TOKEN=github-token:latest \
+    --max-retries=0 \
+    --task-timeout=3600 \
+    --memory=2Gi \
+    --cpu=2
+done
 ```
 
 `--max-retries=0` is deliberate: a failed run has already committed whatever
@@ -237,20 +276,30 @@ briefing deck) — an automatic retry would start a *second*, independent fresh
 branch on top, not resume the first. Re-run by hand once you've looked at
 why it failed.
 
-### 2.4 Run it
+All three jobs can safely target the **same** `GITHUB_REPO` — each agent
+clones into its own sibling workspace dir
+(`sonar_remediation_{techdebt,coverage,duplicate}/`, see README.md's
+"Per-agent clone isolation") and pushes its own branch, so they don't
+collide even if run concurrently. If `SOURCE_TYPE=local` instead, run them
+one at a time (or point each at its own checkout) — local source is edited
+in place with no per-agent copy.
+
+### 2.4 Run one
 
 ```bash
-gcloud run jobs execute sonar-remediation-job --region=REGION
+gcloud run jobs execute sonar-remediation-techdebt-job --region=REGION
+# or sonar-remediation-coverage-job / sonar-remediation-duplicate-job
 ```
 
 Watch it live:
 
 ```bash
-gcloud run jobs executions list --job=sonar-remediation-job --region=REGION
+gcloud run jobs executions list --job=sonar-remediation-techdebt-job --region=REGION
 gcloud run jobs executions logs read EXECUTION_NAME --region=REGION
 ```
 
-or via **Cloud Console → Cloud Run → Jobs → sonar-remediation-job → Logs**.
+or via **Cloud Console → Cloud Run → Jobs → sonar-remediation-techdebt-job →
+Logs**.
 
 ---
 
@@ -266,10 +315,11 @@ a fixed address you can allowlist on the VM's firewall. Two options:
   exposure, not a theoretical one).
 - **Recommended**: create a
   [Serverless VPC Access connector](https://cloud.google.com/run/docs/configuring/vpc-connectors)
-  in the same VPC as the SonarQube VM, attach it to the Cloud Run Job
-  (`--vpc-connector`, `--vpc-egress=all-traffic`), and point `SONAR_BASE_URL`
-  at the VM's **internal** IP instead. The firewall rule then only needs to
-  allow the VPC's own internal range, not the public internet.
+  in the same VPC as the SonarQube VM, attach it to each of the three Cloud
+  Run Jobs (`--vpc-connector`, `--vpc-egress=all-traffic`), and point
+  `SONAR_BASE_URL` at the VM's **internal** IP instead. The firewall rule
+  then only needs to allow the VPC's own internal range, not the public
+  internet.
 
 Start with the simple path to get the first end-to-end run working, then
 move to the VPC connector before this touches anything you'd call
@@ -279,12 +329,13 @@ production.
 
 ## 4. Continuous deployment via GitHub Actions
 
-`.github/workflows/deploy-gcp.yml` builds this repo's own agent image on
-every push to `main` (that touches agent code) and rolls it out to the
-Cloud Run Job created in §2.3. It authenticates via **Workload Identity
-Federation** — GitHub's own OIDC token is exchanged for short-lived GCP
-credentials, so there's no long-lived service-account key sitting in GitHub
-secrets to leak or rotate.
+`.github/workflows/deploy-gcp.yml` builds this repo's own agent image (one
+image, shared by all three agents) on every push to `main` (that touches any
+of the three agents' code) and rolls it out to all three Cloud Run Jobs
+created in §2.3. It authenticates via **Workload Identity Federation** —
+GitHub's own OIDC token is exchanged for short-lived GCP credentials, so
+there's no long-lived service-account key sitting in GitHub secrets to leak
+or rotate.
 
 ### 4.1 One-time GCP-side setup
 
@@ -306,7 +357,7 @@ gcloud iam workload-identity-pools providers create-oidc "github-provider" \
   --attribute-condition="assertion.repository=='${REPO}'"
 
 # Dedicated deploy service account -- least privilege: build/push + update
-# the one Cloud Run Job, nothing else.
+# the three Cloud Run Jobs, nothing else.
 gcloud iam service-accounts create github-deployer \
   --project="$PROJECT_ID" --display-name="GitHub Actions deployer"
 
@@ -338,39 +389,47 @@ service-account email aren't sensitive on their own):
 | `GCP_DEPLOY_SERVICE_ACCOUNT` | `github-deployer@PROJECT_ID.iam.gserviceaccount.com` |
 
 Push to `main` (or run the workflow manually via **Actions → Deploy agent
-to Cloud Run → Run workflow**) and it builds, pushes, and updates the job in
-place. The job's env vars/secrets (`SONAR_BASE_URL`, `GITHUB_REPO`, the
-Secret Manager bindings, etc.) are untouched by this — `gcloud run jobs
-update --image=...` only swaps the image, so §2.3's one-time `create` is
-still what defines everything else about the job.
+to Cloud Run → Run workflow**) and it builds, pushes, and updates all three
+jobs in place. Each job's env vars/secrets (`AGENT_TYPE`, `SONAR_BASE_URL`,
+`GITHUB_REPO`, the Secret Manager bindings, etc.) are untouched by this —
+`gcloud run jobs update --image=...` only swaps the image, so §2.3's
+one-time `create` is still what defines everything else about each job.
 
-Executing the job (actually running the agent against a target repo) stays
-a separate, deliberate action — either `gcloud run jobs execute` by hand, or
-the optional Cloud Scheduler wiring in §5 — this workflow only keeps the
+Executing a job (actually running that agent against a target repo) stays a
+separate, deliberate action — either `gcloud run jobs execute` by hand, or
+the optional Cloud Scheduler wiring in §5 — this workflow only keeps each
 job's *image* current.
 
 ---
 
 ## 5. Optional: scheduled runs
 
+One invoker service account, granted `run.invoker` on all three jobs; one
+Scheduler entry per job so they can run on independent schedules (or the
+same one) without stepping on each other:
+
 ```bash
 gcloud iam service-accounts create sonar-remediation-invoker
 
-gcloud run jobs add-iam-policy-binding sonar-remediation-job \
-  --region=REGION \
-  --member="serviceAccount:sonar-remediation-invoker@PROJECT_ID.iam.gserviceaccount.com" \
-  --role="roles/run.invoker"
+for AGENT_TYPE in techdebt coverage duplicate; do
+  gcloud run jobs add-iam-policy-binding "sonar-remediation-${AGENT_TYPE}-job" \
+    --region=REGION \
+    --member="serviceAccount:sonar-remediation-invoker@PROJECT_ID.iam.gserviceaccount.com" \
+    --role="roles/run.invoker"
 
-gcloud scheduler jobs create http sonar-remediation-nightly \
-  --schedule="0 2 * * *" \
-  --uri="https://REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/sonar-remediation-job:run" \
-  --http-method=POST \
-  --oauth-service-account-email="sonar-remediation-invoker@PROJECT_ID.iam.gserviceaccount.com"
+  gcloud scheduler jobs create http "sonar-remediation-${AGENT_TYPE}-nightly" \
+    --schedule="0 2 * * *" \
+    --uri="https://REGION-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/PROJECT_ID/jobs/sonar-remediation-${AGENT_TYPE}-job:run" \
+    --http-method=POST \
+    --oauth-service-account-email="sonar-remediation-invoker@PROJECT_ID.iam.gserviceaccount.com"
+done
 ```
 
 This is genuinely optional for a first pass — get one manual
 `gcloud run jobs execute` working end to end before automating *when* it
-runs.
+runs. If running all three against the same repo concurrently every night is
+too much load on the SonarQube VM, stagger the three `--schedule` crons
+instead of using an identical one for all three.
 
 ---
 

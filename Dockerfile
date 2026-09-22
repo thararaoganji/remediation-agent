@@ -1,9 +1,23 @@
-# Runs agent_techdebt (run_local.py) to completion in one container.
+# Runs one of the three agents (run_local.py, AGENT_TYPE=techdebt|coverage|
+# duplicate, default techdebt) to completion in one container -- same image
+# for all three, only the env var differs between deployments.
 # Needs java + mvn + gradle on PATH, not just Python -- SetupStep's preflight
 # check and the adapters' compile/build/test calls shell out to whichever of
 # these the checked-out target project actually uses (adapters/base.py's
 # _mvn_cmd / _gradle_cmd prefer the target repo's own wrapper script when
 # present, but the wrapper still needs a JDK on the PATH to run against).
+#
+# Only JDK 21 (the base image's own) ships in this image -- deliberately
+# NOT every JDK version a target project might declare. Cloud Run Jobs
+# pull this image fresh on every execution, so bundling e.g. 8/11/17/21/25
+# would mean every single run pays that size cost, for versions most runs
+# never touch. Instead, core/adapters/jdk_provisioning.py downloads
+# whichever exact version a target project's pom.xml/build.gradle declares
+# from Adoptium's own API, once per version per container, the first time
+# it's actually needed -- see that module's docstring. Requires outbound
+# internet access to api.adoptium.net for any version other than 21; keep
+# that in mind if this Job's egress is ever locked down to a VPC (see
+# docs/GCP_DEPLOYMENT.md's networking section).
 FROM eclipse-temurin:21-jdk-jammy
 
 # Bump if a target project needs a newer Gradle than its own wrapper can

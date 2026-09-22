@@ -208,7 +208,7 @@ class SonarJavaMavenAdapter(JavaMavenAdapter):
             ]
         if branch:
             args.append(f"-Dsonar.branch.name={branch}")
-        result = _run(args, cwd=working_dir, timeout=1200)
+        result = _run(args, cwd=working_dir, timeout=1200, env=self._java_env(working_dir))
         # The scan itself succeeded if the CE task URL is in the output -- true
         # even when -Dmaven.test.failure.ignore produced a non-zero exit from
         # an unrelated failing test.
@@ -315,7 +315,7 @@ class SonarJavaGradleAdapter(JavaGradleAdapter):
 
         # init_script is left in place on purpose (stable path, constant
         # content) -- re-created identically next scan, never committed.
-        result = _run(args, cwd=working_dir, timeout=1200)
+        result = _run(args, cwd=working_dir, timeout=1200, env=self._java_env(working_dir))
         # The scan itself succeeded if the CE task URL is in the output -- true
         # even when --continue produced a non-zero exit from an unrelated
         # failing test elsewhere in the suite.

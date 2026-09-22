@@ -187,7 +187,7 @@ agent_techdebt/            -- Sonar Tech-Debt Agent (Security/Reliability/Mainta
 agent_coverage/            -- Sonar Coverage Agent (JUnit tests for uncovered lines)
 agent_duplicate/           -- Sonar Duplication Agent (extract duplicated blocks)
 
-run_local.py               -- entry point: loads .env, seeds session state, runs agent_techdebt
+run_local.py               -- entry point: loads .env, seeds session state, runs AGENT_TYPE's agent
 .env.example               -- copy to .env and fill in
 ```
 
@@ -198,8 +198,9 @@ directories (no `agent.py`), so selecting either just errors.
 
 For a real run, use `run_local.py` — not `adk web` / `adk run`. Those are
 built for turn-by-turn chat; this pipeline runs to completion from
-pre-seeded state. (`run_local.py` runs `agent_techdebt`; point it at the
-other two by swapping the import.)
+pre-seeded state. `run_local.py` picks which agent to run from the
+`AGENT_TYPE` env var (`techdebt` / `coverage` / `duplicate`, default
+`techdebt`).
 
 ### Per-agent clone isolation
 
@@ -233,6 +234,7 @@ python run_local.py
 
 | `.env` key | Purpose |
 |---|---|
+| `AGENT_TYPE` | `techdebt` (default) / `coverage` / `duplicate` — which agent `run_local.py` runs |
 | `GOOGLE_API_KEY` | Gemini access for `fix_llm_agent` (AI Studio) |
 | `SONAR_BASE_URL` | SonarQube instance, e.g. `http://localhost:9000` |
 | `SONAR_TOKEN` | Sonar UI → My Account → Security → Generate Token |
@@ -249,6 +251,25 @@ python run_local.py
 `sonar.projectKey` is **not** an `.env` setting — it's read from the
 checked-out repo's `build.gradle`/`gradle.properties` or `pom.xml` so it
 always matches whatever key the Sonar plugin scans under.
+
+**Java version is also not an `.env` setting** — `SetupStep` reads it from
+the checked-out project's own build file (`maven.compiler.release`/
+`source`/`target` or `java.version` in `pom.xml`; `sourceCompatibility`/
+`targetCompatibility` or a `JavaLanguageVersion` toolchain in
+`build.gradle[.kts]`) via `core/adapters/jdk_provisioning.py`, and runs
+every compile/test/scan for that project under a matching JDK. The Docker
+image only ships its own base JDK (21) — deliberately not a bundle of
+every version, since Cloud Run Jobs pull the image fresh on every
+execution and that size cost would land on every single run. Any other
+declared version is downloaded from
+[Adoptium](https://api.adoptium.net)'s own API the first time it's
+actually needed and cached on disk for the rest of that container's life
+(`JAVA_HOME_<N>` or a local `/opt/jdks/<N>`/package-manager install is
+checked first and used as-is if present, so this never re-downloads a
+version you already have). A local dev machine or air-gapped run with no
+network access to Adoptium falls back to whatever's already on `PATH`
+unchanged, with a note either way in the run's first log line
+(`adapter.describe_java_selection()`).
 
 ---
 

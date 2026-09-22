@@ -106,3 +106,32 @@ def test_gradle_preflight_wrapper_without_jar_reports_specific_reason(tmp_path, 
     adapter = base.JavaGradleAdapter()
     with pytest.raises(base.ToolNotAvailableError, match="gradle-wrapper.jar is missing"):
         adapter.preflight_check(str(tmp_path))
+
+
+# --- LanguageAdapter delegates Java-version selection to jdk_provisioning ---
+# (see tests/test_jdk_provisioning.py for the detection/download logic itself)
+
+def test_java_env_delegates_to_jdk_provisioning(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_resolve(working_dir, build_tool):
+        calls.append((working_dir, build_tool))
+        return {"JAVA_HOME": "/fake"}
+
+    monkeypatch.setattr(base.jdk_provisioning, "resolve_java_env", fake_resolve)
+    adapter = base.JavaGradleAdapter()
+    assert adapter._java_env(str(tmp_path)) == {"JAVA_HOME": "/fake"}
+    assert calls == [(str(tmp_path), "java-gradle")]
+
+
+def test_describe_java_selection_delegates_to_jdk_provisioning(tmp_path, monkeypatch):
+    calls = []
+
+    def fake_describe(working_dir, build_tool):
+        calls.append((working_dir, build_tool))
+        return "some note"
+
+    monkeypatch.setattr(base.jdk_provisioning, "describe_java_selection", fake_describe)
+    adapter = base.JavaMavenAdapter()
+    assert adapter.describe_java_selection(str(tmp_path)) == "some note"
+    assert calls == [(str(tmp_path), "java-maven")]

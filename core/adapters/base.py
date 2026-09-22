@@ -25,6 +25,8 @@ import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
+from core.adapters import jdk_provisioning
+
 
 def _is_windows() -> bool:
     return platform.system() == "Windows"
@@ -95,6 +97,17 @@ def _combined_output(result: subprocess.CompletedProcess) -> str:
 
 
 class LanguageAdapter(ABC):
+    _build_tool_name: str = ""  # overridden by each concrete subclass, e.g. "java-maven"
+
+    def _java_env(self, working_dir: str) -> dict | None:
+        return jdk_provisioning.resolve_java_env(working_dir, self._build_tool_name)
+
+    def describe_java_selection(self, working_dir: str) -> str:
+        """Human-readable one-liner for a setup step to surface -- which
+        Java version (if any) was detected from the build file, and how
+        (or whether) a matching JDK was made available to run it with."""
+        return jdk_provisioning.describe_java_selection(working_dir, self._build_tool_name)
+
     @abstractmethod
     def preflight_check(self, working_dir: str) -> None:
         """Raises ToolNotAvailableError with a clear, actionable message if
@@ -131,6 +144,8 @@ class LanguageAdapter(ABC):
 
 
 class JavaMavenAdapter(LanguageAdapter):
+    _build_tool_name = "java-maven"
+
     def _mvn_cmd(self, working_dir: str) -> str:
         # Prefer the wrapper if the project ships one — pins the exact
         # Maven version the project expects, avoids "works on my machine".
@@ -163,14 +178,15 @@ class JavaMavenAdapter(LanguageAdapter):
 
     def quick_compile_check(self, working_dir: str, scope: str) -> BuildResult:
         mvn = self._mvn_cmd(working_dir)
+        env = self._java_env(working_dir)
         # scope is a module/subdirectory path when the repo is multi-module;
         # -pl fails harmlessly with a clear error on single-module repos
         # where scope doesn't resolve to a module, which is caught below.
-        result = _run([mvn, "-q", "-pl", scope, "-am", "compile"], cwd=working_dir, timeout=180)
+        result = _run([mvn, "-q", "-pl", scope, "-am", "compile"], cwd=working_dir, timeout=180, env=env)
         if result.returncode != 0:
             # fall back to a project-wide compile in case `scope` isn't a
             # real Maven module (e.g. single-module repo, scope == file path)
-            result = _run([mvn, "-q", "compile"], cwd=working_dir, timeout=300)
+            result = _run([mvn, "-q", "compile"], cwd=working_dir, timeout=300, env=env)
         return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def verify_build(self, working_dir: str) -> BuildResult:
@@ -179,7 +195,9 @@ class JavaMavenAdapter(LanguageAdapter):
         # goals (anything matching *IT.java, *ITCase.java, IT*.java — e2e/UI
         # tests like Playwright/Selenium specs live here) while still
         # running the regular unit tests via surefire.
-        result = _run([mvn, "-q", "verify", "-DskipITs"], cwd=working_dir, timeout=1800)
+        result = _run(
+            [mvn, "-q", "verify", "-DskipITs"], cwd=working_dir, timeout=1800, env=self._java_env(working_dir)
+        )
         return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def run_specific_tests(self, working_dir: str, test_classes: list[str]) -> BuildResult:
@@ -191,7 +209,7 @@ class JavaMavenAdapter(LanguageAdapter):
         simple_names = [c.rsplit(".", 1)[-1] for c in test_classes]
         result = _run(
             [mvn, "-q", "test", f"-Dtest={','.join(simple_names)}"],
-            cwd=working_dir, timeout=300,
+            cwd=working_dir, timeout=300, env=self._java_env(working_dir),
         )
         return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
@@ -203,6 +221,8 @@ class JavaMavenAdapter(LanguageAdapter):
 
 
 class JavaGradleAdapter(LanguageAdapter):
+    _build_tool_name = "java-gradle"
+
     @staticmethod
     def _wrapper_name() -> str:
         # Windows' wrapper is gradlew.bat, not the Unix gradlew shell
@@ -257,11 +277,12 @@ class JavaGradleAdapter(LanguageAdapter):
 
     def quick_compile_check(self, working_dir: str, scope: str) -> BuildResult:
         gradle = self._gradle_cmd(working_dir)
+        env = self._java_env(working_dir)
         # scope as a Gradle module path, e.g. "my-module" -> ":my-module:compileJava"
         task = f":{scope}:compileJava" if scope and not scope.startswith(":") else "compileJava"
-        result = _run([gradle, "-q", task, "compileTestJava"], cwd=working_dir, timeout=180)
+        result = _run([gradle, "-q", task, "compileTestJava"], cwd=working_dir, timeout=180, env=env)
         if result.returncode != 0:
-            result = _run([gradle, "-q", "compileJava", "compileTestJava"], cwd=working_dir, timeout=300)
+            result = _run([gradle, "-q", "compileJava", "compileTestJava"], cwd=working_dir, timeout=300, env=env)
         return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def verify_build(self, working_dir: str) -> BuildResult:
@@ -272,7 +293,7 @@ class JavaGradleAdapter(LanguageAdapter):
         # their own task. `test` runs compileJava, compileTestJava, test
         # without pulling in browser-automation tasks that are prone to
         # environment-driven flakiness.
-        result = _run([gradle, "-q", "test"], cwd=working_dir, timeout=1800)
+        result = _run([gradle, "-q", "test"], cwd=working_dir, timeout=1800, env=self._java_env(working_dir))
         return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def run_specific_tests(self, working_dir: str, test_classes: list[str]) -> BuildResult:
@@ -280,7 +301,7 @@ class JavaGradleAdapter(LanguageAdapter):
         args = [gradle, "-q", "test"]
         for c in test_classes:
             args += ["--tests", c]
-        result = _run(args, cwd=working_dir, timeout=300)
+        result = _run(args, cwd=working_dir, timeout=300, env=self._java_env(working_dir))
         return BuildResult(passed=result.returncode == 0, errors=_combined_output(result))
 
     def get_source_root(self, working_dir: str) -> str:

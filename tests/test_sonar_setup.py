@@ -20,6 +20,9 @@ class _FakeAdapter:
     def get_project_key(self, working_dir):
         return "proj"
 
+    def describe_java_selection(self, working_dir):
+        return "no explicit Java version declared in the build file — using the default JDK on PATH"
+
 
 def _drain(step, state):
     ctx = SimpleNamespace(session=SimpleNamespace(state=state))

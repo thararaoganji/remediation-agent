@@ -1,7 +1,9 @@
-# Builds this repo's own agent image and rolls it out to the Cloud Run Job
-# that runs it (see docs/GCP_DEPLOYMENT.md Part 2). This is NOT the agent
-# fixing some other target repo -- it's this repo's own CI/CD, deploying the
-# agent itself whenever its code changes.
+# Builds this repo's own agent image (one image, shared by all three agents --
+# only the AGENT_TYPE env var on each Cloud Run Job differs) and rolls it out
+# to the three Cloud Run Jobs that run them (see docs/GCP_DEPLOYMENT.md
+# Part 2). This is NOT the agents fixing some other target repo -- it's this
+# repo's own CI/CD, deploying the agents themselves whenever their code
+# changes.
 #
 # Auth is via Workload Identity Federation (no long-lived key in GitHub
 # secrets) -- see docs/GCP_DEPLOYMENT.md Part 4 for the one-time GCP-side
@@ -10,9 +12,9 @@
 # none of these values are sensitive on their own):
 #   GCP_PROJECT_ID, GCP_REGION, GCP_WIF_PROVIDER, GCP_DEPLOY_SERVICE_ACCOUNT
 #
-# `gcloud run jobs update` requires the job to already exist -- it's created
-# once, by hand, per docs/GCP_DEPLOYMENT.md 2.3. This workflow only updates
-# the image on an existing job, it never creates one.
+# `gcloud run jobs update` requires each job to already exist -- they're
+# created once, by hand, per docs/GCP_DEPLOYMENT.md 2.3. This workflow only
+# updates the image on existing jobs, it never creates one.
 name: Deploy agent to Cloud Run
 
 on:
@@ -20,6 +22,8 @@ on:
     branches: [main]
     paths:
       - "agent_techdebt/**"
+      - "agent_coverage/**"
+      - "agent_duplicate/**"
       - "sonar/**"
       - "core/**"
       - "run_local.py"
@@ -37,7 +41,9 @@ env:
   PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
   REPOSITORY: sonar-remediation-repo
   IMAGE_NAME: sonar-remediation-agent
-  JOB_NAME: sonar-remediation-job
+  # One Cloud Run Job per agent, all sharing the image above -- see
+  # docs/GCP_DEPLOYMENT.md 2.3 for how each is created (AGENT_TYPE differs).
+  JOB_NAMES: "sonar-remediation-techdebt-job sonar-remediation-coverage-job sonar-remediation-duplicate-job"
 
 jobs:
   deploy:
@@ -68,9 +74,11 @@ jobs:
           docker push "${IMAGE}:${{ github.sha }}"
           docker push "${IMAGE}:latest"
 
-      - name: Roll the new image out to the Cloud Run Job
+      - name: Roll the new image out to each Cloud Run Job
         run: |
           IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPOSITORY}/${IMAGE_NAME}:${{ github.sha }}"
-          gcloud run jobs update "${JOB_NAME}" \
-            --region="${REGION}" \
-            --image="${IMAGE}"
+          for job in ${JOB_NAMES}; do
+            gcloud run jobs update "${job}" \
+              --region="${REGION}" \
+              --image="${IMAGE}"
+          done
