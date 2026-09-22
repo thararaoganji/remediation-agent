@@ -249,6 +249,26 @@ printf '%s' 'YOUR_SONAR_TOKEN'    | gcloud secrets create sonar-token    --data-
 printf '%s' 'YOUR_GITHUB_TOKEN'  | gcloud secrets create github-token  --data-file=-
 ```
 
+Creating the secret is not enough on its own — the Job's own **runtime**
+service account (not your `gcloud` user, which is what actually created
+these secrets) needs `roles/secretmanager.secretAccessor` to read them when
+an execution starts, or `--set-secrets` in §2.3 fails at deploy time with
+`Permission denied on secret: ... The service account used must be granted
+the 'Secret Manager Secret Accessor' role`. Every Cloud Run Job runs as the
+project's **default Compute Engine service account** unless you pass
+`--service-account` at creation (not used here), so grant it there:
+
+```bash
+PROJECT_NUMBER="$(gcloud projects describe PROJECT_ID --format='value(projectNumber)')"
+
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/secretmanager.secretAccessor"
+```
+
+One-time per project — every job and every secret you add later is covered
+by this same project-level grant.
+
 ### 2.3 Create the three Cloud Run Jobs
 
 One job per agent, same image, differing only in the job name and

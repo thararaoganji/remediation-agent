@@ -14,6 +14,7 @@ ever queries, a reasonable tradeoff at the scale this tool actually runs
 at (an internal admin tool's run history: realistically dozens to low
 thousands of docs, not a dataset that needs server-side pagination)."""
 
+import os
 import uuid
 from typing import Any
 
@@ -25,7 +26,13 @@ _client = None
 def _get_client() -> firestore.Client:
     global _client
     if _client is None:
-        _client = firestore.Client()
+        # Explicit project=, not left to auto-detection: firestore.Client()
+        # only auto-detects from GOOGLE_CLOUD_PROJECT/gcloud config, not our
+        # own GCP_PROJECT_ID (the name secret_manager.py/cloud_run.py both
+        # already read) -- without this, a correctly-set GCP_PROJECT_ID
+        # still fails with "Project was not passed and could not be
+        # determined from the environment."
+        _client = firestore.Client(project=os.environ["GCP_PROJECT_ID"])
     return _client
 
 
