@@ -1,8 +1,8 @@
 """Per-file loop body, Sonar-issue-specific half: pop a file, generate a
 fix, apply/verify it, retry narrowly if needed. The tool-agnostic pieces
-this leans on (the LLM-call gate, diff/NO_SAFE_FIX text helpers,
-_java_fqcn, the loop-nesting escalate fix-up) live in
-core.agents.fix_loop -- see that module's docstring. This is the most
+this leans on (the LLM-call gate, diff/NO_SAFE_FIX text helpers, the
+loop-nesting escalate fix-up) live in core.agents.fix_loop -- see that
+module's docstring. This is the most
 complex module in the package by a wide margin -- the actual fix-generation
 and recovery logic (diff attempt -> full-file retry -> narrow single-issue
 retry, plus NO_SAFE_FIX detection at each stage) lives here as one cohesive
@@ -22,7 +22,7 @@ from core.adapters.base import get_adapter
 from core.agents._shared import _msg
 from core.agents.fix_loop import (
     FixLlmGateStep, _build_fix_llm_agent, _extract_code_block, _hide_text,
-    _java_fqcn, _llm_error_message, _looks_like_diff, _no_safe_fix_reason,
+    _llm_error_message, _looks_like_diff, _no_safe_fix_reason,
 )
 from core.tools.patch_tools import apply_diff, parse_junit_failures
 from core.tools import git_tools
@@ -462,7 +462,7 @@ class ApplyAndVerifyStep(BaseAgent):
         # would drag every other file in that batch into a collateral
         # bisect-revert.
         if any(i["rule_key"] == "java:S2187" for i in group["issues"]):
-            test_result = adapter.run_specific_tests(working_dir, [_java_fqcn(group["file"])])
+            test_result = adapter.run_specific_tests(working_dir, [adapter.test_identifier(group["file"])])
             if not test_result.passed:
                 git_tools.revert_file(working_dir, group["file"])
                 failing = parse_junit_failures(working_dir)

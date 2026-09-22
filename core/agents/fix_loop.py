@@ -76,23 +76,6 @@ def _extract_code_block(text: str) -> str:
     return m.group(1) if m else text
 
 
-def _java_fqcn(file_path: str) -> str:
-    """Converts a Java source path (relative to the repo root) to its
-    fully-qualified class name — e.g.
-    'src/test/java/portal/expenses/controller/AuthControllerTest.java' ->
-    'portal.expenses.controller.AuthControllerTest'. Assumes the standard
-    Maven/Gradle layout (a 'java/' segment marking the source root).
-    Works for both src/main/java and src/test/java, since it only anchors
-    on the literal 'java' folder name."""
-    parts = file_path.replace("\\", "/").split("/")
-    if "java" in parts:
-        parts = parts[parts.index("java") + 1:]
-    joined = "/".join(parts)
-    if joined.endswith(".java"):
-        joined = joined[: -len(".java")]
-    return joined.replace("/", ".")
-
-
 def _hide_text(event: Event) -> Event:
     """Strips a text-bearing event's visible content while preserving its
     `actions` (notably `state_delta`, which is how output_key writes reach

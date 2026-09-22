@@ -17,6 +17,9 @@ class _FakeAdapter:
     def preflight_check(self, working_dir):
         pass
 
+    def prepare_workspace(self, working_dir):
+        pass
+
     def get_project_key(self, working_dir):
         return "proj"
 

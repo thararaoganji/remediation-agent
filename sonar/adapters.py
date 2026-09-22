@@ -18,9 +18,11 @@ import xml.etree.ElementTree as ET
 from core.adapters.base import (  # noqa: F401 -- re-exported for convenience
     ADAPTER_REGISTRY as _CORE_ADAPTER_REGISTRY,
     BuildResult, BuildToolNotDetectedError, JavaGradleAdapter, JavaMavenAdapter,
-    ToolNotAvailableError, detect_build_tool,
+    ToolNotAvailableError, TypeScriptKarmaAdapter, TypeScriptVitestAdapter,
+    detect_build_tool, detect_test_runner,
 )
 from core.adapters.base import _run, _combined_output  # noqa: F401 -- reused by run_sonar_scan
+from core.adapters.base import _is_windows, _read_package_json, _package_deps  # noqa: F401 -- reused below
 
 
 class SonarConfigNotFoundError(Exception):
@@ -99,28 +101,49 @@ def _write_gradle_jacoco_init_script(working_dir: str) -> str:
     return path
 
 
-def project_has_coverage_tooling(working_dir: str) -> bool:
-    """True if this project's build is configured to produce a code-coverage
-    report a Sonar scan can consume (JaCoCo for Java). The coverage agent
-    preflights on this: without it every file reads 0% coverage on Sonar and
-    the tests it generates have no measurable effect."""
-    try:
-        build_tool = detect_build_tool(working_dir)
-    except BuildToolNotDetectedError:
-        return False
-    if build_tool == "java-maven":
-        with open(os.path.join(working_dir, "pom.xml"), encoding="utf-8") as f:
-            return "jacoco-maven-plugin" in f.read()
-    for name in ("build.gradle", "build.gradle.kts", "gradle.properties"):
-        path = os.path.join(working_dir, name)
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as f:
-                if re.search(r"jacoco", f.read(), re.IGNORECASE):
-                    return True
-    return False
+_JAVA_COVERAGE_SETUP_INSTRUCTIONS = (
+    "Add JaCoCo to the build, commit it, then re-run:\n"
+    "  Gradle (build.gradle): add `id 'jacoco'` to the plugins { } "
+    "block. That's the minimum -- the agent runs the report and "
+    "forces its XML output on itself. Recommended extra so your own "
+    "`gradle test` also produces it: `test { finalizedBy "
+    "jacocoTestReport }` and `jacocoTestReport { reports { "
+    "xml.required = true } }`.\n"
+    "  Maven (pom.xml): add org.jacoco:jacoco-maven-plugin with BOTH "
+    "a `prepare-agent` execution (binds to the test phase, writes "
+    "the .exec) and a `report` execution -- the plugin alone, "
+    "without prepare-agent, produces no coverage data."
+)
+
+_KARMA_COVERAGE_SETUP_INSTRUCTIONS = (
+    "Add karma-coverage to the build, commit it, then re-run:\n"
+    "  npm install --save-dev karma-coverage\n"
+    "  # karma.conf.js:\n"
+    "  #   plugins: [..., require('karma-coverage')],\n"
+    "  #   coverageReporter: { dir: 'coverage/<project-name>', subdir: '.', "
+    "reporters: [{ type: 'lcovonly' }] },\n"
+    "then run with --code-coverage (already the default for `ng test --code-coverage`)."
+)
+
+_VITEST_COVERAGE_SETUP_INSTRUCTIONS = (
+    "Add a Vitest coverage provider, commit it, then re-run:\n"
+    "  npm install --save-dev @vitest/coverage-v8\n"
+    "  # vitest.config.ts: test: { coverage: { provider: 'v8', reporter: ['lcov'] } }\n"
+    "(@vitest/coverage-istanbul works the same way if you'd rather use Istanbul.)"
+)
 
 
 class SonarJavaMavenAdapter(JavaMavenAdapter):
+    def has_coverage_tooling(self, working_dir: str) -> bool:
+        pom_path = os.path.join(working_dir, "pom.xml")
+        if not os.path.isfile(pom_path):
+            return False
+        with open(pom_path, encoding="utf-8") as f:
+            return "jacoco-maven-plugin" in f.read()
+
+    def coverage_setup_instructions(self) -> str:
+        return _JAVA_COVERAGE_SETUP_INSTRUCTIONS
+
     def get_project_key(self, working_dir: str) -> str:
         """Reads the Sonar project key straight from pom.xml (the
         <sonar.projectKey> property, or the groupId:artifactId default the
@@ -230,6 +253,18 @@ class SonarJavaGradleAdapter(JavaGradleAdapter):
         r'^(?:systemProp\.)?sonar\.projectKey\s*=\s*(\S+)\s*$', re.MULTILINE
     )
 
+    def has_coverage_tooling(self, working_dir: str) -> bool:
+        for name in ("build.gradle", "build.gradle.kts", "gradle.properties"):
+            path = os.path.join(working_dir, name)
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as f:
+                    if re.search(r"jacoco", f.read(), re.IGNORECASE):
+                        return True
+        return False
+
+    def coverage_setup_instructions(self) -> str:
+        return _JAVA_COVERAGE_SETUP_INSTRUCTIONS
+
     def get_project_key(self, working_dir: str) -> str:
         build_files_found = False
         for build_file in ("build.gradle", "build.gradle.kts"):
@@ -326,22 +361,164 @@ class SonarJavaGradleAdapter(JavaGradleAdapter):
             raise RuntimeError(f"Sonar scan failed (gradle {tasks}):\n{_combined_output(result)[-4000:]}")
 
 
+def _read_sonar_properties(working_dir: str) -> dict[str, str]:
+    """Trivial key=value line parser for sonar-project.properties -- no
+    sections, no multi-line values, comments start with #. Good enough for
+    the handful of keys this module actually reads from it."""
+    path = os.path.join(working_dir, "sonar-project.properties")
+    props: dict[str, str] = {}
+    if not os.path.isfile(path):
+        return props
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            props[key.strip()] = value.strip()
+    return props
+
+
+def _ts_project_key(working_dir: str) -> str:
+    key = _read_sonar_properties(working_dir).get("sonar.projectKey")
+    if not key:
+        raise SonarConfigNotFoundError(
+            f"No Sonar configuration found — "
+            f"{os.path.join(working_dir, 'sonar-project.properties')} is missing or "
+            f"has no sonar.projectKey set. Stopping before any Sonar fetch or fix generation."
+        )
+    return key
+
+
+def _ts_scanner_cmd(working_dir: str) -> list[str]:
+    """Prefers the project's own installed binary
+    (node_modules/.bin/sonar-scanner-npm[.cmd]) over `npx sonar-scanner-npm`
+    -- mirrors the Java adapters' wrapper-over-bare-command preference, and
+    avoids npx's own resolution/download overhead when the package is
+    already installed, which it always is after prepare_workspace()'s
+    `npm ci`."""
+    name = "sonar-scanner-npm.cmd" if _is_windows() else "sonar-scanner-npm"
+    local_bin = os.path.join(working_dir, "node_modules", ".bin", name)
+    if os.path.isfile(local_bin):
+        return [local_bin]
+    return ["npx", "sonar-scanner-npm"]
+
+
+class SonarTypeScriptKarmaAdapter(TypeScriptKarmaAdapter):
+    def get_project_key(self, working_dir: str) -> str:
+        return _ts_project_key(working_dir)
+
+    def has_coverage_tooling(self, working_dir: str) -> bool:
+        karma_conf = os.path.join(working_dir, "karma.conf.js")
+        if not os.path.isfile(karma_conf):
+            return False
+        with open(karma_conf, encoding="utf-8") as f:
+            has_reporter = "coverageReporter" in f.read()
+        # sonar.javascript.lcov.reportPaths must already be in the project's
+        # own sonar-project.properties -- unlike Java's JaCoCo XML, there is
+        # no fixed conventional lcov output path to reconstruct (it's
+        # whatever karma.conf.js's own coverageReporter.dir says), so
+        # run_sonar_scan() trusts the committed file for this one property
+        # rather than guessing a -D override.
+        has_report_path = "sonar.javascript.lcov.reportPaths" in _read_sonar_properties(working_dir)
+        return has_reporter and has_report_path
+
+    def coverage_setup_instructions(self) -> str:
+        return _KARMA_COVERAGE_SETUP_INSTRUCTIONS
+
+    def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None, with_coverage=False):
+        if with_coverage:
+            # Regenerate lcov before every scan, same "coverage report must
+            # be fresh for this exact scan" contract as Java's jacoco
+            # pipeline. Test failures here don't block the scan itself --
+            # `ng test`'s non-zero exit still leaves whatever coverage it
+            # collected before failing on disk.
+            _run(
+                ["npx", "ng", "test", "--no-watch", "--no-progress", "--browsers=ChromeHeadless", "--code-coverage"],
+                cwd=working_dir, timeout=1800,
+            )
+        scanner = _ts_scanner_cmd(working_dir)
+        args = [
+            *scanner,
+            f"-Dsonar.host.url={sonar_base_url}", f"-Dsonar.projectKey={project_key}",
+            f"-Dsonar.token={sonar_token}",
+        ]
+        if branch:
+            args.append(f"-Dsonar.branch.name={branch}")
+        result = _run(args, cwd=working_dir, timeout=1200)
+        try:
+            return _parse_ce_task_id(result.stdout + result.stderr)
+        except RuntimeError:
+            raise RuntimeError(f"Sonar scan failed ({' '.join(scanner)}):\n{_combined_output(result)[-3000:]}")
+
+
+class SonarTypeScriptVitestAdapter(TypeScriptVitestAdapter):
+    def get_project_key(self, working_dir: str) -> str:
+        return _ts_project_key(working_dir)
+
+    def has_coverage_tooling(self, working_dir: str) -> bool:
+        has_config = False
+        for name in ("vitest.config.ts", "vitest.config.js", "vite.config.ts", "vite.config.js"):
+            path = os.path.join(working_dir, name)
+            if os.path.isfile(path):
+                with open(path, encoding="utf-8") as f:
+                    if "coverage" in f.read():
+                        has_config = True
+                        break
+        pkg = _read_package_json(working_dir) or {}
+        has_provider = bool(_package_deps(pkg).keys() & {"@vitest/coverage-v8", "@vitest/coverage-istanbul"})
+        has_report_path = "sonar.javascript.lcov.reportPaths" in _read_sonar_properties(working_dir)
+        return has_config and has_provider and has_report_path
+
+    def coverage_setup_instructions(self) -> str:
+        return _VITEST_COVERAGE_SETUP_INSTRUCTIONS
+
+    def run_sonar_scan(self, working_dir, sonar_base_url, sonar_token, project_key, branch=None, with_coverage=False):
+        if with_coverage:
+            # Same "test failures don't block the scan" reasoning as Karma's
+            # run_sonar_scan above.
+            _run(
+                ["npx", "vitest", "run", "--coverage", "--coverage.reporter=lcov"],
+                cwd=working_dir, timeout=1800,
+            )
+        scanner = _ts_scanner_cmd(working_dir)
+        args = [
+            *scanner,
+            f"-Dsonar.host.url={sonar_base_url}", f"-Dsonar.projectKey={project_key}",
+            f"-Dsonar.token={sonar_token}",
+        ]
+        if branch:
+            args.append(f"-Dsonar.branch.name={branch}")
+        result = _run(args, cwd=working_dir, timeout=1200)
+        try:
+            return _parse_ce_task_id(result.stdout + result.stderr)
+        except RuntimeError:
+            raise RuntimeError(f"Sonar scan failed ({' '.join(scanner)}):\n{_combined_output(result)[-3000:]}")
+
+
 ADAPTER_REGISTRY = {
     "java-maven": SonarJavaMavenAdapter,
     "java-gradle": SonarJavaGradleAdapter,
+    "typescript-karma": SonarTypeScriptKarmaAdapter,
+    "typescript-vitest": SonarTypeScriptVitestAdapter,
 }
 
 
 def get_adapter(language: str, working_dir: str | None = None):
     """Same resolution rule as core.adapters.base.get_adapter (language ==
-    'java' triggers auto-detection against working_dir), but returns this
-    module's Sonar-flavored adapter subclasses -- the only ones with
-    get_project_key()/run_sonar_scan()."""
+    'java' triggers Maven-vs-Gradle auto-detection, 'typescript' triggers
+    Karma-vs-Vitest auto-detection, both against working_dir), but returns
+    this module's Sonar-flavored adapter subclasses -- the only ones with
+    get_project_key()/run_sonar_scan()/has_coverage_tooling()."""
     resolved = language
     if language == "java":
         if working_dir is None:
             raise ValueError("working_dir is required to auto-detect a 'java' project's build tool")
         resolved = detect_build_tool(working_dir)
+    elif language == "typescript":
+        if working_dir is None:
+            raise ValueError("working_dir is required to auto-detect a 'typescript' project's test runner")
+        resolved = detect_test_runner(working_dir)
 
     if resolved not in ADAPTER_REGISTRY:
         raise ValueError(f"No LanguageAdapter registered for '{resolved}'")

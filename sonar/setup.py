@@ -48,6 +48,12 @@ class SetupStep(BaseAgent):
         # the first quick_compile_check().
         adapter = get_adapter(s[sk.LANGUAGE], working_dir)
         adapter.preflight_check(working_dir)
+        # No-op for Java (Maven/Gradle resolve dependencies on demand as
+        # part of the first real build call). npm-based adapters override
+        # this to run `npm ci` -- node_modules must exist before any
+        # ng/tsc/vitest command can run at all, which preflight_check's
+        # pure-verification contract can't cover.
+        adapter.prepare_workspace(working_dir)
         s["temp:resolved_language"] = type(adapter).__name__
 
         # Read from the build file, not .env: the project key the Sonar

@@ -30,7 +30,7 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from core import state_schema as sk
-from core.adapters.base import BuildResult
+from core.adapters.base import BuildResult, _java_fqcn, _java_test_file_path
 from core.agents.fix_loop import PerFileLoopStep
 from agent_coverage import enhance_coverage
 from agent_duplicate import fix_duplicate
@@ -108,6 +108,15 @@ def _fake_adapter(*, compile_passed=True, tests_passed=True, errors="boom"):
 
         def run_specific_tests(self, working_dir, test_classes):
             return BuildResult(passed=tests_passed, errors="" if tests_passed else errors)
+
+        def test_identifier(self, test_file_path):
+            return _java_fqcn(test_file_path)
+
+        def production_to_test_path(self, file_path):
+            return _java_test_file_path(file_path)
+
+        def get_fix_prompt_addendum(self):
+            return ""
     return _FakeAdapter()
 
 
@@ -275,6 +284,12 @@ def test_coverage_apply_and_verify_commits_after_a_successful_retry(git_repo, mo
             calls["n"] += 1
             return BuildResult(passed=calls["n"] > 1, errors="" if calls["n"] > 1 else "cannot find symbol: setBogus")
 
+        def test_identifier(self, test_file_path):
+            return _java_fqcn(test_file_path)
+
+        def get_fix_prompt_addendum(self):
+            return ""
+
     monkeypatch.setattr(enhance_coverage, "get_adapter", lambda *a, **kw: _FailsOnceAdapter())
     fixed_content = "package pkg;\nclass FooTest { void t() {} }\n"
     _patch_llm_agent_class(monkeypatch, f"```java\n{fixed_content}```")
@@ -378,11 +393,21 @@ def test_coverage_full_per_file_loop_end_to_end(git_repo, monkeypatch):
 
 # --- CoverageBaselineStep -------------------------------------------------
 
+def _fake_sonar_adapter(*, has_coverage_tooling=True):
+    class _FakeSonarAdapter:
+        def has_coverage_tooling(self, working_dir):
+            return has_coverage_tooling
+
+        def coverage_setup_instructions(self):
+            return "Add JaCoCo to the build, commit it, then re-run: ..."
+    return _FakeSonarAdapter()
+
+
 def test_coverage_baseline_step_captures_coverage_before(monkeypatch):
-    monkeypatch.setattr(enhance_coverage, "project_has_coverage_tooling", lambda wd: True)
+    monkeypatch.setattr(enhance_coverage, "get_sonar_adapter", lambda *a, **kw: _fake_sonar_adapter())
     monkeypatch.setattr(enhance_coverage, "get_metric_value", lambda *a, **kw: "42.5")
     initial_state = {
-        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x",
+        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-maven",
         "sonar_base_url": "http://x", "sonar_token": "t",
     }
     _, final_state = _run_agent(enhance_coverage.CoverageBaselineStep(), initial_state)
@@ -391,10 +416,10 @@ def test_coverage_baseline_step_captures_coverage_before(monkeypatch):
 
 
 def test_coverage_baseline_step_handles_no_prior_analysis(monkeypatch):
-    monkeypatch.setattr(enhance_coverage, "project_has_coverage_tooling", lambda wd: True)
+    monkeypatch.setattr(enhance_coverage, "get_sonar_adapter", lambda *a, **kw: _fake_sonar_adapter())
     monkeypatch.setattr(enhance_coverage, "get_metric_value", lambda *a, **kw: None)
     initial_state = {
-        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x",
+        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-maven",
         "sonar_base_url": "http://x", "sonar_token": "t",
     }
     _, final_state = _run_agent(enhance_coverage.CoverageBaselineStep(), initial_state)
@@ -402,12 +427,14 @@ def test_coverage_baseline_step_handles_no_prior_analysis(monkeypatch):
 
 
 def test_coverage_baseline_step_fails_fast_without_jacoco(monkeypatch):
-    monkeypatch.setattr(enhance_coverage, "project_has_coverage_tooling", lambda wd: False)
+    monkeypatch.setattr(
+        enhance_coverage, "get_sonar_adapter", lambda *a, **kw: _fake_sonar_adapter(has_coverage_tooling=False),
+    )
     initial_state = {
-        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x",
+        sk.SONAR_PROJECT_KEY: "proj", sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-maven",
         "sonar_base_url": "http://x", "sonar_token": "t",
     }
-    with pytest.raises(enhance_coverage.SonarPreflightError, match="JaCoCo"):
+    with pytest.raises(enhance_coverage.SonarPreflightError, match="coverage-report tooling"):
         _run_agent(enhance_coverage.CoverageBaselineStep(), initial_state)
 
 
@@ -435,6 +462,7 @@ def test_coverage_quality_gate_still_refixes_own_smells_at_rating_a(monkeypatch)
         sk.FILES_COMPLETED: ["src/main/java/pkg/Foo.java"],
         sk.FILES_FLAGGED: [], sk.FILES_REVERTED_AT_CHECKPOINT: [],
         sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t",
+        sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-maven",
     }
     _, final_state = _run_agent(enhance_coverage.CoverageQualityGateStep(), initial_state)
     queue = final_state[sk.ORDERED_FILES_REMAINING]
@@ -487,6 +515,7 @@ def test_coverage_quality_gate_queues_new_smells_scoped_to_own_files(monkeypatch
         sk.FILES_COMPLETED: ["src/test/java/pkg/FooTest.java"],
         sk.FILES_FLAGGED: [], sk.FILES_REVERTED_AT_CHECKPOINT: [],
         sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t",
+        sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-maven",
     }
     _, final_state = _run_agent(enhance_coverage.CoverageQualityGateStep(), initial_state)
 
@@ -514,6 +543,7 @@ def test_coverage_quality_gate_excludes_already_flagged_or_reverted_files(monkey
         sk.FILES_FLAGGED: [{"file": "src/test/java/pkg/FooTest.java", "reason": "already flagged earlier"}],
         sk.FILES_REVERTED_AT_CHECKPOINT: [],
         sk.SONAR_PROJECT_KEY: "proj", "sonar_base_url": "http://x", "sonar_token": "t",
+        sk.WORKING_DIR: "/x", sk.LANGUAGE: "java-maven",
     }
     events, _ = _run_agent(enhance_coverage.CoverageQualityGateStep(), initial_state)
     assert any(e.actions and e.actions.escalate for e in events)  # nothing left to queue
@@ -530,6 +560,12 @@ class _FakeBuild:
         self.calls += 1
         result = self._passes[min(self.calls - 1, len(self._passes) - 1)]
         return BuildResult(passed=result, errors="" if result else "compilation failure: cannot find symbol")
+
+    def production_to_test_path(self, file_path):
+        return _java_test_file_path(file_path)
+
+    def get_fix_prompt_addendum(self):
+        return ""
 
 
 def test_coverage_final_verify_passes_first_try_then_scans(monkeypatch):
@@ -665,7 +701,7 @@ def test_duplicate_file_fixer_step_prompt_offers_lombok_when_available(tmp_path)
 
     entry = {"file": "src/main/java/pkg/Foo.java", "duplicated_lines_density": 30.0, "duplicated_blocks": 1}
     initial_state = {
-        sk.WORKING_DIR: str(tmp_path),
+        sk.WORKING_DIR: str(tmp_path), sk.LANGUAGE: "java-maven",
         sk.ORDERED_FILES_REMAINING: [entry],
         sk.FILES_FLAGGED: [],
     }
@@ -681,7 +717,7 @@ def test_duplicate_file_fixer_step_prompt_declines_lombok_when_unavailable(tmp_p
 
     entry = {"file": "src/main/java/pkg/Foo.java", "duplicated_lines_density": 30.0, "duplicated_blocks": 1}
     initial_state = {
-        sk.WORKING_DIR: str(tmp_path),
+        sk.WORKING_DIR: str(tmp_path), sk.LANGUAGE: "java-maven",
         sk.ORDERED_FILES_REMAINING: [entry],
         sk.FILES_FLAGGED: [],
     }

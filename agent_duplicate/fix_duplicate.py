@@ -28,7 +28,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
 from core import state_schema as sk
-from core.adapters.base import get_adapter
+from core.adapters.base import JavaGradleAdapter, JavaMavenAdapter, get_adapter
 from core.agents._shared import _msg
 from core.agents.fix_loop import (
     FixLlmGateStep, PerFileLoopStep, _build_fix_llm_agent, _extract_code_block,
@@ -69,6 +69,17 @@ def _project_uses_lombok(working_dir: str) -> bool:
             if "lombok" in f.read().lower():
                 return True
     return False
+
+
+def _lombok_available(adapter, working_dir: str) -> bool | None:
+    """True/False only means something for Java -- Lombok is a JVM
+    annotation-processor convention with no equivalent to check for on any
+    other language. build_duplicate_prompt() treats None as "not
+    applicable" and picks a framework-neutral SHAPE B instruction instead
+    of asking the model to reason about a tool that doesn't exist here."""
+    if not isinstance(adapter, (JavaMavenAdapter, JavaGradleAdapter)):
+        return None
+    return _project_uses_lombok(working_dir)
 
 
 class DuplicateBaselineStep(BaseAgent):
@@ -140,6 +151,7 @@ class DuplicateFileFixerStep(BaseAgent):
         with open(file_abs_path, encoding="utf-8") as f:
             file_content = f.read()
 
+        adapter = get_adapter(s[sk.LANGUAGE], working_dir)
         s[sk.CURRENT_FILE_GROUP] = {"file": entry["file"], "entry": entry}
         s[sk.CURRENT_FILE_CONTENT] = file_content
         s["temp:fix_prompt"] = build_duplicate_prompt(
@@ -147,7 +159,8 @@ class DuplicateFileFixerStep(BaseAgent):
             file_content=file_content,
             density=entry["duplicated_lines_density"],
             blocks=entry["duplicated_blocks"],
-            lombok_available=_project_uses_lombok(working_dir),
+            lombok_available=_lombok_available(adapter, working_dir),
+            language_addendum=adapter.get_fix_prompt_addendum(),
         )
         yield Event(author=self.name, content=_msg(
             f"Refactoring `{entry['file']}` ({entry['duplicated_lines_density']:.1f}% duplicated, "
@@ -170,12 +183,14 @@ class DuplicateApplyAndVerifyStep(BaseAgent):
     async def _retry_full_file(self, ctx: InvocationContext, entry: dict, working_dir: str, reason: str) -> AsyncGenerator[Event, None]:
         s = ctx.session.state
         s["temp:full_file_retry_ok"] = False
+        adapter = get_adapter(s[sk.LANGUAGE], working_dir)
         s["temp:fix_prompt"] = build_duplicate_prompt(
             file_path=entry["file"],
             file_content=s[sk.CURRENT_FILE_CONTENT],
             density=entry["duplicated_lines_density"],
             blocks=entry["duplicated_blocks"],
-            lombok_available=_project_uses_lombok(working_dir),
+            lombok_available=_lombok_available(adapter, working_dir),
+            language_addendum=adapter.get_fix_prompt_addendum(),
             output_format=(
                 f"The previous diff-based attempt failed because {reason}. This time, "
                 "output the COMPLETE corrected file — every line from start to end, "

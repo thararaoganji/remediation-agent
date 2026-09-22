@@ -5,8 +5,8 @@ this package (not the shared one) since the task shape and output format
 domain, not a Sonar-rule fix."""
 
 DUPLICATE_SKELETON = """\
-You are refactoring a Java/Spring Boot file to remove code duplication \
-flagged by SonarQube's duplicate-code detector (CPD).
+You are refactoring a source file to remove code duplication flagged by \
+SonarQube's duplicate-code detector (CPD).
 
 FILE: {file_path}
 Reported duplication: {density:.1f}% of lines duplicated, {blocks} duplicate \
@@ -19,14 +19,16 @@ FIRST, decide which shape this duplication actually is — the fix is
 different for each, and picking the wrong one is the main way this goes
 wrong:
 
-SHAPE A — a code fragment (method body, chunk of a method, repeated
-validation/mapping/formatting logic) that's identical or near-identical to
-ANOTHER PLACE WITHIN THIS SAME FILE, at or above roughly 5-10 lines.
-SHAPE B — this file is a POJO/DTO/JPA entity whose fields, getters,
-setters, equals/hashCode/toString are individually unremarkable but
-structurally similar to another class ENTIRELY (a different file, not
-shown to you) — there is nothing repeated within this file to point at;
-the "duplication" only exists relative to a sibling class.
+SHAPE A — a code fragment (method/function body, chunk of a method,
+repeated validation/mapping/formatting logic) that's identical or
+near-identical to ANOTHER PLACE WITHIN THIS SAME FILE, at or above roughly
+5-10 lines.
+SHAPE B — this file defines a data-holder type (a POJO/DTO/entity class, or
+a TS interface/class with fields/properties, accessors, and
+equals/toString-equivalents) that's individually unremarkable but
+structurally similar to another type ENTIRELY (a different file, not shown
+to you) — there is nothing repeated within this file to point at; the
+"duplication" only exists relative to a sibling type.
 
 REQUIREMENTS:
 1. Preserve existing behavior exactly — this is a pure refactor, not a
@@ -76,20 +78,45 @@ NO_SAFE_FIX with a reason that names Lombok adoption (@Getter/@Setter/\
 so a human knows exactly what unblocks this rather than treating it as \
 unfixable."""
 
+# Non-Java languages have no Lombok-equivalent code-generation convention to
+# check for, so there's no available/unavailable distinction to make --
+# fix_duplicate.py passes lombok_available=None for those, which selects
+# this generic instruction instead (no framework named, since none applies).
+_SHAPE_B_GENERIC_INSTRUCTION = """\
+extract the shared structure into a common base type / shared interface / \
+mapped type that both this file and the sibling type can use, if the \
+language and existing code style make that a clean, single-file change. If \
+it isn't -- the fix would require editing the other file too, or there's no \
+clean shared-type mechanism available here -- output NO_SAFE_FIX with a \
+reason explaining what the real fix needs (e.g. "requires extracting a \
+shared interface used by both DTOs, which means editing the other file \
+too")."""
+
+
+def _shape_b_instruction(lombok_available: bool | None) -> str:
+    if lombok_available is None:
+        return _SHAPE_B_GENERIC_INSTRUCTION
+    return _LOMBOK_AVAILABLE_INSTRUCTION if lombok_available else _LOMBOK_UNAVAILABLE_INSTRUCTION
+
 
 def build_duplicate_prompt(
     file_path: str,
     file_content: str,
     density: float,
     blocks: int,
-    lombok_available: bool,
+    lombok_available: bool | None,
+    language_addendum: str = "",
     output_format: str = "unified diff",
 ) -> str:
-    return DUPLICATE_SKELETON.format(
+    """lombok_available: True/False for a Java project (Lombok already a
+    dependency, or not), None for any other language -- see
+    _shape_b_instruction()."""
+    prompt = DUPLICATE_SKELETON.format(
         file_path=file_path,
         density=density,
         blocks=blocks,
         file_content=file_content,
-        lombok_instruction=_LOMBOK_AVAILABLE_INSTRUCTION if lombok_available else _LOMBOK_UNAVAILABLE_INSTRUCTION,
+        lombok_instruction=_shape_b_instruction(lombok_available),
         output_format=output_format,
     )
+    return prompt + "\n" + language_addendum if language_addendum else prompt

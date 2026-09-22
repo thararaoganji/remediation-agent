@@ -11,7 +11,7 @@ from google.genai import types
 
 from core import state_schema as sk
 from core.agents.fix_loop import (
-    _extract_code_block, _hide_text, _java_fqcn, _llm_error_message,
+    _extract_code_block, _hide_text, _llm_error_message,
     _looks_like_diff, _no_safe_fix_reason, _strip_escalate,
 )
 from agent_techdebt import maintainability
@@ -305,13 +305,5 @@ def test_extract_code_block_falls_back_to_raw_text_when_no_fence():
     assert _extract_code_block(text) == text
 
 
-# --- _java_fqcn ------------------------------------------------------------
-
-def test_java_fqcn_strips_source_root_prefix():
-    assert _java_fqcn("src/test/java/portal/expenses/controller/AuthControllerTest.java") \
-        == "portal.expenses.controller.AuthControllerTest"
-
-
-def test_java_fqcn_handles_main_source_root():
-    assert _java_fqcn("src/main/java/portal/expenses/service/ExpenseService.java") \
-        == "portal.expenses.service.ExpenseService"
+# _java_fqcn moved to core.adapters.base (JavaMavenAdapter/JavaGradleAdapter's
+# test_identifier()) -- see tests/test_core_adapters.py.

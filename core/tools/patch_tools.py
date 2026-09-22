@@ -68,28 +68,44 @@ def apply_diff(diff_text: str, working_dir: str, file_path: str) -> bool:
         os.unlink(diff_path)
 
 
-_JUNIT_REPORT_DIRS = ("build/test-results/test", "target/surefire-reports")
+# build/test-results/test, target/surefire-reports: Gradle/Maven, one
+# TEST-<FQCN>.xml file per class. test-results/karma, test-results/vitest:
+# karma-junit-reporter / Vitest's built-in junit reporter, each configured
+# (per the TypeScript adapters' preflight instructions) to write into these
+# dedicated, agent-owned directories -- see _parse_junit_failures's shape
+# handling below for why a single combined file works the same as many.
+_JUNIT_REPORT_DIRS = (
+    "build/test-results/test", "target/surefire-reports",
+    "test-results/karma", "test-results/vitest",
+)
 
 
 def _parse_junit_failures(reports_dir: str, limit: int) -> list[str]:
     failures = []
-    for xml_path in sorted(glob.glob(os.path.join(reports_dir, "TEST-*.xml"))):
+    for xml_path in sorted(glob.glob(os.path.join(reports_dir, "*.xml"))):
         try:
             root = ET.parse(xml_path).getroot()
         except ET.ParseError:
             continue
-        classname = root.get("name", os.path.basename(xml_path))
-        for testcase in root.findall("testcase"):
-            node = testcase.find("failure")
-            if node is None:
-                node = testcase.find("error")
-            if node is None:
-                continue
-            method = testcase.get("name", "?")
-            message = (node.get("message") or node.text or "").strip().splitlines()[0][:200]
-            failures.append(f"{classname}#{method}: {message}")
-            if len(failures) >= limit:
-                return failures
+        # Surefire/Gradle write one <testsuite> root per class (testcase
+        # elements as direct children). Karma's/Vitest's junit reporters
+        # write a single combined file instead: a <testsuites> root
+        # wrapping one <testsuite> per spec file/describe block. Handle
+        # both shapes by walking every <testsuite> the file actually has.
+        suites = [root] if root.tag == "testsuite" else root.findall("testsuite")
+        for suite in suites:
+            classname = suite.get("name", os.path.basename(xml_path))
+            for testcase in suite.findall("testcase"):
+                node = testcase.find("failure")
+                if node is None:
+                    node = testcase.find("error")
+                if node is None:
+                    continue
+                method = testcase.get("name", "?")
+                message = (node.get("message") or node.text or "").strip().splitlines()[0][:200]
+                failures.append(f"{classname}#{method}: {message}")
+                if len(failures) >= limit:
+                    return failures
     return failures
 
 

@@ -5,8 +5,8 @@ shape: writing new test code against an existing production file, not
 patching the production file itself."""
 
 COVERAGE_SKELETON = """\
-You are a test engineer raising JUnit test coverage for an existing, \
-already-working production class in a Java/Spring Boot codebase.
+You are a test engineer raising test coverage for an existing, \
+already-working production file.
 
 PRODUCTION FILE: {file_path}
 Current line coverage: {coverage:.1f}% — {uncovered_lines} uncovered line(s), \
@@ -27,9 +27,10 @@ REQUIREMENTS:
    file, identify which branches, conditionals, exception paths, or methods
    are least likely to already be exercised given the coverage numbers and
    the test file's current content, and write test(s) that exercise them.
-4. Use the same test framework and style already used in the test file
-   (or, if it doesn't exist yet, JUnit 5 + Mockito for a Spring class with
-   dependencies — match this codebase's existing conventions where visible).
+4. Use the same test framework and style already used in the test file (or,
+   if it doesn't exist yet, this language's/framework's standard convention
+   for this kind of class — see the language-specific guidance below, and
+   otherwise match this codebase's existing conventions where visible).
 5. Tests must be deterministic and self-contained — no reliance on a real
    database, network call, wall-clock time, or external service unless the
    class already provides a seam (an injected mock) for it.
@@ -84,6 +85,7 @@ def build_coverage_prompt(
     existing_test_content: str | None,
     previous_attempt: str | None = None,
     previous_error: str | None = None,
+    language_addendum: str = "",
 ) -> str:
     if existing_test_content is not None:
         test_file_status = "This test file already exists — add to it, don't start over."
@@ -96,7 +98,7 @@ def build_coverage_prompt(
     if previous_attempt is not None and previous_error is not None:
         retry_block = _RETRY_BLOCK.format(previous_attempt=previous_attempt, previous_error=previous_error)
 
-    return COVERAGE_SKELETON.format(
+    prompt = COVERAGE_SKELETON.format(
         file_path=file_path,
         coverage=coverage,
         uncovered_lines=uncovered_lines,
@@ -107,3 +109,4 @@ def build_coverage_prompt(
         test_file_content=test_file_content,
         retry_block=retry_block,
     )
+    return prompt + "\n" + language_addendum if language_addendum else prompt
