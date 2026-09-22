@@ -590,10 +590,17 @@ def test_coverage_report_shows_delta_and_maintainability_rating(monkeypatch):
         sk.TOKEN_USAGE: {"prompt_tokens": 1, "candidates_tokens": 1, "total_tokens": 2},
         "temp:coverage_before": 40.0,
     }
-    events, _ = _run_agent(enhance_coverage.CoverageReportStep(), initial_state)
+    events, final_state = _run_agent(enhance_coverage.CoverageReportStep(), initial_state)
     text = next(e.content.parts[0].text for e in events if e.author == "coverage_report_step")
     assert "40.0% → 55.0% (+15.0 pts)" in text
     assert "Maintainability rating on this branch: A" in text
+
+    report = final_state["final_report"]
+    assert report["branch_name"] == "my-branch"
+    assert report["coverage_before"] == 40.0
+    assert report["coverage_after"] == 55.0
+    assert report["final_ratings"] == {"sqale_rating": "1.0"}
+    assert report["files_completed"] == ["FooTest.java"]
 
 
 # --- DuplicateFetchStep --------------------------------------------------
@@ -946,7 +953,14 @@ def test_duplicate_report_shows_delta_and_maintainability_rating(monkeypatch):
         sk.TOKEN_USAGE: {"prompt_tokens": 1, "candidates_tokens": 1, "total_tokens": 2},
         "temp:density_before": 30.0,
     }
-    events, _ = _run_agent(fix_duplicate.DuplicateReportStep(), initial_state)
+    events, final_state = _run_agent(fix_duplicate.DuplicateReportStep(), initial_state)
     text = next(e.content.parts[0].text for e in events if e.author == "duplicate_report_step")
     assert "30.0% → 8.0% (-22.0 pts)" in text  # density dropping is the good direction -- no stray "+"
     assert "Maintainability rating on this branch: A" in text
+
+    report = final_state["final_report"]
+    assert report["branch_name"] == "my-branch"
+    assert report["density_before"] == 30.0
+    assert report["density_after"] == 8.0
+    assert report["final_ratings"] == {"sqale_rating": "1.0"}
+    assert report["files_completed"] == ["Foo.java"]

@@ -14,6 +14,25 @@ def test_parse_effort_minutes(effort, expected):
     assert sonar_tools._parse_effort_minutes(effort) == expected
 
 
+# --- dashboard_url ------------------------------------------------------
+
+def test_dashboard_url_builds_expected_link():
+    url = sonar_tools.dashboard_url("http://sonar.example.com", "my:proj", "my-proj_agent_20260101_120000")
+    assert url == (
+        "http://sonar.example.com/dashboard?id=my%3Aproj&branch=my-proj_agent_20260101_120000"
+    )
+
+
+def test_dashboard_url_strips_trailing_slash_on_base():
+    url = sonar_tools.dashboard_url("http://sonar.example.com/", "proj", "main")
+    assert url == "http://sonar.example.com/dashboard?id=proj&branch=main"
+
+
+def test_dashboard_url_encodes_special_characters_in_branch():
+    url = sonar_tools.dashboard_url("http://sonar", "proj", "feature/foo bar")
+    assert url == "http://sonar/dashboard?id=proj&branch=feature%2Ffoo%20bar"
+
+
 # --- _component_path ---------------------------------------------------------
 
 def test_component_path_strips_project_prefix():

@@ -736,7 +736,30 @@ class CoverageReportStep(BaseAgent):
         lines.append(f"- Project coverage: {coverage_line}")
         lines.append(f"- Maintainability rating on this branch: {maintainability_line}")
 
-        yield Event(author=self.name, content=_msg("\n".join(lines)))
+        # Structured twin of the text report above -- what the (planned) web
+        # dashboard reads (see core/tools/run_status.py) instead of parsing
+        # the human-readable message. Mirrors agent_techdebt/report.py's
+        # ReportStep shape where the fields overlap, plus this agent's own
+        # coverage-percentage metric in place of Security/Reliability ratings.
+        report = {
+            "branch_name": s.get(sk.BRANCH_NAME, "unknown"),
+            "files_completed": files,
+            "issues_fixed": issues,
+            "files_flagged_for_manual_review": flagged,
+            "push_result": push_result,
+            "duration_seconds": duration,
+            "tokens_consumed": tokens,
+            "final_build_status": s.get("temp:final_build_status", "not verified"),
+            "reverted": reverted_run,
+            "coverage_before": coverage_before,
+            "coverage_after": float(coverage_value) if coverage_value is not None else None,
+            "final_ratings": ratings,
+        }
+        s["final_report"] = report
+        yield Event(
+            author=self.name, content=_msg("\n".join(lines)),
+            actions=EventActions(state_delta={"final_report": report}),
+        )
 
 
 coverage_pipeline = SequentialAgent(

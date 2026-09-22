@@ -1,3 +1,9 @@
 google-adk
 python-dotenv
 requests
+# Optional dashboard run-status reporting (core/tools/run_status.py) --
+# a no-op everywhere RUN_ID isn't set, so this has zero effect on a normal
+# run. Pulls in a newer opentelemetry-api than google-adk's own pinned
+# range, which pip flags as a resolver conflict -- confirmed harmless (the
+# full test suite passes either way), not something to "fix" by pinning.
+google-cloud-firestore

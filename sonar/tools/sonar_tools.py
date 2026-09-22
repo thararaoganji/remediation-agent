@@ -11,6 +11,7 @@ generation" principle from the review.
 import datetime
 import subprocess
 import time
+from urllib.parse import quote
 
 import requests
 
@@ -147,6 +148,15 @@ def check_project_analyzed(sonar_base_url: str, project_key: str, token: str) ->
             f"`./gradlew sonar -Dsonar.projectKey={project_key} "
             f"-Dsonar.host.url={sonar_base_url} -Dsonar.token=<token>` (Gradle) — then re-run."
         )
+
+
+def dashboard_url(sonar_base_url: str, project_key: str, branch: str) -> str:
+    """The direct SonarQube UI link to one branch's analysis -- used by
+    core.tools.run_status (the dashboard's run-status reporting) so a run
+    links straight to its results instead of someone navigating there by
+    hand. Pure string-building, no network call -- safe to call even if
+    the branch's analysis hasn't finished processing yet."""
+    return f"{sonar_base_url.rstrip('/')}/dashboard?id={quote(project_key, safe='')}&branch={quote(branch, safe='')}"
 
 
 def _component_path(component_key: str, project_key: str) -> str:
