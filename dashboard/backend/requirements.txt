@@ -4,3 +4,5 @@ pydantic
 google-cloud-firestore
 google-cloud-secret-manager
 google-cloud-run
+bcrypt
+itsdangerous

@@ -43,6 +43,8 @@ pip install -r requirements.txt
 
 export GCP_PROJECT_ID=your-project-id
 export GCP_REGION=us-central1   # wherever you deployed the three Jobs
+export SESSION_SECRET_KEY=$(python3 -c "import secrets; print(secrets.token_hex(32))")   # signs login session cookies -- keep this stable across restarts, or everyone gets logged out
+# export COOKIE_SECURE=true   # only once served over https (e.g. Phase D's Cloud Run Service) -- leave unset for local http
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -52,6 +54,20 @@ uvicorn app.main:app --reload --port 8000
 ```bash
 curl http://localhost:8000/api/health   # {"status": "ok"}
 ```
+
+### Authentication
+
+There's no self-signup. The first time you set this up (per Firestore
+project), bootstrap an admin account once:
+
+```bash
+python create_admin.py --email you@example.com --password 'a-real-password'
+```
+
+Log in at the frontend's `/login` page with that account, then create
+further accounts (admin or user) from the "Users" nav link. Admins get the
+Google API Key section on the Connections page and see every user's runs
+and connections; users only see/manage their own.
 
 Run its own test suite (no real GCP needed -- everything's mocked, see
 `tests/conftest.py`):

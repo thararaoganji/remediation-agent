@@ -2,14 +2,17 @@
 Manager secret for its token (github-token-{id}), mirroring
 sonar_servers.py's shape. api_base_url defaults to the public GitHub API
 but is overridable per credential for a GitHub Enterprise Server
-instance, which has its own API base URL distinct from api.github.com."""
+instance, which has its own API base URL distinct from api.github.com.
+
+Owner-scoped the same way sonar_servers.py is -- see that module's
+docstring."""
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import firestore_db, secret_manager
+from .. import auth, firestore_db, secret_manager
 
 router = APIRouter(prefix="/api/github-credentials", tags=["github-credentials"])
 
@@ -37,26 +40,34 @@ class GithubCredentialOut(BaseModel):
     id: str
     name: str
     api_base_url: str
+    owner_email: str
 
 
 def _to_out(doc: dict) -> GithubCredentialOut:
-    return GithubCredentialOut(id=doc["id"], name=doc["name"], api_base_url=doc["api_base_url"])
+    return GithubCredentialOut(
+        id=doc["id"], name=doc["name"], api_base_url=doc["api_base_url"], owner_email=doc.get("owner_email", ""),
+    )
 
 
-def _get_or_404(cred_id: str) -> dict:
+def _get_owned_or_404(cred_id: str, user: auth.CurrentUser) -> dict:
     doc = firestore_db.get_doc(_COLLECTION, cred_id)
-    if doc is None:
+    if doc is None or (user.role != "admin" and doc.get("owner_email") != user.email):
         raise HTTPException(status_code=404, detail="GitHub credential not found")
     return doc
 
 
 @router.get("", response_model=list[GithubCredentialOut])
-def list_github_credentials():
-    return [_to_out(d) for d in firestore_db.list_docs(_COLLECTION, order_by="name")]
+def list_github_credentials(user: auth.CurrentUser = Depends(auth.get_current_user)):
+    docs = firestore_db.list_docs(_COLLECTION, order_by="name")
+    if user.role != "admin":
+        docs = [d for d in docs if d.get("owner_email") == user.email]
+    return [_to_out(d) for d in docs]
 
 
 @router.post("", response_model=GithubCredentialOut, status_code=201)
-def create_github_credential(body: GithubCredentialCreate):
+def create_github_credential(
+    body: GithubCredentialCreate, user: auth.CurrentUser = Depends(auth.get_current_user)
+):
     # Same secret-before-doc tradeoff as sonar_servers.create_sonar_server --
     # see that function's comment for why.
     cred_id = str(uuid.uuid4())
@@ -66,13 +77,16 @@ def create_github_credential(body: GithubCredentialCreate):
         "name": body.name,
         "api_base_url": body.api_base_url,
         "secret_name": secret_id,
+        "owner_email": user.email,
     }, doc_id=cred_id)
     return _to_out(firestore_db.get_doc(_COLLECTION, cred_id))
 
 
 @router.put("/{cred_id}", response_model=GithubCredentialOut)
-def update_github_credential(cred_id: str, body: GithubCredentialUpdate):
-    doc = _get_or_404(cred_id)
+def update_github_credential(
+    cred_id: str, body: GithubCredentialUpdate, user: auth.CurrentUser = Depends(auth.get_current_user)
+):
+    doc = _get_owned_or_404(cred_id, user)
     updates = {k: v for k, v in {
         "name": body.name, "api_base_url": body.api_base_url,
     }.items() if v is not None}
@@ -84,7 +98,7 @@ def update_github_credential(cred_id: str, body: GithubCredentialUpdate):
 
 
 @router.delete("/{cred_id}", status_code=204)
-def delete_github_credential(cred_id: str):
-    doc = _get_or_404(cred_id)
+def delete_github_credential(cred_id: str, user: auth.CurrentUser = Depends(auth.get_current_user)):
+    doc = _get_owned_or_404(cred_id, user)
     secret_manager.delete_secret(doc["secret_name"])
     firestore_db.delete_doc(_COLLECTION, cred_id)

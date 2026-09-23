@@ -1,14 +1,18 @@
 """CRUD for named SonarQube server configs -- each gets its own Secret
 Manager secret for its token (sonar-token-{id}), so the dashboard can
 support multiple Sonar servers (different teams/orgs) instead of one
-global URL+token, per the dashboard plan's Architecture section."""
+global URL+token, per the dashboard plan's Architecture section.
+
+Owner-scoped: a plain "user" only ever sees/manages their own servers; an
+"admin" sees/manages everyone's (confirmed requirement -- admins get full
+visibility into every user's connections, not just their own runs)."""
 
 import uuid
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import firestore_db, secret_manager
+from .. import auth, firestore_db, secret_manager
 
 router = APIRouter(prefix="/api/sonar-servers", tags=["sonar-servers"])
 
@@ -38,26 +42,35 @@ class SonarServerOut(BaseModel):
     name: str
     base_url: str
     ce_edition: bool
+    owner_email: str
 
 
 def _to_out(doc: dict) -> SonarServerOut:
-    return SonarServerOut(id=doc["id"], name=doc["name"], base_url=doc["base_url"], ce_edition=doc["ce_edition"])
+    return SonarServerOut(
+        id=doc["id"], name=doc["name"], base_url=doc["base_url"],
+        ce_edition=doc["ce_edition"], owner_email=doc.get("owner_email", ""),
+    )
 
 
-def _get_or_404(server_id: str) -> dict:
+def _get_owned_or_404(server_id: str, user: auth.CurrentUser) -> dict:
     doc = firestore_db.get_doc(_COLLECTION, server_id)
-    if doc is None:
+    # 404, not 403, for a resource that exists but isn't yours -- doesn't
+    # confirm to the caller that some other user's server id is real.
+    if doc is None or (user.role != "admin" and doc.get("owner_email") != user.email):
         raise HTTPException(status_code=404, detail="Sonar server not found")
     return doc
 
 
 @router.get("", response_model=list[SonarServerOut])
-def list_sonar_servers():
-    return [_to_out(d) for d in firestore_db.list_docs(_COLLECTION, order_by="name")]
+def list_sonar_servers(user: auth.CurrentUser = Depends(auth.get_current_user)):
+    docs = firestore_db.list_docs(_COLLECTION, order_by="name")
+    if user.role != "admin":
+        docs = [d for d in docs if d.get("owner_email") == user.email]
+    return [_to_out(d) for d in docs]
 
 
 @router.post("", response_model=SonarServerOut, status_code=201)
-def create_sonar_server(body: SonarServerCreate):
+def create_sonar_server(body: SonarServerCreate, user: auth.CurrentUser = Depends(auth.get_current_user)):
     # secret created before the Firestore doc, using a pre-generated id, so
     # secret_name is known up front rather than needing a create-then-patch
     # dance once Firestore hands back an auto-id. Known, accepted tradeoff
@@ -72,13 +85,16 @@ def create_sonar_server(body: SonarServerCreate):
         "base_url": body.base_url,
         "ce_edition": body.ce_edition,
         "secret_name": secret_id,
+        "owner_email": user.email,
     }, doc_id=server_id)
     return _to_out(firestore_db.get_doc(_COLLECTION, server_id))
 
 
 @router.put("/{server_id}", response_model=SonarServerOut)
-def update_sonar_server(server_id: str, body: SonarServerUpdate):
-    doc = _get_or_404(server_id)
+def update_sonar_server(
+    server_id: str, body: SonarServerUpdate, user: auth.CurrentUser = Depends(auth.get_current_user)
+):
+    doc = _get_owned_or_404(server_id, user)
     updates = {k: v for k, v in {
         "name": body.name, "base_url": body.base_url, "ce_edition": body.ce_edition,
     }.items() if v is not None}
@@ -90,7 +106,7 @@ def update_sonar_server(server_id: str, body: SonarServerUpdate):
 
 
 @router.delete("/{server_id}", status_code=204)
-def delete_sonar_server(server_id: str):
-    doc = _get_or_404(server_id)
+def delete_sonar_server(server_id: str, user: auth.CurrentUser = Depends(auth.get_current_user)):
+    doc = _get_owned_or_404(server_id, user)
     secret_manager.delete_secret(doc["secret_name"])
     firestore_db.delete_doc(_COLLECTION, server_id)

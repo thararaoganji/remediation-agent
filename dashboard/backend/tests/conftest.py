@@ -16,8 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("GCP_REGION", "us-central1")
+os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
-from app import cloud_run, firestore_db, secret_manager  # noqa: E402
+from app import auth, cloud_run, firestore_db, secret_manager  # noqa: E402
 from app.main import app  # noqa: E402
 
 
@@ -215,3 +216,22 @@ def fake_cloud_run(monkeypatch):
 @pytest.fixture
 def client(fake_firestore, fake_secrets, fake_cloud_run):
     return TestClient(app)
+
+
+# --- Auth test helper --------------------------------------------------
+
+_TEST_PASSWORD = "test-password-123"
+
+
+def login_as(client, fake_firestore, email, role="user"):
+    """Seeds a users/{email} doc directly into the fake store and logs in
+    through the real /api/auth/login endpoint (exercises the real
+    hashing/cookie code path, not a shortcut). TestClient persists cookies
+    across calls on the same instance, so every subsequent call this
+    `client` makes is authenticated as this user."""
+    fake_firestore.collection("users").document(email).set({
+        "email": email, "password_hash": auth.hash_password(_TEST_PASSWORD), "role": role,
+    })
+    resp = client.post("/api/auth/login", json={"email": email, "password": _TEST_PASSWORD})
+    assert resp.status_code == 200, resp.text
+    return client

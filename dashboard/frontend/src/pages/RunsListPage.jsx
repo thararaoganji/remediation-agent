@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.js'
+import { useAuth } from '../AuthContext.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { formatTimestamp, runDuration } from '../format.js'
 
 const POLL_INTERVAL_MS = 5000
 
 export default function RunsListPage() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [runs, setRuns] = useState(null)
   const [error, setError] = useState(null)
 
@@ -48,6 +51,7 @@ export default function RunsListPage() {
           <thead>
             <tr>
               <th>Agent</th>
+              {isAdmin && <th>Owner</th>}
               <th>Source</th>
               <th>Branch</th>
               <th>Status</th>
@@ -60,6 +64,7 @@ export default function RunsListPage() {
             {runs.map((run) => (
               <tr key={run.id}>
                 <td>{run.agent_type}</td>
+                {isAdmin && <td>{run.owner_email || '—'}</td>}
                 <td>{run.source}</td>
                 <td>
                   {run.sonar_dashboard_url ? (

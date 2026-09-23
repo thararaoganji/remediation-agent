@@ -1,4 +1,4 @@
-import pytest
+from conftest import login_as
 
 from app import cloud_run
 
@@ -14,7 +14,8 @@ def _make_github_credential(client, name="Acme Org", token="gh-tok"):
     return client.post("/api/github-credentials", json={"name": name, "token": token}).json()
 
 
-def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_cloud_run):
+def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     github = _make_github_credential(client)
 
@@ -30,6 +31,7 @@ def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_
     assert resp.status_code == 201
     run = resp.json()
     assert run["status"] == "running"
+    assert run["owner_email"] == "alice@example.com"
     assert run["execution_name"].endswith("/executions/fake-execution-1")
 
     assert len(fake_cloud_run.calls) == 1
@@ -45,7 +47,8 @@ def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_
     assert env["GITHUB_TOKEN"] == "gh-tok"
 
 
-def test_create_run_local_source_omits_github_env(client, fake_cloud_run):
+def test_create_run_local_source_omits_github_env(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
 
     resp = client.post("/api/runs", json={
@@ -61,7 +64,8 @@ def test_create_run_local_source_omits_github_env(client, fake_cloud_run):
     assert "GITHUB_TOKEN" not in env
 
 
-def test_create_run_picks_correct_job_per_agent_type(client, fake_cloud_run):
+def test_create_run_picks_correct_job_per_agent_type(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     for agent_type, job_name in cloud_run.AGENT_JOB_NAMES.items():
         client.post("/api/runs", json={
@@ -71,7 +75,8 @@ def test_create_run_picks_correct_job_per_agent_type(client, fake_cloud_run):
     assert job_paths == [f"projects/test-project/locations/us-central1/jobs/{name}" for name in cloud_run.AGENT_JOB_NAMES.values()]
 
 
-def test_create_run_unknown_sonar_server_400s_without_starting_job(client, fake_cloud_run):
+def test_create_run_unknown_sonar_server_400s_without_starting_job(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     resp = client.post("/api/runs", json={
         "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": "nope",
     })
@@ -79,7 +84,8 @@ def test_create_run_unknown_sonar_server_400s_without_starting_job(client, fake_
     assert fake_cloud_run.calls == []
 
 
-def test_create_run_unknown_github_credential_400s_without_starting_job(client, fake_cloud_run):
+def test_create_run_unknown_github_credential_400s_without_starting_job(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     resp = client.post("/api/runs", json={
         "agent_type": "techdebt", "source_type": "github", "source": "owner/repo",
@@ -89,7 +95,8 @@ def test_create_run_unknown_github_credential_400s_without_starting_job(client, 
     assert fake_cloud_run.calls == []
 
 
-def test_create_run_cloud_run_failure_marks_run_failed(client, monkeypatch):
+def test_create_run_cloud_run_failure_marks_run_failed(client, fake_firestore, monkeypatch):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
 
     class _FailingCloudRunClient:
@@ -109,7 +116,8 @@ def test_create_run_cloud_run_failure_marks_run_failed(client, monkeypatch):
     assert "simulated Cloud Run API error" in runs[0]["error"]
 
 
-def test_list_runs_newest_first(client, fake_cloud_run):
+def test_list_runs_newest_first(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     first = client.post("/api/runs", json={
         "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
@@ -122,7 +130,8 @@ def test_list_runs_newest_first(client, fake_cloud_run):
     assert [r["id"] for r in listed] == [second["id"], first["id"]]
 
 
-def test_get_run_detail_and_404(client, fake_cloud_run):
+def test_get_run_detail_and_404(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     created = client.post("/api/runs", json={
         "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
@@ -135,12 +144,62 @@ def test_get_run_detail_and_404(client, fake_cloud_run):
     assert client.get("/api/runs/does-not-exist").status_code == 404
 
 
-def test_stream_endpoint_404_for_unknown_run(client):
+def test_runs_require_auth(client):
+    assert client.get("/api/runs").status_code == 401
+    assert client.get("/api/runs/some-id").status_code == 401
+    assert client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": "x",
+    }).status_code == 401
+
+
+def test_user_cannot_see_get_or_stream_another_users_run(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
+    }).json()
+
+    login_as(client, fake_firestore, "bob@example.com")
+    assert client.get("/api/runs").json() == []
+    assert client.get(f"/api/runs/{run['id']}").status_code == 404
+    assert client.get(f"/api/runs/{run['id']}/stream").status_code == 404
+
+
+def test_user_cannot_create_run_against_another_users_sonar_server(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+
+    login_as(client, fake_firestore, "bob@example.com")
+    resp = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": sonar["id"],
+    })
+    assert resp.status_code == 400
+    assert fake_cloud_run.calls == []
+
+
+def test_admin_sees_every_users_runs(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
+    }).json()
+
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    listed = client.get("/api/runs").json()
+    assert [r["id"] for r in listed] == [run["id"]]
+    assert client.get(f"/api/runs/{run['id']}").status_code == 200
+
+
+def test_stream_endpoint_404_for_unknown_run(client, fake_firestore):
+    login_as(client, fake_firestore, "alice@example.com")
     assert client.get("/api/runs/does-not-exist/stream").status_code == 404
 
 
 def test_stream_endpoint_streams_events_for_existing_run(client, fake_firestore):
-    fake_firestore.collection("runs").document("run-1").set({"status": "succeeded", "agent_type": "techdebt"})
+    login_as(client, fake_firestore, "alice@example.com")
+    fake_firestore.collection("runs").document("run-1").set(
+        {"status": "succeeded", "agent_type": "techdebt", "owner_email": "alice@example.com"}
+    )
     fake_firestore.collection("runs").document("run-1").collection("events").document("evt-1").set(
         {"author": "fix_llm_agent", "content": {"parts": [{"text": "hello"}]}}
     )

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api.js'
+import { useAuth } from '../AuthContext.jsx'
 
 function SonarServerForm({ onCreated }) {
   const [name, setName] = useState('')
@@ -49,7 +50,7 @@ function SonarServerForm({ onCreated }) {
   )
 }
 
-function SonarServerRow({ server, onChanged }) {
+function SonarServerRow({ server, showOwner, onChanged }) {
   const [rotating, setRotating] = useState(false)
   const [newToken, setNewToken] = useState('')
   const [busy, setBusy] = useState(false)
@@ -91,6 +92,7 @@ function SonarServerRow({ server, onChanged }) {
       <div className="connection-info">
         <strong>{server.name}</strong> — {server.base_url}
         {server.ce_edition ? ' (Community Edition)' : ''}
+        {showOwner && <span className="field-note"> · owner: {server.owner_email}</span>}
         {justRotated && !rotating && <span className="success"> ✓ Token rotated</span>}
       </div>
       <div className="connection-actions">
@@ -178,7 +180,7 @@ function GithubCredentialForm({ onCreated }) {
   )
 }
 
-function GithubCredentialRow({ credential, onChanged }) {
+function GithubCredentialRow({ credential, showOwner, onChanged }) {
   const [rotating, setRotating] = useState(false)
   const [newToken, setNewToken] = useState('')
   const [busy, setBusy] = useState(false)
@@ -219,6 +221,7 @@ function GithubCredentialRow({ credential, onChanged }) {
     <li className="connection-row">
       <div className="connection-info">
         <strong>{credential.name}</strong> — {credential.api_base_url}
+        {showOwner && <span className="field-note"> · owner: {credential.owner_email}</span>}
         {justRotated && !rotating && <span className="success"> ✓ Token rotated</span>}
       </div>
       <div className="connection-actions">
@@ -337,6 +340,8 @@ function GoogleApiKeySection() {
 }
 
 export default function ConnectionsPage() {
+  const { user } = useAuth()
+  const isAdmin = user?.role === 'admin'
   const [sonarServers, setSonarServers] = useState([])
   const [sonarServersError, setSonarServersError] = useState(null)
   const [githubCredentials, setGithubCredentials] = useState([])
@@ -372,7 +377,7 @@ export default function ConnectionsPage() {
         {sonarServersError && <p className="error">Failed to load: {sonarServersError}</p>}
         <ul className="connection-list">
           {sonarServers.map((s) => (
-            <SonarServerRow key={s.id} server={s} onChanged={refreshSonarServers} />
+            <SonarServerRow key={s.id} server={s} showOwner={isAdmin} onChanged={refreshSonarServers} />
           ))}
           {sonarServers.length === 0 && !sonarServersError && (
             <li className="empty-note">No Sonar servers configured yet.</li>
@@ -386,7 +391,7 @@ export default function ConnectionsPage() {
         {githubCredentialsError && <p className="error">Failed to load: {githubCredentialsError}</p>}
         <ul className="connection-list">
           {githubCredentials.map((c) => (
-            <GithubCredentialRow key={c.id} credential={c} onChanged={refreshGithubCredentials} />
+            <GithubCredentialRow key={c.id} credential={c} showOwner={isAdmin} onChanged={refreshGithubCredentials} />
           ))}
           {githubCredentials.length === 0 && !githubCredentialsError && (
             <li className="empty-note">No GitHub credentials configured yet.</li>
@@ -395,7 +400,7 @@ export default function ConnectionsPage() {
         <GithubCredentialForm onCreated={refreshGithubCredentials} />
       </section>
 
-      <GoogleApiKeySection />
+      {isAdmin && <GoogleApiKeySection />}
     </div>
   )
 }
