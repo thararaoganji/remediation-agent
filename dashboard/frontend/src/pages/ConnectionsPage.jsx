@@ -52,19 +52,38 @@ function SonarServerForm({ onCreated }) {
 function SonarServerRow({ server, onChanged }) {
   const [rotating, setRotating] = useState(false)
   const [newToken, setNewToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [justRotated, setJustRotated] = useState(false)
 
   async function handleRotate(e) {
     e.preventDefault()
-    await api.updateSonarServer(server.id, { token: newToken })
-    setNewToken('')
-    setRotating(false)
-    onChanged()
+    setBusy(true)
+    setError(null)
+    try {
+      await api.updateSonarServer(server.id, { token: newToken })
+      setNewToken('')
+      setRotating(false)
+      setJustRotated(true)
+      onChanged()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function handleDelete() {
     if (!window.confirm(`Delete Sonar server "${server.name}"? Runs already using it are unaffected.`)) return
-    await api.deleteSonarServer(server.id)
-    onChanged()
+    setBusy(true)
+    setError(null)
+    try {
+      await api.deleteSonarServer(server.id)
+      onChanged()
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
   }
 
   return (
@@ -72,6 +91,7 @@ function SonarServerRow({ server, onChanged }) {
       <div className="connection-info">
         <strong>{server.name}</strong> — {server.base_url}
         {server.ce_edition ? ' (Community Edition)' : ''}
+        {justRotated && !rotating && <span className="success"> ✓ Token rotated</span>}
       </div>
       <div className="connection-actions">
         {rotating ? (
@@ -81,19 +101,33 @@ function SonarServerRow({ server, onChanged }) {
               type="password"
               value={newToken}
               onChange={(e) => setNewToken(e.target.value)}
+              disabled={busy}
               required
             />
-            <button type="submit">Save</button>
-            <button type="button" onClick={() => setRotating(false)}>
+            <button type="submit" disabled={busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button type="button" onClick={() => setRotating(false)} disabled={busy}>
               Cancel
             </button>
+            {error && <p className="error">{error}</p>}
           </form>
         ) : (
           <>
-            <button onClick={() => setRotating(true)}>Rotate token</button>
-            <button onClick={handleDelete} className="danger">
-              Delete
+            <button
+              onClick={() => {
+                setRotating(true)
+                setJustRotated(false)
+                setError(null)
+              }}
+              disabled={busy}
+            >
+              Rotate token
             </button>
+            <button onClick={handleDelete} className="danger" disabled={busy}>
+              {busy ? 'Deleting…' : 'Delete'}
+            </button>
+            {error && <p className="error">{error}</p>}
           </>
         )}
       </div>
@@ -147,25 +181,45 @@ function GithubCredentialForm({ onCreated }) {
 function GithubCredentialRow({ credential, onChanged }) {
   const [rotating, setRotating] = useState(false)
   const [newToken, setNewToken] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+  const [justRotated, setJustRotated] = useState(false)
 
   async function handleRotate(e) {
     e.preventDefault()
-    await api.updateGithubCredential(credential.id, { token: newToken })
-    setNewToken('')
-    setRotating(false)
-    onChanged()
+    setBusy(true)
+    setError(null)
+    try {
+      await api.updateGithubCredential(credential.id, { token: newToken })
+      setNewToken('')
+      setRotating(false)
+      setJustRotated(true)
+      onChanged()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   async function handleDelete() {
     if (!window.confirm(`Delete GitHub credential "${credential.name}"? Runs already using it are unaffected.`)) return
-    await api.deleteGithubCredential(credential.id)
-    onChanged()
+    setBusy(true)
+    setError(null)
+    try {
+      await api.deleteGithubCredential(credential.id)
+      onChanged()
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+    }
   }
 
   return (
     <li className="connection-row">
       <div className="connection-info">
         <strong>{credential.name}</strong> — {credential.api_base_url}
+        {justRotated && !rotating && <span className="success"> ✓ Token rotated</span>}
       </div>
       <div className="connection-actions">
         {rotating ? (
@@ -175,19 +229,33 @@ function GithubCredentialRow({ credential, onChanged }) {
               type="password"
               value={newToken}
               onChange={(e) => setNewToken(e.target.value)}
+              disabled={busy}
               required
             />
-            <button type="submit">Save</button>
-            <button type="button" onClick={() => setRotating(false)}>
+            <button type="submit" disabled={busy}>
+              {busy ? 'Saving…' : 'Save'}
+            </button>
+            <button type="button" onClick={() => setRotating(false)} disabled={busy}>
               Cancel
             </button>
+            {error && <p className="error">{error}</p>}
           </form>
         ) : (
           <>
-            <button onClick={() => setRotating(true)}>Rotate token</button>
-            <button onClick={handleDelete} className="danger">
-              Delete
+            <button
+              onClick={() => {
+                setRotating(true)
+                setJustRotated(false)
+                setError(null)
+              }}
+              disabled={busy}
+            >
+              Rotate token
             </button>
+            <button onClick={handleDelete} className="danger" disabled={busy}>
+              {busy ? 'Deleting…' : 'Delete'}
+            </button>
+            {error && <p className="error">{error}</p>}
           </>
         )}
       </div>
@@ -201,6 +269,7 @@ function GoogleApiKeySection() {
   const [loadError, setLoadError] = useState(null)
   const [submitError, setSubmitError] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [justUpdated, setJustUpdated] = useState(false)
 
   async function refresh() {
     try {
@@ -224,6 +293,7 @@ function GoogleApiKeySection() {
       await api.setGoogleApiKey(value)
       setValue('')
       await refresh()
+      setJustUpdated(true)
     } catch (err) {
       setSubmitError(err.message)
     } finally {
@@ -244,17 +314,21 @@ function GoogleApiKeySection() {
       <p className="section-note">
         Single global key for Gemini access (used by every run, regardless of which Sonar server or GitHub
         credential it uses). Status: {statusText}
+        {justUpdated && <span className="success"> ✓ Saved</span>}
       </p>
       <form className="add-form" onSubmit={handleSubmit}>
         <input
           placeholder={configured ? 'Replace key' : 'Google API key'}
           type="password"
           value={value}
-          onChange={(e) => setValue(e.target.value)}
+          onChange={(e) => {
+            setValue(e.target.value)
+            setJustUpdated(false)
+          }}
           required
         />
         <button type="submit" disabled={submitting}>
-          {configured ? 'Replace' : 'Save'}
+          {submitting ? 'Saving…' : configured ? 'Replace' : 'Save'}
         </button>
         {submitError && <p className="error">{submitError}</p>}
       </form>

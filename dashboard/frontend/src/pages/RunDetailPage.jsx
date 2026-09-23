@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api.js'
+import EventTranscript from '../components/EventTranscript.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { formatTimestamp, runDuration } from '../format.js'
 
@@ -152,6 +153,8 @@ export default function RunDetailPage() {
       {run.final_report && <FinalReport report={run.final_report} />}
 
       {ACTIVE_STATUSES.has(run.status) && <p className="section-note">Refreshing every few seconds…</p>}
+
+      <EventTranscript runId={run.id} />
     </div>
   )
 }

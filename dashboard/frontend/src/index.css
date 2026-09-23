@@ -154,6 +154,11 @@ button:disabled {
   color: #b06000;
 }
 
+.success {
+  color: #188038;
+  font-weight: 500;
+}
+
 .section-note,
 .empty-note,
 .field-note {
@@ -189,4 +194,82 @@ button:disabled {
   list-style: none;
   padding: 0;
   margin: 0;
+}
+
+.event-transcript {
+  margin-top: 2rem;
+}
+
+.event-transcript h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.transcript-export-btn {
+  margin-left: auto;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.transcript-live-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #188038;
+  animation: transcript-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes transcript-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.transcript-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 32rem;
+  overflow-y: auto;
+  border: 1px solid light-dark(#e2e2e2, #333);
+  border-radius: 8px;
+}
+
+.transcript-event {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid light-dark(#eee, #2a2a2e);
+}
+
+.transcript-event:last-child {
+  border-bottom: none;
+}
+
+.transcript-event-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  margin-bottom: 0.3rem;
+}
+
+.transcript-event-time {
+  color: light-dark(#888, #999);
+}
+
+.event-part {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+.event-part-call code,
+.event-part-response code {
+  background: light-dark(#f0f0f0, #2a2a2e);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.event-part-thought summary,
+.event-part-state summary {
+  cursor: pointer;
+  color: light-dark(#666, #999);
 }
