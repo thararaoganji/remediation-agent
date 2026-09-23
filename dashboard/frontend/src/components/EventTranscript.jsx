@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useState } from 'react'
 
 // Renders one Part the way adk web would -- a plain text bubble, a
 // collapsed "thinking" block (Part.thought: true marks a reasoning chunk,
@@ -102,9 +102,11 @@ function downloadEventsAsJson(runId, events) {
 // already finished (the full history arrives immediately, then it closes
 // right away) -- no separate "live" vs "history" code path needed here.
 export default function EventTranscript({ runId }) {
+  // Kept in arrival (chronological) order -- newest-last -- since that's
+  // the natural order for the JSON export and for reasoning about what
+  // happened when. Only the rendered list below reverses it.
   const [events, setEvents] = useState([])
   const [connected, setConnected] = useState(false)
-  const bottomRef = useRef(null)
 
   useEffect(() => {
     setEvents([])
@@ -135,10 +137,6 @@ export default function EventTranscript({ runId }) {
     return () => source.close()
   }, [runId])
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [events.length])
-
   return (
     <div className="event-transcript">
       <h3>
@@ -157,12 +155,12 @@ export default function EventTranscript({ runId }) {
         <p className="empty-note">Waiting for the run to produce events…</p>
       ) : (
         <ul className="transcript-list">
-          {events.map((event, i) => (
+          {/* Newest first, so the latest activity is visible without scrolling. */}
+          {[...events].reverse().map((event, i) => (
             <EventCard key={event.id || i} event={event} />
           ))}
         </ul>
       )}
-      <div ref={bottomRef} />
     </div>
   )
 }
