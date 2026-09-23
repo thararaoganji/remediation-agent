@@ -27,6 +27,9 @@ def main() -> None:
         "email": args.email,
         "password_hash": auth.hash_password(args.password),
         "role": "admin",
+        # Unlike an account created via the Users page, you're choosing
+        # your own real password directly here -- no forced reset needed.
+        "must_reset_password": False,
     }, doc_id=args.email)
     print(f"Created admin user: {args.email}")
 

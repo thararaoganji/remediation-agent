@@ -21,23 +21,33 @@ class UserCreate(BaseModel):
 class UserOut(BaseModel):
     email: str
     role: str
+    must_reset_password: bool = False
+
+
+def _to_out(doc: dict) -> UserOut:
+    return UserOut(email=doc["email"], role=doc["role"], must_reset_password=doc.get("must_reset_password", False))
 
 
 @router.get("", response_model=list[UserOut])
 def list_users():
-    return [UserOut(email=d["email"], role=d["role"]) for d in firestore_db.list_docs(_COLLECTION, order_by="email")]
+    return [_to_out(d) for d in firestore_db.list_docs(_COLLECTION, order_by="email")]
 
 
 @router.post("", response_model=UserOut, status_code=201)
 def create_user(body: UserCreate):
     if firestore_db.get_doc(_COLLECTION, body.email) is not None:
         raise HTTPException(status_code=409, detail="A user with that email already exists")
+    # The admin is choosing this password on the new user's behalf, so it's
+    # a temporary one by construction -- force it to be changed on first
+    # login rather than assuming the admin communicated it securely enough
+    # to just keep using.
     firestore_db.create_doc(_COLLECTION, {
         "email": body.email,
         "password_hash": auth.hash_password(body.password),
         "role": body.role,
+        "must_reset_password": True,
     }, doc_id=body.email)
-    return UserOut(email=body.email, role=body.role)
+    return _to_out(firestore_db.get_doc(_COLLECTION, body.email))
 
 
 @router.delete("/{email}", status_code=204)

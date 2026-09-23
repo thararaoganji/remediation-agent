@@ -1,4 +1,7 @@
-google-adk
+# [extensions] pulls in litellm -- needed for core/llm_config.py's LiteLlm
+# wrapper, which is how non-Google vendors (OpenAI, Anthropic) get called;
+# plain google-adk only talks to Gemini natively.
+google-adk[extensions]
 python-dotenv
 requests
 # Optional dashboard run-status reporting (core/tools/run_status.py) --

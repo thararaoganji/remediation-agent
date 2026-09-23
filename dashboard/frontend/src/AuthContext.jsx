@@ -29,7 +29,15 @@ export function AuthProvider({ children }) {
     setUser(null)
   }, [])
 
-  return <AuthContext.Provider value={{ user, loading, login, logout }}>{children}</AuthContext.Provider>
+  const changePassword = useCallback(async (currentPassword, newPassword) => {
+    const updatedUser = await api.changePassword(currentPassword, newPassword)
+    setUser(updatedUser)
+    return updatedUser
+  }, [])
+
+  return (
+    <AuthContext.Provider value={{ user, loading, login, logout, changePassword }}>{children}</AuthContext.Provider>
+  )
 }
 
 export function useAuth() {

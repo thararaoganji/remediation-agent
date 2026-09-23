@@ -1,81 +1,35 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import {
+  AnthropicVendorIcon,
+  CheckIcon,
+  EditIcon,
+  GitBranchIcon,
+  GoogleVendorIcon,
+  OpenAiVendorIcon,
+  PlusIcon,
+  SonarIcon,
+  SparkleIcon,
+  TrashIcon,
+} from '../components/icons.jsx'
+import Pagination from '../components/Pagination.jsx'
+import { usePagination } from '../usePagination.js'
+import { usePageTitle } from '../usePageTitle.js'
 
-function SonarServerForm({ onCreated }) {
-  const [name, setName] = useState('')
-  const [baseUrl, setBaseUrl] = useState('')
-  const [ceEdition, setCeEdition] = useState(true)
-  const [token, setToken] = useState('')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
+const PAGE_SIZE = 10
 
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSubmitting(true)
-    setError(null)
-    try {
-      await api.createSonarServer({ name, base_url: baseUrl, ce_edition: ceEdition, token })
-      setName('')
-      setBaseUrl('')
-      setToken('')
-      setCeEdition(true)
-      onCreated()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form className="add-form" onSubmit={handleSubmit}>
-      <input placeholder="Name (e.g. Prod Sonar)" value={name} onChange={(e) => setName(e.target.value)} required />
-      <input
-        placeholder="Base URL (e.g. https://sonar.example.com)"
-        value={baseUrl}
-        onChange={(e) => setBaseUrl(e.target.value)}
-        required
-      />
-      <label className="checkbox-label">
-        <input type="checkbox" checked={ceEdition} onChange={(e) => setCeEdition(e.target.checked)} />
-        Community Edition
-      </label>
-      <input placeholder="Token" type="password" value={token} onChange={(e) => setToken(e.target.value)} required />
-      <button type="submit" disabled={submitting}>
-        Add Sonar Server
-      </button>
-      {error && <p className="error">{error}</p>}
-    </form>
-  )
-}
+const VENDOR_LABELS = { google: 'Google', openai: 'OpenAI', anthropic: 'Anthropic' }
+const VENDOR_ICONS = { google: GoogleVendorIcon, openai: OpenAiVendorIcon, anthropic: AnthropicVendorIcon }
 
 function SonarServerRow({ server, showOwner, onChanged }) {
-  const [rotating, setRotating] = useState(false)
-  const [newToken, setNewToken] = useState('')
+  const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
-  const [justRotated, setJustRotated] = useState(false)
-
-  async function handleRotate(e) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      await api.updateSonarServer(server.id, { token: newToken })
-      setNewToken('')
-      setRotating(false)
-      setJustRotated(true)
-      onChanged()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function handleDelete() {
-    if (!window.confirm(`Delete Sonar server "${server.name}"? Runs already using it are unaffected.`)) return
     setBusy(true)
     setError(null)
     try {
@@ -84,128 +38,54 @@ function SonarServerRow({ server, showOwner, onChanged }) {
     } catch (err) {
       setError(err.message)
       setBusy(false)
+      setConfirming(false)
     }
   }
 
   return (
-    <li className="connection-row">
-      <div className="connection-info">
-        <strong>{server.name}</strong> — {server.base_url}
+    <tr>
+      <td>
+        <strong>{server.name}</strong>
+      </td>
+      <td>
+        {server.base_url}
         {server.ce_edition ? ' (Community Edition)' : ''}
-        {showOwner && <span className="field-note"> · owner: {server.owner_email}</span>}
-        {justRotated && !rotating && <span className="success"> ✓ Token rotated</span>}
-      </div>
-      <div className="connection-actions">
-        {rotating ? (
-          <form onSubmit={handleRotate} className="rotate-form">
-            <input
-              placeholder="New token"
-              type="password"
-              value={newToken}
-              onChange={(e) => setNewToken(e.target.value)}
-              disabled={busy}
-              required
-            />
-            <button type="submit" disabled={busy}>
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-            <button type="button" onClick={() => setRotating(false)} disabled={busy}>
-              Cancel
-            </button>
-            {error && <p className="error">{error}</p>}
-          </form>
-        ) : (
-          <>
-            <button
-              onClick={() => {
-                setRotating(true)
-                setJustRotated(false)
-                setError(null)
-              }}
-              disabled={busy}
-            >
-              Rotate token
-            </button>
-            <button onClick={handleDelete} className="danger" disabled={busy}>
-              {busy ? 'Deleting…' : 'Delete'}
-            </button>
-            {error && <p className="error">{error}</p>}
-          </>
-        )}
-      </div>
-    </li>
-  )
-}
-
-function GithubCredentialForm({ onCreated }) {
-  const [name, setName] = useState('')
-  const [apiBaseUrl, setApiBaseUrl] = useState('')
-  const [token, setToken] = useState('')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSubmitting(true)
-    setError(null)
-    try {
-      const body = { name, token }
-      if (apiBaseUrl.trim()) body.api_base_url = apiBaseUrl.trim()
-      await api.createGithubCredential(body)
-      setName('')
-      setApiBaseUrl('')
-      setToken('')
-      onCreated()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form className="add-form" onSubmit={handleSubmit}>
-      <input placeholder="Name (e.g. Acme Org)" value={name} onChange={(e) => setName(e.target.value)} required />
-      <input
-        placeholder="API base URL (leave blank for github.com)"
-        value={apiBaseUrl}
-        onChange={(e) => setApiBaseUrl(e.target.value)}
-      />
-      <input placeholder="Token" type="password" value={token} onChange={(e) => setToken(e.target.value)} required />
-      <button type="submit" disabled={submitting}>
-        Add GitHub Credential
-      </button>
-      {error && <p className="error">{error}</p>}
-    </form>
+      </td>
+      {showOwner && <td>{server.owner_email}</td>}
+      <td>
+        <div className="connection-actions">
+          <Link
+            to={`/connections/sonar-servers/${server.id}/edit`}
+            className="icon-action"
+            aria-label="Edit"
+            title="Edit"
+          >
+            <EditIcon />
+          </Link>
+          <button onClick={() => setConfirming(true)} className="icon-action danger" aria-label="Delete" title="Delete">
+            <TrashIcon />
+          </button>
+          {error && <p className="error">{error}</p>}
+        </div>
+        <ConfirmDialog
+          open={confirming}
+          title="Delete Sonar server"
+          message={`Delete "${server.name}"? Runs already using it are unaffected.`}
+          busy={busy}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirming(false)}
+        />
+      </td>
+    </tr>
   )
 }
 
 function GithubCredentialRow({ credential, showOwner, onChanged }) {
-  const [rotating, setRotating] = useState(false)
-  const [newToken, setNewToken] = useState('')
+  const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
-  const [justRotated, setJustRotated] = useState(false)
-
-  async function handleRotate(e) {
-    e.preventDefault()
-    setBusy(true)
-    setError(null)
-    try {
-      await api.updateGithubCredential(credential.id, { token: newToken })
-      setNewToken('')
-      setRotating(false)
-      setJustRotated(true)
-      onChanged()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   async function handleDelete() {
-    if (!window.confirm(`Delete GitHub credential "${credential.name}"? Runs already using it are unaffected.`)) return
     setBusy(true)
     setError(null)
     try {
@@ -214,138 +94,135 @@ function GithubCredentialRow({ credential, showOwner, onChanged }) {
     } catch (err) {
       setError(err.message)
       setBusy(false)
+      setConfirming(false)
     }
   }
 
   return (
-    <li className="connection-row">
-      <div className="connection-info">
-        <strong>{credential.name}</strong> — {credential.api_base_url}
-        {showOwner && <span className="field-note"> · owner: {credential.owner_email}</span>}
-        {justRotated && !rotating && <span className="success"> ✓ Token rotated</span>}
-      </div>
-      <div className="connection-actions">
-        {rotating ? (
-          <form onSubmit={handleRotate} className="rotate-form">
-            <input
-              placeholder="New token"
-              type="password"
-              value={newToken}
-              onChange={(e) => setNewToken(e.target.value)}
-              disabled={busy}
-              required
-            />
-            <button type="submit" disabled={busy}>
-              {busy ? 'Saving…' : 'Save'}
-            </button>
-            <button type="button" onClick={() => setRotating(false)} disabled={busy}>
-              Cancel
-            </button>
-            {error && <p className="error">{error}</p>}
-          </form>
-        ) : (
-          <>
-            <button
-              onClick={() => {
-                setRotating(true)
-                setJustRotated(false)
-                setError(null)
-              }}
-              disabled={busy}
-            >
-              Rotate token
-            </button>
-            <button onClick={handleDelete} className="danger" disabled={busy}>
-              {busy ? 'Deleting…' : 'Delete'}
-            </button>
-            {error && <p className="error">{error}</p>}
-          </>
-        )}
-      </div>
-    </li>
+    <tr>
+      <td>
+        <strong>{credential.name}</strong>
+      </td>
+      <td>{credential.api_base_url}</td>
+      {showOwner && <td>{credential.owner_email}</td>}
+      <td>
+        <div className="connection-actions">
+          <Link
+            to={`/connections/github-credentials/${credential.id}/edit`}
+            className="icon-action"
+            aria-label="Edit"
+            title="Edit"
+          >
+            <EditIcon />
+          </Link>
+          <button onClick={() => setConfirming(true)} className="icon-action danger" aria-label="Delete" title="Delete">
+            <TrashIcon />
+          </button>
+          {error && <p className="error">{error}</p>}
+        </div>
+        <ConfirmDialog
+          open={confirming}
+          title="Delete GitHub credential"
+          message={`Delete "${credential.name}"? Runs already using it are unaffected.`}
+          busy={busy}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirming(false)}
+        />
+      </td>
+    </tr>
   )
 }
 
-function GoogleApiKeySection() {
-  const [configured, setConfigured] = useState(null)
-  const [value, setValue] = useState('')
-  const [loadError, setLoadError] = useState(null)
-  const [submitError, setSubmitError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-  const [justUpdated, setJustUpdated] = useState(false)
+function LlmConfigRow({ config, onChanged }) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
 
-  async function refresh() {
+  async function handleDelete() {
+    setBusy(true)
+    setError(null)
     try {
-      const status = await api.getGoogleApiKeyStatus()
-      setConfigured(status.configured)
-      setLoadError(null)
+      await api.deleteLlmConfig(config.id)
+      onChanged()
     } catch (err) {
-      setLoadError(err.message)
+      setError(err.message)
+      setBusy(false)
+      setConfirming(false)
     }
   }
 
-  useEffect(() => {
-    refresh()
-  }, [])
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSubmitting(true)
-    setSubmitError(null)
+  async function handleActivate() {
+    setBusy(true)
+    setError(null)
     try {
-      await api.setGoogleApiKey(value)
-      setValue('')
-      await refresh()
-      setJustUpdated(true)
+      await api.activateLlmConfig(config.id)
+      onChanged()
     } catch (err) {
-      setSubmitError(err.message)
+      setError(err.message)
     } finally {
-      setSubmitting(false)
+      setBusy(false)
     }
   }
 
-  let statusText = '…'
-  if (configured !== null) {
-    statusText = configured ? '✓ configured' : '✗ not set'
-  } else if (loadError) {
-    statusText = `failed to load (${loadError})`
-  }
+  const VendorIcon = VENDOR_ICONS[config.vendor]
 
   return (
-    <section className="connections-section">
-      <h2>Google API Key</h2>
-      <p className="section-note">
-        Single global key for Gemini access (used by every run, regardless of which Sonar server or GitHub
-        credential it uses). Status: {statusText}
-        {justUpdated && <span className="success"> ✓ Saved</span>}
-      </p>
-      <form className="add-form" onSubmit={handleSubmit}>
-        <input
-          placeholder={configured ? 'Replace key' : 'Google API key'}
-          type="password"
-          value={value}
-          onChange={(e) => {
-            setValue(e.target.value)
-            setJustUpdated(false)
-          }}
-          required
+    <tr>
+      <td>
+        <span className="vendor-label">
+          {VendorIcon && <VendorIcon />}
+          <strong>{VENDOR_LABELS[config.vendor] || config.vendor}</strong>
+        </span>
+      </td>
+      <td>{config.model}</td>
+      <td>{config.is_active ? <span className="success">✓ Active</span> : '—'}</td>
+      <td>
+        <div className="connection-actions">
+          {!config.is_active && (
+            <button onClick={handleActivate} className="icon-action" aria-label="Activate" title="Activate" disabled={busy}>
+              <CheckIcon />
+            </button>
+          )}
+          <Link to={`/connections/llm-configs/${config.id}/edit`} className="icon-action" aria-label="Edit" title="Edit">
+            <EditIcon />
+          </Link>
+          <button
+            onClick={() => setConfirming(true)}
+            className="icon-action danger"
+            aria-label="Delete"
+            title="Delete"
+            disabled={busy}
+          >
+            <TrashIcon />
+          </button>
+          {error && <p className="error">{error}</p>}
+        </div>
+        <ConfirmDialog
+          open={confirming}
+          title="Delete LLM API key"
+          message={`Delete the ${VENDOR_LABELS[config.vendor] || config.vendor} config "${config.model}"?`}
+          busy={busy}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirming(false)}
         />
-        <button type="submit" disabled={submitting}>
-          {submitting ? 'Saving…' : configured ? 'Replace' : 'Save'}
-        </button>
-        {submitError && <p className="error">{submitError}</p>}
-      </form>
-    </section>
+      </td>
+    </tr>
   )
 }
 
 export default function ConnectionsPage() {
+  usePageTitle('Connections')
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const [sonarServers, setSonarServers] = useState([])
   const [sonarServersError, setSonarServersError] = useState(null)
   const [githubCredentials, setGithubCredentials] = useState([])
   const [githubCredentialsError, setGithubCredentialsError] = useState(null)
+  const [llmConfigs, setLlmConfigs] = useState([])
+  const [llmConfigsError, setLlmConfigsError] = useState(null)
+  const sonarPagination = usePagination(sonarServers, PAGE_SIZE)
+  const githubPagination = usePagination(githubCredentials, PAGE_SIZE)
+  const llmPagination = usePagination(llmConfigs, PAGE_SIZE)
 
   async function refreshSonarServers() {
     try {
@@ -365,42 +242,147 @@ export default function ConnectionsPage() {
     }
   }
 
+  async function refreshLlmConfigs() {
+    try {
+      setLlmConfigs(await api.listLlmConfigs())
+      setLlmConfigsError(null)
+    } catch (err) {
+      setLlmConfigsError(err.message)
+    }
+  }
+
   useEffect(() => {
     refreshSonarServers()
     refreshGithubCredentials()
-  }, [])
+    if (isAdmin) refreshLlmConfigs()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin])
 
   return (
     <div className="connections-page">
-      <section className="connections-section">
-        <h2>SonarQube Servers</h2>
-        {sonarServersError && <p className="error">Failed to load: {sonarServersError}</p>}
-        <ul className="connection-list">
-          {sonarServers.map((s) => (
-            <SonarServerRow key={s.id} server={s} showOwner={isAdmin} onChanged={refreshSonarServers} />
-          ))}
-          {sonarServers.length === 0 && !sonarServersError && (
-            <li className="empty-note">No Sonar servers configured yet.</li>
-          )}
-        </ul>
-        <SonarServerForm onCreated={refreshSonarServers} />
-      </section>
+      {isAdmin && (
+        <section className="connections-section">
+          <div className="page-head-row">
+            <h2>
+              <SparkleIcon /> LLM API Keys
+            </h2>
+            <Link
+              to="/connections/llm-configs/new"
+              className="button-link icon-button-link"
+              aria-label="Add LLM API Key"
+              title="Add LLM API Key"
+            >
+              <PlusIcon size={18} />
+            </Link>
+          </div>
+          {llmConfigsError && <p className="error">Failed to load: {llmConfigsError}</p>}
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Vendor</th>
+                <th>Model</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {llmPagination.pageItems.map((c) => (
+                <LlmConfigRow key={c.id} config={c} onChanged={refreshLlmConfigs} />
+              ))}
+              {llmConfigs.length === 0 && !llmConfigsError && (
+                <tr>
+                  <td className="empty-note" colSpan={4}>
+                    No LLM API keys configured yet — runs can't start until one is added.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <Pagination page={llmPagination.page} pageCount={llmPagination.pageCount} onPageChange={llmPagination.setPage} />
+        </section>
+      )}
 
-      <section className="connections-section">
-        <h2>GitHub Credentials</h2>
-        {githubCredentialsError && <p className="error">Failed to load: {githubCredentialsError}</p>}
-        <ul className="connection-list">
-          {githubCredentials.map((c) => (
-            <GithubCredentialRow key={c.id} credential={c} showOwner={isAdmin} onChanged={refreshGithubCredentials} />
-          ))}
-          {githubCredentials.length === 0 && !githubCredentialsError && (
-            <li className="empty-note">No GitHub credentials configured yet.</li>
-          )}
-        </ul>
-        <GithubCredentialForm onCreated={refreshGithubCredentials} />
-      </section>
+      <div className="connections-grid">
+        <section className="connections-section">
+          <div className="page-head-row">
+            <h2>
+              <SonarIcon /> SonarQube Servers
+            </h2>
+            <Link
+              to="/connections/sonar-servers/new"
+              className="button-link icon-button-link"
+              aria-label="Add Sonar Server"
+              title="Add Sonar Server"
+            >
+              <PlusIcon size={18} />
+            </Link>
+          </div>
+          {sonarServersError && <p className="error">Failed to load: {sonarServersError}</p>}
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Base URL</th>
+                {isAdmin && <th>Owner</th>}
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {sonarPagination.pageItems.map((s) => (
+                <SonarServerRow key={s.id} server={s} showOwner={isAdmin} onChanged={refreshSonarServers} />
+              ))}
+              {sonarServers.length === 0 && !sonarServersError && (
+                <tr>
+                  <td className="empty-note" colSpan={isAdmin ? 4 : 3}>
+                    No Sonar servers configured yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <Pagination page={sonarPagination.page} pageCount={sonarPagination.pageCount} onPageChange={sonarPagination.setPage} />
+        </section>
 
-      {isAdmin && <GoogleApiKeySection />}
+        <section className="connections-section">
+          <div className="page-head-row">
+            <h2>
+              <GitBranchIcon /> GitHub Credentials
+            </h2>
+            <Link
+              to="/connections/github-credentials/new"
+              className="button-link icon-button-link"
+              aria-label="Add GitHub Credential"
+              title="Add GitHub Credential"
+            >
+              <PlusIcon size={18} />
+            </Link>
+          </div>
+          {githubCredentialsError && <p className="error">Failed to load: {githubCredentialsError}</p>}
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>API base URL</th>
+                {isAdmin && <th>Owner</th>}
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {githubPagination.pageItems.map((c) => (
+                <GithubCredentialRow key={c.id} credential={c} showOwner={isAdmin} onChanged={refreshGithubCredentials} />
+              ))}
+              {githubCredentials.length === 0 && !githubCredentialsError && (
+                <tr>
+                  <td className="empty-note" colSpan={isAdmin ? 4 : 3}>
+                    No GitHub credentials configured yet.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+          <Pagination page={githubPagination.page} pageCount={githubPagination.pageCount} onPageChange={githubPagination.setPage} />
+        </section>
+      </div>
     </div>
   )
 }

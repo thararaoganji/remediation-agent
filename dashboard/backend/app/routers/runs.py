@@ -23,6 +23,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import auth, cloud_run, event_stream, firestore_db, secret_manager
+from .llm_configs import VENDOR_ENV_VAR
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -113,6 +114,15 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
         if github_cred is None or not _owned(github_cred, user):
             raise HTTPException(status_code=400, detail="Unknown github_credential_id")
 
+    # The active LLM config is global (admin-managed), not per-run-selected
+    # like the Sonar server/GitHub credential above -- see
+    # llm_configs.py's docstring. Failing fast here with a clear message
+    # avoids a repeat of a run silently burning through every file with
+    # "no fix was generated" because no LLM credential was ever resolved.
+    llm_config = next((c for c in firestore_db.list_docs("llm_configs") if c.get("is_active")), None)
+    if llm_config is None:
+        raise HTTPException(status_code=400, detail="No active LLM API key configured -- set one up on the Connections page")
+
     run_id = str(uuid.uuid4())
     env = {
         "RUN_ID": run_id,
@@ -122,6 +132,9 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
         "SONAR_BASE_URL": sonar_server["base_url"],
         "CE_EDITION": "true" if sonar_server["ce_edition"] else "false",
         "SONAR_TOKEN": secret_manager.access_secret_value(sonar_server["secret_name"]),
+        "LLM_VENDOR": llm_config["vendor"],
+        "LLM_MODEL": llm_config["model"],
+        VENDOR_ENV_VAR[llm_config["vendor"]]: secret_manager.access_secret_value(llm_config["secret_name"]),
     }
     if body.source_type == "github":
         env["GITHUB_REPO"] = body.source

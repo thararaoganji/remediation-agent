@@ -18,7 +18,7 @@ def test_admin_can_list_create_and_delete_users(client, fake_firestore):
 
     create_resp = client.post("/api/users", json={"email": "bob@example.com", "password": "p", "role": "user"})
     assert create_resp.status_code == 201
-    assert create_resp.json() == {"email": "bob@example.com", "role": "user"}
+    assert create_resp.json() == {"email": "bob@example.com", "role": "user", "must_reset_password": True}
 
     listed = {u["email"]: u["role"] for u in client.get("/api/users").json()}
     assert listed == {"admin@example.com": "admin", "bob@example.com": "user"}
@@ -39,3 +39,11 @@ def test_admin_cannot_delete_own_account(client, fake_firestore):
     login_as(client, fake_firestore, "admin@example.com", role="admin")
     resp = client.delete("/api/users/admin@example.com")
     assert resp.status_code == 400
+
+
+def test_bootstrap_admin_via_login_as_is_not_forced_to_reset(client, fake_firestore):
+    # login_as's default (must_reset_password=False) mirrors create_admin.py's
+    # bootstrap script -- only users.py's create_user forces a reset.
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    listed = {u["email"]: u["must_reset_password"] for u in client.get("/api/users").json()}
+    assert listed["admin@example.com"] is False

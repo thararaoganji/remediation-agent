@@ -18,7 +18,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event
 from google.genai import types
 
-from .. import state_schema as sk
+from .. import llm_config, state_schema as sk
 
 _CODE_FENCE_RE = re.compile(r"```(?:\w+)?\n(.*?)```", re.DOTALL)
 _DIFF_ARTIFACT_RE = re.compile(r"^diff --git |^@@ .*@@", re.MULTILINE)
@@ -126,14 +126,21 @@ def _build_fix_llm_agent() -> LlmAgent:
     a per-file loop built from this can be instantiated more than once
     (e.g. a main pass and a later expansion pass) — ADK agents are
     single-parent nodes, so each embedding needs its own instance."""
+    vendor, model = llm_config.build_llm_model("gemini-3.7-flash")
+    kwargs = {}
+    if vendor == "google":
+        # thinking_level is a Gemini 3.5+-specific concept (see
+        # _FIX_LLM_THINKING_LEVEL's own comment) -- not something a
+        # LiteLlm-wrapped non-Google model can be assumed to accept.
+        kwargs["generate_content_config"] = types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(thinking_level=_FIX_LLM_THINKING_LEVEL),
+        )
     return LlmAgent(
         name="fix_llm_agent",
-        model="gemini-3.7-flash",
+        model=model,
         instruction="{temp:fix_prompt}",  # ADK injects state directly into instruction
         output_key=sk.PROPOSED_DIFF,
-        generate_content_config=types.GenerateContentConfig(
-            thinking_config=types.ThinkingConfig(thinking_level=_FIX_LLM_THINKING_LEVEL),
-        ),
+        **kwargs,
     )
 
 

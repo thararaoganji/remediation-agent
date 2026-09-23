@@ -1,8 +1,11 @@
 import { useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext.jsx'
+import Logo from '../components/Logo.jsx'
+import { usePageTitle } from '../usePageTitle.js'
 
 export default function LoginPage() {
+  usePageTitle('Sign in')
   const { login } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
@@ -28,24 +31,28 @@ export default function LoginPage() {
 
   return (
     <div className="login-page">
-      <h2>Sign in</h2>
-      <form className="new-run-form" onSubmit={handleSubmit}>
-        <label>
-          Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
-        </label>
-        <label>
-          Password
-          <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
-        </label>
-        <button type="submit" disabled={submitting}>
-          {submitting ? 'Signing in…' : 'Sign in'}
-        </button>
-        {error && <p className="error">{error}</p>}
-      </form>
-      <p className="section-note">
-        No self-signup — ask an admin to create your account.
-      </p>
+      <div className="login-card">
+        <div className="login-brand">
+          <Logo size={40} />
+          <h1>Sonar Remediation Dashboard</h1>
+        </div>
+        <h2>Sign in</h2>
+        <form className="new-run-form" onSubmit={handleSubmit}>
+          <label>
+            Email
+            <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />
+          </label>
+          <label>
+            Password
+            <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          </label>
+          <button type="submit" disabled={submitting}>
+            {submitting ? 'Signing in…' : 'Sign in'}
+          </button>
+          {error && <p className="error">{error}</p>}
+        </form>
+        <p className="section-note">No self-signup — ask an admin to create your account.</p>
+      </div>
     </div>
   )
 }

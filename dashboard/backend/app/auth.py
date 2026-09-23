@@ -53,6 +53,7 @@ def _email_from_cookie(token: str) -> str | None:
 class CurrentUser(BaseModel):
     email: str
     role: str
+    must_reset_password: bool = False
 
 
 def get_current_user(session: str | None = Cookie(default=None)) -> CurrentUser:
@@ -64,7 +65,7 @@ def get_current_user(session: str | None = Cookie(default=None)) -> CurrentUser:
     doc = firestore_db.get_doc(_COLLECTION, email)
     if doc is None:
         raise HTTPException(status_code=401, detail="User no longer exists")
-    return CurrentUser(email=email, role=doc["role"])
+    return CurrentUser(email=email, role=doc["role"], must_reset_password=doc.get("must_reset_password", False))
 
 
 def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:

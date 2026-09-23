@@ -4,6 +4,7 @@ import { api } from '../api.js'
 import EventTranscript from '../components/EventTranscript.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { formatTimestamp, runDuration } from '../format.js'
+import { usePageTitle } from '../usePageTitle.js'
 
 const POLL_INTERVAL_MS = 5000
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
@@ -82,6 +83,7 @@ export default function RunDetailPage() {
   const { runId } = useParams()
   const [run, setRun] = useState(null)
   const [error, setError] = useState(null)
+  usePageTitle(run ? `${run.agent_type} run` : 'Run')
 
   useEffect(() => {
     let cancelled = false

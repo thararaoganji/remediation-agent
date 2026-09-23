@@ -34,12 +34,12 @@ from google.adk.events import Event
 from google.adk.tools import ToolContext
 from google.genai import types
 
-from core import state_schema as sk
+from core import llm_config, state_schema as sk
 from core.adapters.base import BuildToolNotDetectedError, ToolNotAvailableError
 from core.tools import git_tools
 from sonar.adapters import SonarConfigNotFoundError, SonarPreflightError
 
-REQUIRED_ENV = ["GOOGLE_API_KEY", "SONAR_BASE_URL", "SONAR_TOKEN", "LANGUAGE"]
+REQUIRED_ENV = [llm_config.required_env_var(), "SONAR_BASE_URL", "SONAR_TOKEN", "LANGUAGE"]
 
 BRANCH_HINT = (
     "\n\nBy default I use the repo's default branch. If you want a "
@@ -144,9 +144,11 @@ def set_analysis_source(
     }
 
 
+_, _intake_model = llm_config.build_llm_model("gemini-flash-latest")
+
 intake_llm_agent = LlmAgent(
     name="intake_agent",
-    model="gemini-flash-latest",
+    model=_intake_model,
     instruction=INTAKE_INSTRUCTION,
     tools=[set_analysis_source],
 )

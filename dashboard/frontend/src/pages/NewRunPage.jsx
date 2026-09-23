@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
+import { usePageTitle } from '../usePageTitle.js'
 
 const AGENT_TYPES = [
   { value: 'techdebt', label: 'Tech-Debt (Security / Reliability / Maintainability)' },
@@ -19,6 +20,7 @@ const LANGUAGES = [
 ]
 
 export default function NewRunPage() {
+  usePageTitle('New Run')
   const navigate = useNavigate()
   const [sonarServers, setSonarServers] = useState([])
   const [githubCredentials, setGithubCredentials] = useState([])
@@ -76,7 +78,7 @@ export default function NewRunPage() {
   const noGithubCredentials = sourceType === 'github' && githubCredentials.length === 0
 
   return (
-    <div className="new-run-page">
+    <div className="new-run-page form-page">
       <h2>Start a new run</h2>
       {noSonarServers && (
         <p className="warning">

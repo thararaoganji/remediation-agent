@@ -37,6 +37,11 @@ export const api = {
   login: (email, password) => request('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }),
   logout: () => request('/auth/logout', { method: 'POST' }),
   getCurrentUser: () => request('/auth/me'),
+  changePassword: (currentPassword, newPassword) =>
+    request('/auth/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+    }),
 
   listUsers: () => request('/users'),
   createUser: (data) => request('/users', { method: 'POST', body: JSON.stringify(data) }),
@@ -52,8 +57,11 @@ export const api = {
   updateGithubCredential: (id, data) => request(`/github-credentials/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
   deleteGithubCredential: (id) => request(`/github-credentials/${id}`, { method: 'DELETE' }),
 
-  getGoogleApiKeyStatus: () => request('/google-api-key'),
-  setGoogleApiKey: (value) => request('/google-api-key', { method: 'POST', body: JSON.stringify({ value }) }),
+  listLlmConfigs: () => request('/llm-configs'),
+  createLlmConfig: (data) => request('/llm-configs', { method: 'POST', body: JSON.stringify(data) }),
+  updateLlmConfig: (id, data) => request(`/llm-configs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteLlmConfig: (id) => request(`/llm-configs/${id}`, { method: 'DELETE' }),
+  activateLlmConfig: (id) => request(`/llm-configs/${id}/activate`, { method: 'POST' }),
 
   listRuns: () => request('/runs'),
   getRun: (id) => request(`/runs/${id}`),

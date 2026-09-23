@@ -1,6 +1,7 @@
-"""Login/logout/current-user endpoints. Unauthenticated by design (login
-obviously can't require being logged in already); everything else in the
-app requires the session cookie these issue."""
+"""Login/logout/current-user/change-password endpoints. login, logout, and
+change-password are unauthenticated-login aside -- change-password still
+requires a valid session, it just doesn't require the caller to NOT be
+mid-forced-reset (that's a frontend routing concern, not an API one)."""
 
 import os
 
@@ -17,9 +18,15 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+
 class CurrentUserOut(BaseModel):
     email: str
     role: str
+    must_reset_password: bool = False
 
 
 def _cookie_secure() -> bool:
@@ -39,7 +46,7 @@ def login(body: LoginRequest, response: Response):
         samesite="lax",
         secure=_cookie_secure(),
     )
-    return CurrentUserOut(email=body.email, role=doc["role"])
+    return CurrentUserOut(email=body.email, role=doc["role"], must_reset_password=doc.get("must_reset_password", False))
 
 
 @router.post("/logout", status_code=204)
@@ -49,4 +56,20 @@ def logout(response: Response):
 
 @router.get("/me", response_model=CurrentUserOut)
 def me(user: auth.CurrentUser = Depends(auth.get_current_user)):
-    return CurrentUserOut(email=user.email, role=user.role)
+    return CurrentUserOut(email=user.email, role=user.role, must_reset_password=user.must_reset_password)
+
+
+@router.post("/change-password", response_model=CurrentUserOut)
+def change_password(body: ChangePasswordRequest, user: auth.CurrentUser = Depends(auth.get_current_user)):
+    doc = firestore_db.get_doc("users", user.email)
+    if doc is None or not auth.verify_password(body.current_password, doc["password_hash"]):
+        # 400, not 401 -- the caller IS authenticated (a valid session got
+        # them this far); this is a bad-input rejection, not an auth
+        # failure, and the frontend's global 401 handler would otherwise
+        # misread this as "your session expired" and bounce to /login.
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+    firestore_db.update_doc("users", user.email, {
+        "password_hash": auth.hash_password(body.new_password),
+        "must_reset_password": False,
+    })
+    return CurrentUserOut(email=user.email, role=user.role, must_reset_password=False)

@@ -1,59 +1,21 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import { PlusIcon, TrashIcon } from '../components/icons.jsx'
+import Pagination from '../components/Pagination.jsx'
+import { usePagination } from '../usePagination.js'
+import { usePageTitle } from '../usePageTitle.js'
 
-function UserCreateForm({ onCreated }) {
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [role, setRole] = useState('user')
-  const [error, setError] = useState(null)
-  const [submitting, setSubmitting] = useState(false)
-
-  async function handleSubmit(e) {
-    e.preventDefault()
-    setSubmitting(true)
-    setError(null)
-    try {
-      await api.createUser({ email, password, role })
-      setEmail('')
-      setPassword('')
-      setRole('user')
-      onCreated()
-    } catch (err) {
-      setError(err.message)
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <form className="add-form" onSubmit={handleSubmit}>
-      <input type="email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} required />
-      <input
-        type="password"
-        placeholder="Password"
-        value={password}
-        onChange={(e) => setPassword(e.target.value)}
-        required
-      />
-      <select value={role} onChange={(e) => setRole(e.target.value)}>
-        <option value="user">user</option>
-        <option value="admin">admin</option>
-      </select>
-      <button type="submit" disabled={submitting}>
-        {submitting ? 'Creating…' : 'Create user'}
-      </button>
-      {error && <p className="error">{error}</p>}
-    </form>
-  )
-}
+const PAGE_SIZE = 10
 
 function UserRow({ user, isSelf, onChanged }) {
+  const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
 
   async function handleDelete() {
-    if (!window.confirm(`Delete user "${user.email}"? Their runs and connections are unaffected.`)) return
     setBusy(true)
     setError(null)
     try {
@@ -62,31 +24,48 @@ function UserRow({ user, isSelf, onChanged }) {
     } catch (err) {
       setError(err.message)
       setBusy(false)
+      setConfirming(false)
     }
   }
 
   return (
-    <li className="connection-row">
-      <div className="connection-info">
-        <strong>{user.email}</strong> — {user.role}
+    <tr>
+      <td>
+        <strong>{user.email}</strong>
         {isSelf && ' (you)'}
-      </div>
-      <div className="connection-actions">
-        {!isSelf && (
-          <button onClick={handleDelete} className="danger" disabled={busy}>
-            {busy ? 'Deleting…' : 'Delete'}
-          </button>
-        )}
-        {error && <p className="error">{error}</p>}
-      </div>
-    </li>
+      </td>
+      <td>
+        {user.role}
+        {user.must_reset_password && <span className="warning"> · reset pending</span>}
+      </td>
+      <td>
+        <div className="connection-actions">
+          {!isSelf && (
+            <button onClick={() => setConfirming(true)} className="icon-action danger" aria-label="Delete" title="Delete">
+              <TrashIcon />
+            </button>
+          )}
+          {error && <p className="error">{error}</p>}
+        </div>
+        <ConfirmDialog
+          open={confirming}
+          title="Delete user"
+          message={`Delete "${user.email}"? Their runs and connections are unaffected.`}
+          busy={busy}
+          onConfirm={handleDelete}
+          onCancel={() => setConfirming(false)}
+        />
+      </td>
+    </tr>
   )
 }
 
 export default function UsersPage() {
+  usePageTitle('Users')
   const { user: currentUser } = useAuth()
   const [users, setUsers] = useState([])
   const [error, setError] = useState(null)
+  const { page, setPage, pageCount, pageItems } = usePagination(users, PAGE_SIZE)
 
   async function refresh() {
     try {
@@ -103,16 +82,36 @@ export default function UsersPage() {
 
   return (
     <div className="users-page">
-      <h2>Users</h2>
+      <div className="page-head-row">
+        <h2>Users</h2>
+        <Link to="/users/new" className="button-link icon-button-link" aria-label="Create User" title="Create User">
+          <PlusIcon size={18} />
+        </Link>
+      </div>
       <p className="section-note">Admin-only — there's no self-signup, so this is how accounts get created.</p>
       {error && <p className="error">Failed to load: {error}</p>}
-      <ul className="connection-list">
-        {users.map((u) => (
-          <UserRow key={u.email} user={u} isSelf={u.email === currentUser?.email} onChanged={refresh} />
-        ))}
-        {users.length === 0 && !error && <li className="empty-note">No users yet.</li>}
-      </ul>
-      <UserCreateForm onCreated={refresh} />
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Email</th>
+            <th>Role</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {pageItems.map((u) => (
+            <UserRow key={u.email} user={u} isSelf={u.email === currentUser?.email} onChanged={refresh} />
+          ))}
+          {users.length === 0 && !error && (
+            <tr>
+              <td className="empty-note" colSpan={3}>
+                No users yet.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
     </div>
   )
 }

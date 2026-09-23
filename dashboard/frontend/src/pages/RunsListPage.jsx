@@ -2,16 +2,23 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
+import { PlayIcon } from '../components/icons.jsx'
+import Pagination from '../components/Pagination.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { formatTimestamp, runDuration } from '../format.js'
+import { usePagination } from '../usePagination.js'
+import { usePageTitle } from '../usePageTitle.js'
 
 const POLL_INTERVAL_MS = 5000
+const PAGE_SIZE = 10
 
 export default function RunsListPage() {
+  usePageTitle('Runs')
   const { user } = useAuth()
   const isAdmin = user?.role === 'admin'
   const [runs, setRuns] = useState(null)
   const [error, setError] = useState(null)
+  const { page, setPage, pageCount, pageItems } = usePagination(runs || [], PAGE_SIZE)
 
   useEffect(() => {
     let cancelled = false
@@ -41,53 +48,60 @@ export default function RunsListPage() {
 
   return (
     <div className="runs-list-page">
-      <h2>Runs</h2>
-      {runs.length === 0 ? (
-        <p className="empty-note">
-          No runs yet — <Link to="/runs/new">start one</Link>.
-        </p>
-      ) : (
-        <table className="runs-table">
-          <thead>
-            <tr>
-              <th>Agent</th>
-              {isAdmin && <th>Owner</th>}
-              <th>Source</th>
-              <th>Branch</th>
-              <th>Status</th>
-              <th>Created</th>
-              <th>Duration</th>
-              <th></th>
+      <div className="page-head-row">
+        <h2>Runs</h2>
+        <Link to="/runs/new" className="button-link icon-button-link" aria-label="New Run" title="New Run">
+          <PlayIcon size={18} />
+        </Link>
+      </div>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>Agent</th>
+            {isAdmin && <th>Owner</th>}
+            <th>Source</th>
+            <th>Branch</th>
+            <th>Status</th>
+            <th>Created</th>
+            <th>Duration</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          {pageItems.map((run) => (
+            <tr key={run.id}>
+              <td>{run.agent_type}</td>
+              {isAdmin && <td>{run.owner_email || '—'}</td>}
+              <td>{run.source}</td>
+              <td>
+                {run.sonar_dashboard_url ? (
+                  <a href={run.sonar_dashboard_url} target="_blank" rel="noreferrer">
+                    {run.branch_name}
+                  </a>
+                ) : (
+                  run.branch_name || '—'
+                )}
+              </td>
+              <td>
+                <StatusBadge status={run.status} />
+              </td>
+              <td>{formatTimestamp(run.created_at)}</td>
+              <td>{runDuration(run)}</td>
+              <td>
+                <Link to={`/runs/${run.id}`}>Details</Link>
+              </td>
             </tr>
-          </thead>
-          <tbody>
-            {runs.map((run) => (
-              <tr key={run.id}>
-                <td>{run.agent_type}</td>
-                {isAdmin && <td>{run.owner_email || '—'}</td>}
-                <td>{run.source}</td>
-                <td>
-                  {run.sonar_dashboard_url ? (
-                    <a href={run.sonar_dashboard_url} target="_blank" rel="noreferrer">
-                      {run.branch_name}
-                    </a>
-                  ) : (
-                    run.branch_name || '—'
-                  )}
-                </td>
-                <td>
-                  <StatusBadge status={run.status} />
-                </td>
-                <td>{formatTimestamp(run.created_at)}</td>
-                <td>{runDuration(run)}</td>
-                <td>
-                  <Link to={`/runs/${run.id}`}>Details</Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+          ))}
+          {runs.length === 0 && (
+            <tr>
+              <td className="empty-note" colSpan={isAdmin ? 8 : 7}>
+                No runs yet — <Link to="/runs/new">start one</Link>.
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
     </div>
   )
 }

@@ -24,7 +24,7 @@ from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from core import state_schema as sk
+from core import llm_config, state_schema as sk
 from core.adapters.base import ToolNotAvailableError, BuildToolNotDetectedError
 from core.tools import git_tools, run_status
 from sonar.adapters import SonarConfigNotFoundError, SonarPreflightError
@@ -36,7 +36,7 @@ APP_NAME = "sonar_remediation"
 USER_ID = "local_dev"
 SESSION_ID = "local_run_1"
 
-REQUIRED = ["GOOGLE_API_KEY", "SONAR_BASE_URL", "SONAR_TOKEN", "LANGUAGE"]
+REQUIRED = [llm_config.required_env_var(), "SONAR_BASE_URL", "SONAR_TOKEN", "LANGUAGE"]
 
 AGENT_MODULES = {
     "techdebt": "agent_techdebt",

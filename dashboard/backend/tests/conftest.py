@@ -223,7 +223,7 @@ def client(fake_firestore, fake_secrets, fake_cloud_run):
 _TEST_PASSWORD = "test-password-123"
 
 
-def login_as(client, fake_firestore, email, role="user"):
+def login_as(client, fake_firestore, email, role="user", must_reset_password=False):
     """Seeds a users/{email} doc directly into the fake store and logs in
     through the real /api/auth/login endpoint (exercises the real
     hashing/cookie code path, not a shortcut). TestClient persists cookies
@@ -231,6 +231,7 @@ def login_as(client, fake_firestore, email, role="user"):
     `client` makes is authenticated as this user."""
     fake_firestore.collection("users").document(email).set({
         "email": email, "password_hash": auth.hash_password(_TEST_PASSWORD), "role": role,
+        "must_reset_password": must_reset_password,
     })
     resp = client.post("/api/auth/login", json={"email": email, "password": _TEST_PASSWORD})
     assert resp.status_code == 200, resp.text

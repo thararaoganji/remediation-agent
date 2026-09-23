@@ -14,7 +14,22 @@ def _make_github_credential(client, name="Acme Org", token="gh-tok"):
     return client.post("/api/github-credentials", json={"name": name, "token": token}).json()
 
 
+def _make_llm_config(client, vendor="google", model="gemini-3.7-flash", api_key="llm-tok"):
+    # llm-configs is admin-only; the first one created auto-activates.
+    return client.post("/api/llm-configs", json={"vendor": vendor, "model": model, "api_key": api_key}).json()
+
+
+def _activate_llm_config(client, fake_firestore, vendor="google", model="gemini-3.7-flash", api_key="llm-tok"):
+    """Logs in as an admin just long enough to create (and thus activate)
+    an LLM config, then logs back in as the given user -- create_run now
+    requires one to exist regardless of who's actually triggering the run."""
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    config = _make_llm_config(client, vendor=vendor, model=model, api_key=api_key)
+    return config
+
+
 def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     github = _make_github_credential(client)
@@ -45,9 +60,13 @@ def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_
     assert env["CE_EDITION"] == "true"
     assert env["SONAR_TOKEN"] == "sonar-tok"  # resolved from Secret Manager, not the id
     assert env["GITHUB_TOKEN"] == "gh-tok"
+    assert env["LLM_VENDOR"] == "google"
+    assert env["LLM_MODEL"] == "gemini-3.7-flash"
+    assert env["GOOGLE_API_KEY"] == "llm-tok"
 
 
 def test_create_run_local_source_omits_github_env(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
 
@@ -65,6 +84,7 @@ def test_create_run_local_source_omits_github_env(client, fake_firestore, fake_c
 
 
 def test_create_run_picks_correct_job_per_agent_type(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     for agent_type, job_name in cloud_run.AGENT_JOB_NAMES.items():
@@ -76,6 +96,7 @@ def test_create_run_picks_correct_job_per_agent_type(client, fake_firestore, fak
 
 
 def test_create_run_unknown_sonar_server_400s_without_starting_job(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     resp = client.post("/api/runs", json={
         "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": "nope",
@@ -85,6 +106,7 @@ def test_create_run_unknown_sonar_server_400s_without_starting_job(client, fake_
 
 
 def test_create_run_unknown_github_credential_400s_without_starting_job(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     resp = client.post("/api/runs", json={
@@ -95,7 +117,35 @@ def test_create_run_unknown_github_credential_400s_without_starting_job(client, 
     assert fake_cloud_run.calls == []
 
 
+def test_create_run_without_active_llm_config_400s(client, fake_firestore, fake_cloud_run):
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    resp = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": sonar["id"],
+    })
+    assert resp.status_code == 400
+    assert "LLM" in resp.json()["detail"]
+    assert fake_cloud_run.calls == []
+
+
+def test_create_run_uses_the_active_non_google_vendor(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore, vendor="openai", model="gpt-4o", api_key="sk-openai")
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+
+    resp = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": sonar["id"],
+    })
+    assert resp.status_code == 201
+    _, env = fake_cloud_run.calls[0]
+    assert env["LLM_VENDOR"] == "openai"
+    assert env["LLM_MODEL"] == "gpt-4o"
+    assert env["OPENAI_API_KEY"] == "sk-openai"
+    assert "GOOGLE_API_KEY" not in env
+
+
 def test_create_run_cloud_run_failure_marks_run_failed(client, fake_firestore, monkeypatch):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
 
@@ -117,6 +167,7 @@ def test_create_run_cloud_run_failure_marks_run_failed(client, fake_firestore, m
 
 
 def test_list_runs_newest_first(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     first = client.post("/api/runs", json={
@@ -131,6 +182,7 @@ def test_list_runs_newest_first(client, fake_firestore, fake_cloud_run):
 
 
 def test_get_run_detail_and_404(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     created = client.post("/api/runs", json={
@@ -153,6 +205,7 @@ def test_runs_require_auth(client):
 
 
 def test_user_cannot_see_get_or_stream_another_users_run(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     run = client.post("/api/runs", json={
@@ -166,6 +219,7 @@ def test_user_cannot_see_get_or_stream_another_users_run(client, fake_firestore,
 
 
 def test_user_cannot_create_run_against_another_users_sonar_server(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
 
@@ -178,6 +232,7 @@ def test_user_cannot_create_run_against_another_users_sonar_server(client, fake_
 
 
 def test_admin_sees_every_users_runs(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
     run = client.post("/api/runs", json={
