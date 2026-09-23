@@ -47,12 +47,28 @@ gcloud compute instances create sonarqube-vm \
   --tags=sonarqube
 ```
 
-`e2-standard-2` (2 vCPU / 8 GB) is SonarQube's realistic minimum — it runs an
-embedded Elasticsearch alongside the web/compute-engine processes and is
-noticeably unhappy on anything smaller. Check the
+`e2-standard-2` (2 vCPU / 8 GB) is SonarQube's realistic minimum with the
+compose file's *default* JVM settings — it runs an embedded Elasticsearch
+alongside the web/compute-engine processes (plus Postgres in its own
+container) and is noticeably unhappy on anything smaller. Check the
 [GCP pricing calculator](https://cloud.google.com/products/calculator) for a
 current cost estimate for your region rather than trusting a number here —
 pricing changes.
+
+**Cheaper alternative for a pilot/personal-budget setup**: `e2-medium`
+(2 shared-core vCPU / 4 GB) works too, but only because
+`docker-compose.sonarqube.yml` caps each JVM's heap (`SONAR_SEARCH_JAVAOPTS`/
+`SONAR_WEB_JAVAOPTS`/`SONAR_CE_JAVAOPTS`) to fit — without that, the same
+services crash-loop or get OOM-killed on 4 GB. Trades scan
+throughput/concurrency for cost; if you outgrow it, resizing is
+non-destructive since SonarQube's data lives on the Docker volumes, not the
+machine type itself:
+
+```bash
+gcloud compute instances stop sonarqube-vm --zone=ZONE
+gcloud compute instances set-machine-type sonarqube-vm --zone=ZONE --machine-type=e2-standard-2
+gcloud compute instances start sonarqube-vm --zone=ZONE
+```
 
 ### 1.2 Firewall — allow port 9000
 
@@ -103,11 +119,32 @@ gcloud compute instances add-access-config sonarqube-vm --zone=ZONE \
 gcloud compute ssh sonarqube-vm --zone=ZONE
 ```
 
-On the VM:
+On the VM. `docker-compose-plugin` (the modern `docker compose` v2 CLI this
+guide's `docker compose up -d` in §1.5 depends on) is **not** in Ubuntu
+jammy's own apt repos at all — only `docker.io` (an older engine package
+that doesn't include it) is. Confirmed live: `apt-get install -y docker.io
+docker-compose-plugin` fails outright with `Unable to locate package
+docker-compose-plugin` — and since `apt-get install` with multiple packages
+fails atomically, `docker.io` silently doesn't get installed either,
+so a later `systemctl enable docker` then also fails with `Unit file
+docker.service does not exist` (a different, confusing symptom of the same
+root cause). Adding Docker's own official apt repo first avoids this
+entirely:
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y docker.io docker-compose-plugin
+sudo apt-get install -y ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable docker
 sudo usermod -aG docker "$USER"
 # log out and back in (or `newgrp docker`) for the group change to apply
@@ -204,9 +241,15 @@ gcloud artifacts repositories create sonar-remediation-repo \
 
 gcloud auth configure-docker REGION-docker.pkg.dev
 
-docker build -t REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest .
+docker build --platform linux/amd64 -t REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest .
 docker push REGION-docker.pkg.dev/PROJECT_ID/sonar-remediation-repo/sonar-remediation-agent:latest
 ```
+
+`--platform linux/amd64` is required if you're building on Apple Silicon (or
+any arm64 machine) — `docker build` otherwise defaults to the host's own
+architecture, and Cloud Run Jobs require `linux/amd64`; an arm64-only image
+won't run there. Harmless to include even when building on an amd64 machine
+already.
 
 The `Dockerfile` at the repo root installs Java, Maven, *and* Gradle
 alongside Python — the adapters shared by all three agents shell out to
