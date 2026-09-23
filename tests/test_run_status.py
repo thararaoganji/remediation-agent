@@ -2,34 +2,74 @@ from core.tools import run_status
 
 
 class _FakeDocRef:
-    def __init__(self, store, doc_id):
+    def __init__(self, store, doc_id, subcollection_registry):
         self._store = store
         self._doc_id = doc_id
+        # Shared dict living on the _FakeClient itself, keyed by
+        # (doc_id, subcollection_name) -- NOT owned by this ref or by
+        # whichever _FakeCollection produced it, both of which are
+        # recreated fresh on every .collection()/.document() call. Owning
+        # it here would silently lose subcollection data the moment
+        # anything re-navigates via a fresh .collection("runs") call, as
+        # a real Firestore client (which has no such per-call statefulness
+        # at all) never would.
+        self._subcollection_registry = subcollection_registry
 
     def set(self, fields, merge=True):
         assert merge is True  # every write must merge, never clobber earlier fields
         self._store.setdefault(self._doc_id, {}).update(fields)
 
+    def collection(self, name):
+        key = (self._doc_id, name)
+        sub_store = self._subcollection_registry.setdefault(key, {})
+        return _FakeCollection(sub_store, self._subcollection_registry)
+
 
 class _FakeCollection:
-    def __init__(self, store):
+    def __init__(self, store, subcollection_registry=None):
         self._store = store
+        self._subcollection_registry = subcollection_registry if subcollection_registry is not None else {}
 
     def document(self, doc_id):
-        return _FakeDocRef(self._store, doc_id)
+        return _FakeDocRef(self._store, doc_id, self._subcollection_registry)
 
 
 class _FakeClient:
     def __init__(self):
         self.store: dict = {}
+        self._subcollection_registry: dict = {}
 
     def collection(self, name):
         assert name == "runs"
-        return _FakeCollection(self.store)
+        return _FakeCollection(self.store, self._subcollection_registry)
+
+    def events_store(self, run_id: str) -> dict:
+        """Test helper -- the flat {event_id: fields} store for one run's
+        events subcollection, however many separate .collection("runs")
+        calls were made to reach it."""
+        return self._subcollection_registry.get((run_id, "events"), {})
 
 
 def _fail_if_called(*a, **kw):
     raise AssertionError("Firestore should not have been touched")
+
+
+class _FakeEvent:
+    """Stands in for a real google.adk.events.Event -- just enough surface
+    (an .id and a Pydantic-style .model_dump()) for report_event(), without
+    depending on constructing a real ADK Event in a unit test."""
+
+    def __init__(self, event_id="evt-1", author="fix_llm_agent", text="did a thing"):
+        self.id = event_id
+        self._author = author
+        self._text = text
+
+    def model_dump(self, mode="json", exclude_none=True):
+        return {
+            "id": self.id,
+            "author": self._author,
+            "content": {"role": "model", "parts": [{"text": self._text}]},
+        }
 
 
 # --- no-op when RUN_ID (run_id) is unset --------------------------------
@@ -47,6 +87,11 @@ def test_report_branch_ready_noop_when_run_id_none(monkeypatch):
 def test_report_finished_noop_when_run_id_none(monkeypatch):
     monkeypatch.setattr(run_status, "_get_client", _fail_if_called)
     run_status.report_finished(None, "succeeded", final_report={"branch_name": "x"})
+
+
+def test_report_event_noop_when_run_id_none(monkeypatch):
+    monkeypatch.setattr(run_status, "_get_client", _fail_if_called)
+    run_status.report_event(None, _FakeEvent())
 
 
 # --- no-op when Firestore/ADC isn't reachable ---------------------------
@@ -161,3 +206,65 @@ def test_updates_across_calls_merge_not_clobber(monkeypatch):
     assert doc["branch_name"] == "proj_agent_123"
     assert doc["status"] == "succeeded"
     assert doc["final_report"] == {"a": 1}
+
+
+# --- report_event ---------------------------------------------------------
+
+def test_report_event_swallows_exceptions_from_model_dump(monkeypatch):
+    class _BoomEvent:
+        id = "evt-1"
+
+        def model_dump(self, **kw):
+            raise Exception("serialization exploded")
+
+    monkeypatch.setattr(run_status, "_get_client", lambda: _FakeClient())
+    # Must not raise -- a transcript-write failure can never fail the run.
+    run_status.report_event("run-1", _BoomEvent())
+
+
+def test_report_event_swallows_exceptions_from_firestore_write(monkeypatch):
+    class _ExplodingSubcollectionClient:
+        def collection(self, name):
+            class _RunsCollection:
+                def document(self, doc_id):
+                    class _RunDoc:
+                        def collection(self, name):
+                            class _EventsCollection:
+                                def document(self, doc_id):
+                                    class _EventDoc:
+                                        def set(self, fields, merge=True):
+                                            raise Exception("quota exceeded")
+                                    return _EventDoc()
+                            return _EventsCollection()
+                    return _RunDoc()
+            return _RunsCollection()
+
+    monkeypatch.setattr(run_status, "_get_client", lambda: _ExplodingSubcollectionClient())
+    run_status.report_event("run-1", _FakeEvent())
+
+
+def test_report_event_writes_to_events_subcollection(monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+
+    run_status.report_event("run-1", _FakeEvent(event_id="evt-1", author="fix_llm_agent", text="fixed Foo.java"))
+
+    # Doesn't touch the run's own top-level fields...
+    assert "run-1" not in client.store or "status" not in client.store.get("run-1", {})
+    # ...lands in runs/run-1/events/evt-1 instead.
+    event_doc = client.events_store("run-1")["evt-1"]
+    assert event_doc["author"] == "fix_llm_agent"
+    assert event_doc["content"]["parts"][0]["text"] == "fixed Foo.java"
+
+
+def test_report_event_multiple_events_land_as_separate_docs(monkeypatch):
+    client = _FakeClient()
+    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+
+    run_status.report_event("run-1", _FakeEvent(event_id="evt-1", text="first"))
+    run_status.report_event("run-1", _FakeEvent(event_id="evt-2", text="second"))
+
+    events_store = client.events_store("run-1")
+    assert set(events_store.keys()) == {"evt-1", "evt-2"}
+    assert events_store["evt-1"]["content"]["parts"][0]["text"] == "first"
+    assert events_store["evt-2"]["content"]["parts"][0]["text"] == "second"

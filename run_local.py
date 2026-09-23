@@ -155,6 +155,7 @@ async def main():
                 run_status.report_finished(run_id, "failed", error=err)
                 sys.exit(f"\nStopped: {err}")
             print(f"[{event.author}] {event.content or '(state update)'}")
+            run_status.report_event(run_id, event)
             await _maybe_report_branch()
     except (
         ToolNotAvailableError, BuildToolNotDetectedError, SonarConfigNotFoundError, SonarPreflightError,

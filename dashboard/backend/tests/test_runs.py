@@ -133,3 +133,23 @@ def test_get_run_detail_and_404(client, fake_cloud_run):
     assert resp.json()["id"] == created["id"]
 
     assert client.get("/api/runs/does-not-exist").status_code == 404
+
+
+def test_stream_endpoint_404_for_unknown_run(client):
+    assert client.get("/api/runs/does-not-exist/stream").status_code == 404
+
+
+def test_stream_endpoint_streams_events_for_existing_run(client, fake_firestore):
+    fake_firestore.collection("runs").document("run-1").set({"status": "succeeded", "agent_type": "techdebt"})
+    fake_firestore.collection("runs").document("run-1").collection("events").document("evt-1").set(
+        {"author": "fix_llm_agent", "content": {"parts": [{"text": "hello"}]}}
+    )
+
+    with client.stream("GET", "/api/runs/run-1/stream") as resp:
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        body = "".join(resp.iter_text())
+
+    assert "evt-1" in body
+    assert "hello" in body
+    assert 'event: done\ndata: {"status": "succeeded"}' in body

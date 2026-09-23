@@ -33,16 +33,58 @@ class _FakeSnapshot:
         return dict(self._data) if self._data is not None else None
 
 
+class _FakeChangeType:
+    def __init__(self, name):
+        self.name = name
+
+
+class _FakeDocChange:
+    def __init__(self, change_type_name, document):
+        self.type = _FakeChangeType(change_type_name)
+        self.document = document
+
+
+class _FakeWatch:
+    """Stands in for google.cloud.firestore_v1.watch.Watch -- tracks
+    whether .unsubscribe() actually got called, so tests can assert on
+    cleanup (e.g. event_stream.stream_run's finally block)."""
+
+    def __init__(self, callback_list, callback):
+        self._callback_list = callback_list
+        self._callback = callback
+        self.unsubscribed = False
+
+    def unsubscribe(self):
+        self.unsubscribed = True
+        if self._callback in self._callback_list:
+            self._callback_list.remove(self._callback)
+
+
 class _FakeDocRef:
-    def __init__(self, bucket, doc_id):
+    def __init__(self, client, bucket, doc_id, path):
+        self._client = client
         self._bucket = bucket
         self._doc_id = doc_id
+        # Full path string (e.g. "runs/run-1" or "runs/run-1/events/evt-1")
+        # -- the stable key on_snapshot() watches are registered/notified
+        # under, since watches must survive this ref itself being a fresh,
+        # short-lived object recreated on every .document(...) call (a
+        # real Firestore client has no such per-call statefulness either).
+        self._path = path
 
     def set(self, data, merge=False):
-        if merge and self._doc_id in self._bucket:
+        existed = self._doc_id in self._bucket
+        if merge and existed:
             self._bucket[self._doc_id].update(data)
         else:
             self._bucket[self._doc_id] = dict(data)
+        snap = _FakeSnapshot(self._doc_id, self._bucket[self._doc_id])
+        for cb in list(self._client._watches.get(self._path, [])):
+            cb([snap], [], None)  # document-level watch on this exact doc
+        parent_path = self._path.rsplit("/", 1)[0]
+        change_type = "MODIFIED" if existed else "ADDED"
+        for cb in list(self._client._watches.get(parent_path, [])):
+            cb(None, [_FakeDocChange(change_type, snap)], None)  # collection-level watch on the parent
 
     def get(self):
         return _FakeSnapshot(self._doc_id, self._bucket.get(self._doc_id))
@@ -50,27 +92,50 @@ class _FakeDocRef:
     def delete(self):
         self._bucket.pop(self._doc_id, None)
 
+    def collection(self, name):
+        sub_path = f"{self._path}/{name}"
+        sub_store = self._client._sub_stores.setdefault(sub_path, {})
+        return _FakeCollectionRef(self._client, {name: sub_store}, name, path=sub_path)
+
+    def on_snapshot(self, callback):
+        callback([self.get()], [], None)  # initial snapshot, matches real Firestore
+        self._client._watches.setdefault(self._path, []).append(callback)
+        return _FakeWatch(self._client._watches[self._path], callback)
+
 
 class _FakeCollectionRef:
-    def __init__(self, store, name):
+    def __init__(self, client, store, name, path):
+        self._client = client
         self._store = store
         self._name = name
+        self._path = path  # e.g. "runs" or "runs/run-1/events"
 
     def document(self, doc_id):
         bucket = self._store.setdefault(self._name, {})
-        return _FakeDocRef(bucket, doc_id)
+        return _FakeDocRef(self._client, bucket, doc_id, path=f"{self._path}/{doc_id}")
+
+    def order_by(self, field):
+        return self  # ordering doesn't affect this fake's correctness
 
     def stream(self):
         bucket = self._store.get(self._name, {})
         return [_FakeSnapshot(doc_id, data) for doc_id, data in bucket.items()]
 
+    def on_snapshot(self, callback):
+        initial_changes = [_FakeDocChange("ADDED", snap) for snap in self.stream()]
+        callback(None, initial_changes, None)  # initial snapshot, matches real Firestore
+        self._client._watches.setdefault(self._path, []).append(callback)
+        return _FakeWatch(self._client._watches[self._path], callback)
+
 
 class FakeFirestoreClient:
     def __init__(self):
         self.store: dict = {}
+        self._sub_stores: dict = {}  # subcollection path -> {doc_id: fields}, shared across .document() calls
+        self._watches: dict = {}     # path -> [callback, ...]
 
     def collection(self, name):
-        return _FakeCollectionRef(self.store, name)
+        return _FakeCollectionRef(self, self.store, name, path=name)
 
 
 # --- Fake Secret Manager --------------------------------------------------

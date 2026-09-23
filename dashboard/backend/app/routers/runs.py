@@ -19,9 +19,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import cloud_run, firestore_db, secret_manager
+from .. import cloud_run, event_stream, firestore_db, secret_manager
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
 
@@ -73,6 +74,19 @@ def get_run(run_id: str):
     if doc is None:
         raise HTTPException(status_code=404, detail="Run not found")
     return _to_out(doc)
+
+
+@router.get("/{run_id}/stream")
+def stream_run(run_id: str):
+    """Live event transcript (adk-web-style) for one run, via SSE -- see
+    event_stream.stream_run()'s own docstring for the Firestore real-time
+    listener bridge this wraps. Works the same whether the run is still
+    going (events arrive live, connection closes once it reaches a
+    terminal status) or already finished (the full history arrives
+    immediately, then the connection closes right away)."""
+    if firestore_db.get_doc(_COLLECTION, run_id) is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    return StreamingResponse(event_stream.stream_run(run_id), media_type="text/event-stream")
 
 
 @router.post("", response_model=RunOut, status_code=201)

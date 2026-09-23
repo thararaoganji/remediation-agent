@@ -85,3 +85,25 @@ def report_finished(
     if error is not None:
         fields["error"] = error
     _update(run_id, fields)
+
+
+def report_event(run_id: str | None, event) -> None:
+    """Persists one full ADK Event (author, content parts -- text/thought/
+    function_call/function_response --, state_delta, usage_metadata, error
+    fields) to runs/{run_id}/events/{event.id} for the dashboard's live
+    transcript view -- everything run_local.py already prints to stdout,
+    just also kept somewhere the dashboard can read it. event.model_dump()
+    handles full serialization; no field-by-field extraction needed (Event
+    is a Pydantic model -- confirmed against the installed google-adk).
+    Same no-op/best-effort contract as every other function here: a
+    transcript-write failure must never affect the actual run."""
+    if not run_id:
+        return
+    client = _get_client()
+    if client is None:
+        return
+    try:
+        data = event.model_dump(mode="json", exclude_none=True)
+        client.collection(_COLLECTION).document(run_id).collection("events").document(event.id).set(data, merge=True)
+    except Exception:
+        pass
