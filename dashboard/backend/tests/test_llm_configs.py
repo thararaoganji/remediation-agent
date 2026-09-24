@@ -72,4 +72,4 @@ def test_update_rotates_token_and_edits_fields(client, fake_firestore, fake_secr
 def test_unknown_vendor_rejected(client, fake_firestore):
     login_as(client, fake_firestore, "admin@example.com", role="admin")
     resp = client.post("/api/llm-configs", json={"vendor": "carrier-pigeon", "model": "x", "api_key": "k"})
-    assert resp.status_code == 400
+    assert resp.status_code == 422  # rejected by the Vendor Literal type before the handler runs

@@ -16,13 +16,14 @@ will ever run to report anything for it."""
 
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .. import auth, cloud_run, event_stream, firestore_db, secret_manager
+from ..validation import NonEmptyStr
 from .llm_configs import VENDOR_ENV_VAR
 
 router = APIRouter(prefix="/api/runs", tags=["runs"])
@@ -31,13 +32,23 @@ _COLLECTION = "runs"
 
 
 class RunCreate(BaseModel):
-    agent_type: str  # "techdebt" | "coverage" | "duplicate"
-    source_type: str  # "github" | "local" -- the dashboard's New Run form should only ever offer "github" (a "local" path only makes sense for a Job whose image already has the source baked in, not a real dashboard use case)
-    source: str  # "owner/repo" for github, an absolute path for local
-    source_branch: str | None = None
-    language: str = "java"
-    sonar_server_id: str
-    github_credential_id: str | None = None  # required in practice for source_type="github"; optional so a local/no-push run isn't forced to pick one
+    # Matches cloud_run.AGENT_JOB_NAMES' keys -- kept as a literal here too
+    # (rather than relying solely on that dict's own runtime check) so an
+    # unknown agent_type 422s immediately instead of creating a "queued"
+    # run doc that then fails once create_run actually calls
+    # cloud_run.run_job().
+    agent_type: Literal["techdebt", "coverage", "duplicate"]
+    # The dashboard's New Run form should only ever offer "github" (a
+    # "local" path only makes sense for a Job whose image already has the
+    # source baked in, not a real dashboard use case) -- still a real
+    # Literal, not just a comment, so a stray value 422s instead of falling
+    # through to the `else` branch below as if it meant "local".
+    source_type: Literal["github", "local"]
+    source: NonEmptyStr  # "owner/repo" for github, an absolute path for local
+    source_branch: NonEmptyStr | None = None
+    language: NonEmptyStr = "java"
+    sonar_server_id: NonEmptyStr
+    github_credential_id: NonEmptyStr | None = None  # required in practice for source_type="github"; optional so a local/no-push run isn't forced to pick one
 
 
 class RunOut(BaseModel):

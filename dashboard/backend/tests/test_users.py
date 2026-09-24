@@ -16,7 +16,7 @@ def test_non_admin_forbidden(client, fake_firestore):
 def test_admin_can_list_create_and_delete_users(client, fake_firestore):
     login_as(client, fake_firestore, "admin@example.com", role="admin")
 
-    create_resp = client.post("/api/users", json={"email": "bob@example.com", "password": "p", "role": "user"})
+    create_resp = client.post("/api/users", json={"email": "bob@example.com", "password": "password1", "role": "user"})
     assert create_resp.status_code == 201
     assert create_resp.json() == {"email": "bob@example.com", "role": "user", "must_reset_password": True}
 
@@ -30,8 +30,8 @@ def test_admin_can_list_create_and_delete_users(client, fake_firestore):
 
 def test_creating_duplicate_email_409s(client, fake_firestore):
     login_as(client, fake_firestore, "admin@example.com", role="admin")
-    client.post("/api/users", json={"email": "bob@example.com", "password": "p"})
-    resp = client.post("/api/users", json={"email": "bob@example.com", "password": "p2"})
+    client.post("/api/users", json={"email": "bob@example.com", "password": "password1"})
+    resp = client.post("/api/users", json={"email": "bob@example.com", "password": "password2"})
     assert resp.status_code == 409
 
 

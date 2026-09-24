@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { isNonEmpty } from '../validation.js'
 
 const AGENT_TYPES = [
   { value: 'techdebt', label: 'Tech-Debt (Security / Reliability / Maintainability)' },
@@ -55,13 +56,21 @@ export default function NewRunPage() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!isNonEmpty(source)) {
+      setError(sourceType === 'github' ? 'Repository is required.' : 'Path is required.')
+      return
+    }
+    if (!sonarServerId) {
+      setError('Select a Sonar server.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       const run = await api.createRun({
         agent_type: agentType,
         source_type: sourceType,
-        source,
+        source: source.trim(),
         source_branch: sourceBranch.trim() || null,
         language,
         sonar_server_id: sonarServerId,

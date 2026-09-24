@@ -1,6 +1,7 @@
 fastapi
 uvicorn[standard]
 pydantic
+email-validator
 google-cloud-firestore
 google-cloud-secret-manager
 google-cloud-run

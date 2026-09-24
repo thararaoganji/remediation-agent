@@ -18,20 +18,21 @@ def main() -> None:
     parser.add_argument("--email", required=True)
     parser.add_argument("--password", required=True)
     args = parser.parse_args()
+    email = args.email.lower()  # matches login's/create_user's normalization
 
-    if firestore_db.get_doc("users", args.email) is not None:
-        print(f"A user with email {args.email} already exists -- not overwriting it.")
+    if firestore_db.get_doc("users", email) is not None:
+        print(f"A user with email {email} already exists -- not overwriting it.")
         return
 
     firestore_db.create_doc("users", {
-        "email": args.email,
+        "email": email,
         "password_hash": auth.hash_password(args.password),
         "role": "admin",
         # Unlike an account created via the Users page, you're choosing
         # your own real password directly here -- no forced reset needed.
         "must_reset_password": False,
-    }, doc_id=args.email)
-    print(f"Created admin user: {args.email}")
+    }, doc_id=email)
+    print(f"Created admin user: {email}")
 
 
 if __name__ == "__main__":

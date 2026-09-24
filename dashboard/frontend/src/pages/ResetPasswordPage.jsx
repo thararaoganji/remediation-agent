@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../AuthContext.jsx'
 import { usePageTitle } from '../usePageTitle.js'
+import { MIN_PASSWORD_LENGTH } from '../validation.js'
 
 export default function ResetPasswordPage() {
   usePageTitle('Reset Password')
@@ -17,6 +18,10 @@ export default function ResetPasswordPage() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (newPassword.length < MIN_PASSWORD_LENGTH) {
+      setError(`New password must be at least ${MIN_PASSWORD_LENGTH} characters.`)
+      return
+    }
     if (newPassword !== confirmPassword) {
       setError("New password and confirmation don't match.")
       return
@@ -56,6 +61,7 @@ export default function ResetPasswordPage() {
         <label>
           New password
           <input type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+          <span className="field-note">At least {MIN_PASSWORD_LENGTH} characters.</span>
         </label>
         <label>
           Confirm new password

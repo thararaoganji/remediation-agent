@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { isHttpUrl, isNonEmpty } from '../validation.js'
 
 export default function GithubCredentialFormPage() {
   const { id } = useParams()
@@ -37,16 +38,34 @@ export default function GithubCredentialFormPage() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!isNonEmpty(name)) {
+      setError('Name is required.')
+      return
+    }
+    // Blank is allowed (defaults to github.com) -- only validate it as a
+    // URL when something was actually typed.
+    if (isNonEmpty(apiBaseUrl) && !isHttpUrl(apiBaseUrl)) {
+      setError('API base URL must start with http:// or https://')
+      return
+    }
+    if (!isEdit && !isNonEmpty(token)) {
+      setError('Token is required.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       if (isEdit) {
-        const body = { name, api_base_url: apiBaseUrl }
+        const body = { name: name.trim() }
+        // Omitted (not sent as "") when blank -- an empty string isn't a
+        // valid URL, and clearing the box means "don't change it", not
+        // "set it to nothing".
+        if (isNonEmpty(apiBaseUrl)) body.api_base_url = apiBaseUrl.trim()
         if (token.trim()) body.token = token.trim()
         await api.updateGithubCredential(id, body)
       } else {
-        const body = { name, token }
-        if (apiBaseUrl.trim()) body.api_base_url = apiBaseUrl.trim()
+        const body = { name: name.trim(), token }
+        if (isNonEmpty(apiBaseUrl)) body.api_base_url = apiBaseUrl.trim()
         await api.createGithubCredential(body)
       }
       navigate('/connections')

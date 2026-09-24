@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { isNonEmpty } from '../validation.js'
 
 const VENDORS = [
   { value: 'google', label: 'Google', modelPlaceholder: 'e.g. gemini-3.7-flash' },
@@ -43,15 +44,23 @@ export default function LlmConfigFormPage() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!isNonEmpty(model)) {
+      setError('Model is required.')
+      return
+    }
+    if (!isEdit && !isNonEmpty(apiKey)) {
+      setError('API key is required.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       if (isEdit) {
-        const body = { vendor, model }
+        const body = { vendor, model: model.trim() }
         if (apiKey.trim()) body.api_key = apiKey.trim()
         await api.updateLlmConfig(id, body)
       } else {
-        await api.createLlmConfig({ vendor, model, api_key: apiKey })
+        await api.createLlmConfig({ vendor, model: model.trim(), api_key: apiKey })
       }
       navigate('/connections')
     } catch (err) {

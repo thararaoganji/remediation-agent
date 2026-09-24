@@ -19,7 +19,7 @@ export default function LoginPage() {
     setSubmitting(true)
     setError(null)
     try {
-      await login(email, password)
+      await login(email.trim(), password)
       const from = location.state?.from || '/runs'
       navigate(from, { replace: true })
     } catch (err) {
@@ -36,7 +36,6 @@ export default function LoginPage() {
           <Logo size={40} />
           <h1>Sonar Remediation Dashboard</h1>
         </div>
-        <h2>Sign in</h2>
         <form className="new-run-form" onSubmit={handleSubmit}>
           <label>
             Email

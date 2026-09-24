@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import auth, firestore_db, secret_manager
+from ..validation import HttpUrlStr, NonEmptyStr
 
 router = APIRouter(prefix="/api/sonar-servers", tags=["sonar-servers"])
 
@@ -24,17 +25,17 @@ def _secret_id(server_id: str) -> str:
 
 
 class SonarServerCreate(BaseModel):
-    name: str
-    base_url: str
+    name: NonEmptyStr
+    base_url: HttpUrlStr
     ce_edition: bool = True
-    token: str
+    token: NonEmptyStr
 
 
 class SonarServerUpdate(BaseModel):
-    name: str | None = None
-    base_url: str | None = None
+    name: NonEmptyStr | None = None
+    base_url: HttpUrlStr | None = None
     ce_edition: bool | None = None
-    token: str | None = None  # present -> rotates the token (adds a new secret version)
+    token: NonEmptyStr | None = None  # present -> rotates the token (adds a new secret version)
 
 
 class SonarServerOut(BaseModel):

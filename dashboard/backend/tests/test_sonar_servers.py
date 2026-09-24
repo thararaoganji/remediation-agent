@@ -48,8 +48,8 @@ def test_delete_unknown_sonar_server_404s(client, fake_firestore):
 
 def test_two_sonar_servers_are_independent(client, fake_firestore):
     login_as(client, fake_firestore, "alice@example.com")
-    a = client.post("/api/sonar-servers", json={"name": "A", "base_url": "http://a", "token": "ta"}).json()
-    b = client.post("/api/sonar-servers", json={"name": "B", "base_url": "http://b", "token": "tb"}).json()
+    a = client.post("/api/sonar-servers", json={"name": "A", "base_url": "http://a.example.com", "token": "ta"}).json()
+    b = client.post("/api/sonar-servers", json={"name": "B", "base_url": "http://b.example.com", "token": "tb"}).json()
     assert a["id"] != b["id"]
     names = {s["name"] for s in client.get("/api/sonar-servers").json()}
     assert names == {"A", "B"}
@@ -63,7 +63,7 @@ def test_sonar_servers_require_auth(client):
 def test_user_cannot_see_or_manage_another_users_sonar_server(client, fake_firestore):
     login_as(client, fake_firestore, "alice@example.com")
     server_id = client.post(
-        "/api/sonar-servers", json={"name": "Alice's", "base_url": "http://a", "token": "ta"}
+        "/api/sonar-servers", json={"name": "Alice's", "base_url": "http://a.example.com", "token": "ta"}
     ).json()["id"]
 
     login_as(client, fake_firestore, "bob@example.com")
@@ -75,7 +75,7 @@ def test_user_cannot_see_or_manage_another_users_sonar_server(client, fake_fires
 def test_admin_sees_and_manages_every_users_sonar_server(client, fake_firestore):
     login_as(client, fake_firestore, "alice@example.com")
     server_id = client.post(
-        "/api/sonar-servers", json={"name": "Alice's", "base_url": "http://a", "token": "ta"}
+        "/api/sonar-servers", json={"name": "Alice's", "base_url": "http://a.example.com", "token": "ta"}
     ).json()["id"]
 
     login_as(client, fake_firestore, "admin@example.com", role="admin")

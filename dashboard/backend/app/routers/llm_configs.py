@@ -7,11 +7,13 @@ LLM_MODEL, and whichever env var that vendor's key belongs in -- see
 core/llm_config.py on the agent side)."""
 
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import auth, firestore_db, secret_manager
+from ..validation import NonEmptyStr
 
 router = APIRouter(prefix="/api/llm-configs", tags=["llm-configs"], dependencies=[Depends(auth.require_admin)])
 
@@ -27,26 +29,29 @@ VENDOR_ENV_VAR = {
     "anthropic": "ANTHROPIC_API_KEY",
 }
 
+# Kept in sync with VENDOR_ENV_VAR's keys by hand -- Literal needs its
+# members spelled out at class-definition time, so this can't be derived
+# from that dict directly. An unrecognized vendor is now rejected by
+# Pydantic itself (422) before create/update's handler code ever runs, so
+# there's no separate runtime "is this a known vendor" check left to keep
+# in sync too.
+Vendor = Literal["google", "openai", "anthropic"]
+
 
 def _secret_id(config_id: str) -> str:
     return f"llm-api-key-{config_id}"
 
 
-def _check_known_vendor(vendor: str) -> None:
-    if vendor not in VENDOR_ENV_VAR:
-        raise HTTPException(status_code=400, detail=f"Unknown vendor: {vendor!r} (known: {sorted(VENDOR_ENV_VAR)})")
-
-
 class LlmConfigCreate(BaseModel):
-    vendor: str  # "google" | "openai" | "anthropic"
-    model: str
-    api_key: str
+    vendor: Vendor
+    model: NonEmptyStr
+    api_key: NonEmptyStr
 
 
 class LlmConfigUpdate(BaseModel):
-    vendor: str | None = None
-    model: str | None = None
-    api_key: str | None = None  # present -> rotates the token (adds a new secret version)
+    vendor: Vendor | None = None
+    model: NonEmptyStr | None = None
+    api_key: NonEmptyStr | None = None  # present -> rotates the token (adds a new secret version)
 
 
 class LlmConfigOut(BaseModel):
@@ -74,7 +79,6 @@ def list_llm_configs():
 
 @router.post("", response_model=LlmConfigOut, status_code=201)
 def create_llm_config(body: LlmConfigCreate):
-    _check_known_vendor(body.vendor)
     # The very first config ever created becomes active automatically --
     # otherwise there'd be no active config at all until an admin remembers
     # to flip one on, and runs.py.create_run treats "none active" as a hard
@@ -96,8 +100,6 @@ def create_llm_config(body: LlmConfigCreate):
 @router.put("/{config_id}", response_model=LlmConfigOut)
 def update_llm_config(config_id: str, body: LlmConfigUpdate):
     doc = _get_or_404(config_id)
-    if body.vendor is not None:
-        _check_known_vendor(body.vendor)
     updates = {k: v for k, v in {"vendor": body.vendor, "model": body.model}.items() if v is not None}
     if updates:
         firestore_db.update_doc(_COLLECTION, config_id, updates)

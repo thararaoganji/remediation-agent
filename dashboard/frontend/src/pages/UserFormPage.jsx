@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { isValidEmail, MIN_PASSWORD_LENGTH } from '../validation.js'
 
 export default function UserFormPage() {
   usePageTitle('Create User')
@@ -14,10 +15,18 @@ export default function UserFormPage() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!isValidEmail(email)) {
+      setError('Enter a valid email address.')
+      return
+    }
+    if (password.length < MIN_PASSWORD_LENGTH) {
+      setError(`Password must be at least ${MIN_PASSWORD_LENGTH} characters.`)
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
-      await api.createUser({ email, password, role })
+      await api.createUser({ email: email.trim(), password, role })
       navigate('/users')
     } catch (err) {
       setError(err.message)
@@ -41,6 +50,7 @@ export default function UserFormPage() {
         <label>
           Password
           <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+          <span className="field-note">At least {MIN_PASSWORD_LENGTH} characters.</span>
         </label>
         <label>
           Role

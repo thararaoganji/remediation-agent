@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .. import auth, firestore_db, secret_manager
+from ..validation import HttpUrlStr, NonEmptyStr
 
 router = APIRouter(prefix="/api/github-credentials", tags=["github-credentials"])
 
@@ -25,15 +26,15 @@ def _secret_id(cred_id: str) -> str:
 
 
 class GithubCredentialCreate(BaseModel):
-    name: str
-    api_base_url: str = _DEFAULT_API_BASE_URL
-    token: str
+    name: NonEmptyStr
+    api_base_url: HttpUrlStr = _DEFAULT_API_BASE_URL
+    token: NonEmptyStr
 
 
 class GithubCredentialUpdate(BaseModel):
-    name: str | None = None
-    api_base_url: str | None = None
-    token: str | None = None  # present -> rotates the token (adds a new secret version)
+    name: NonEmptyStr | None = None
+    api_base_url: HttpUrlStr | None = None
+    token: NonEmptyStr | None = None  # present -> rotates the token (adds a new secret version)
 
 
 class GithubCredentialOut(BaseModel):

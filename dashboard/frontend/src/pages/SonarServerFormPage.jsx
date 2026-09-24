@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { api } from '../api.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { isHttpUrl, isNonEmpty } from '../validation.js'
 
 export default function SonarServerFormPage() {
   const { id } = useParams()
@@ -39,15 +40,27 @@ export default function SonarServerFormPage() {
 
   async function handleSubmit(e) {
     e.preventDefault()
+    if (!isNonEmpty(name)) {
+      setError('Name is required.')
+      return
+    }
+    if (!isHttpUrl(baseUrl)) {
+      setError('Base URL must start with http:// or https://')
+      return
+    }
+    if (!isEdit && !isNonEmpty(token)) {
+      setError('Token is required.')
+      return
+    }
     setSubmitting(true)
     setError(null)
     try {
       if (isEdit) {
-        const body = { name, base_url: baseUrl, ce_edition: ceEdition }
+        const body = { name: name.trim(), base_url: baseUrl.trim(), ce_edition: ceEdition }
         if (token.trim()) body.token = token.trim()
         await api.updateSonarServer(id, body)
       } else {
-        await api.createSonarServer({ name, base_url: baseUrl, ce_edition: ceEdition, token })
+        await api.createSonarServer({ name: name.trim(), base_url: baseUrl.trim(), ce_edition: ceEdition, token })
       }
       navigate('/connections')
     } catch (err) {

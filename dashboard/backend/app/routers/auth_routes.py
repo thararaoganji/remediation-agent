@@ -6,21 +6,26 @@ mid-forced-reset (that's a frontend routing concern, not an API one)."""
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
 
 from .. import auth, firestore_db
+from ..validation import PasswordStr
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 class LoginRequest(BaseModel):
-    email: str
+    email: EmailStr
+    # Deliberately plain str, not NonEmptyStr -- this gets compared
+    # byte-for-byte against a stored hash, so it must never be silently
+    # whitespace-stripped before that comparison. An empty password just
+    # fails to match, which is already the correct outcome.
     password: str
 
 
 class ChangePasswordRequest(BaseModel):
-    current_password: str
-    new_password: str
+    current_password: str  # same reasoning as LoginRequest.password
+    new_password: PasswordStr
 
 
 class CurrentUserOut(BaseModel):
@@ -35,18 +40,19 @@ def _cookie_secure() -> bool:
 
 @router.post("/login", response_model=CurrentUserOut)
 def login(body: LoginRequest, response: Response):
-    doc = firestore_db.get_doc("users", body.email)
+    email = body.email.lower()  # matches create_user's normalization -- see its comment
+    doc = firestore_db.get_doc("users", email)
     if doc is None or not auth.verify_password(body.password, doc["password_hash"]):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     response.set_cookie(
         auth.COOKIE_NAME,
-        auth.create_session_cookie_value(body.email),
+        auth.create_session_cookie_value(email),
         max_age=auth.SESSION_MAX_AGE,
         httponly=True,
         samesite="lax",
         secure=_cookie_secure(),
     )
-    return CurrentUserOut(email=body.email, role=doc["role"], must_reset_password=doc.get("must_reset_password", False))
+    return CurrentUserOut(email=email, role=doc["role"], must_reset_password=doc.get("must_reset_password", False))
 
 
 @router.post("/logout", status_code=204)
