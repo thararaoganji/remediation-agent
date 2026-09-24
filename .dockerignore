@@ -12,6 +12,7 @@ __pycache__/
 .eggs/
 build/
 dist/
+node_modules/
 
 .git/
 .gitignore
