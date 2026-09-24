@@ -203,6 +203,38 @@ body {
   }
 }
 
+/* Sonar Servers and GitHub Credentials sit side by side in equal-width grid
+   columns, but each <table> sizes its own columns independently based on
+   its own content (table-layout: auto's default) -- one table with a long
+   URL value squeezes its Name/Owner columns while the other table's don't,
+   so the two tables end up with different column proportions even though
+   they're the same width overall. Fixed, matching column widths make the
+   Name/Actions columns line up between the two tables regardless of how
+   long either table's URL values happen to be. */
+.connections-grid .data-table {
+  table-layout: fixed;
+}
+
+.connections-grid .data-table th:first-child,
+.connections-grid .data-table td:first-child {
+  width: 22%;
+}
+
+.connections-grid .data-table th:last-child,
+.connections-grid .data-table td:last-child {
+  width: 6.5rem;
+  white-space: nowrap;
+}
+
+/* Owner only exists as a 4th column for admins (:nth-child(3) that is ALSO
+   :nth-last-child(2) only matches when the table has exactly 4 columns) --
+   giving it a fixed, narrower share than the default 50/50 split leaves
+   more room for the actual URL column, which needs it more. */
+.connections-grid .data-table th:nth-child(3):nth-last-child(2),
+.connections-grid .data-table td:nth-child(3):nth-last-child(2) {
+  width: 18%;
+}
+
 .page-head-row {
   display: flex;
   justify-content: space-between;
