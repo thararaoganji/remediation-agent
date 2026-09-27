@@ -1,9 +1,19 @@
-fastapi
-uvicorn[standard]
-pydantic
-email-validator
-google-cloud-firestore
-google-cloud-secret-manager
-google-cloud-run
-bcrypt
-itsdangerous
+# Versions pinned to what's actually installed/tested (`pip freeze`) -- see
+# the root requirements.txt's comment for why (OWASP A06).
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+pydantic==2.13.4
+email-validator==2.3.0
+google-cloud-firestore==2.31.0
+google-cloud-secret-manager==2.30.0
+google-cloud-run==0.16.1
+# Azure equivalents (storage_azure.py/secrets_azure.py/job_runner_azure.py)
+# -- bundled in the same image as the GCP SDKs above rather than building
+# a separate image per cloud; CLOUD_PROVIDER picks which one actually gets
+# used at runtime (see app/storage.py's registry).
+azure-cosmos==4.17.1
+azure-identity==1.25.3
+azure-keyvault-secrets==4.11.2
+azure-mgmt-appcontainers==5.1.0
+bcrypt==5.0.0
+itsdangerous==2.2.0

@@ -1,4 +1,5 @@
-from core.tools import run_status
+from core.tools import run_status_gcp
+from core.tools.run_status_gcp import FirestoreRunStatusReporter
 
 
 class _FakeDocRef:
@@ -74,39 +75,43 @@ class _FakeEvent:
 
 # --- no-op when RUN_ID (run_id) is unset --------------------------------
 
-def test_report_started_noop_when_run_id_none(monkeypatch):
-    monkeypatch.setattr(run_status, "_get_client", _fail_if_called)
-    run_status.report_started(None, "techdebt", "github", "owner/repo")
+def test_report_started_noop_when_run_id_none():
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = _fail_if_called
+    reporter.report_started(None, "techdebt", "github", "owner/repo")
 
 
-def test_report_branch_ready_noop_when_run_id_none(monkeypatch):
-    monkeypatch.setattr(run_status, "_get_client", _fail_if_called)
-    run_status.report_branch_ready(None, "proj_agent_123", "http://sonar/dashboard?id=proj")
+def test_report_branch_ready_noop_when_run_id_none():
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = _fail_if_called
+    reporter.report_branch_ready(None, "proj_agent_123", "http://sonar/dashboard?id=proj")
 
 
-def test_report_finished_noop_when_run_id_none(monkeypatch):
-    monkeypatch.setattr(run_status, "_get_client", _fail_if_called)
-    run_status.report_finished(None, "succeeded", final_report={"branch_name": "x"})
+def test_report_finished_noop_when_run_id_none():
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = _fail_if_called
+    reporter.report_finished(None, "succeeded", final_report={"branch_name": "x"})
 
 
-def test_report_event_noop_when_run_id_none(monkeypatch):
-    monkeypatch.setattr(run_status, "_get_client", _fail_if_called)
-    run_status.report_event(None, _FakeEvent())
+def test_report_event_noop_when_run_id_none():
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = _fail_if_called
+    reporter.report_event(None, _FakeEvent())
 
 
 # --- no-op when Firestore/ADC isn't reachable ---------------------------
 
-def test_noop_when_get_client_returns_none(monkeypatch):
-    monkeypatch.setattr(run_status, "_get_client", lambda: None)
+def test_noop_when_get_client_returns_none():
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: None
     # Should not raise even with a real run_id -- no client means no write.
-    run_status.report_started("run-1", "techdebt", "github", "owner/repo")
+    reporter.report_started("run-1", "techdebt", "github", "owner/repo")
 
 
 def test_get_client_returns_none_when_firestore_package_missing(monkeypatch):
-    monkeypatch.setattr(run_status, "firestore", None)
-    monkeypatch.setattr(run_status, "_client", None)
-    monkeypatch.setattr(run_status, "_client_init_attempted", False)
-    assert run_status._get_client() is None
+    monkeypatch.setattr(run_status_gcp, "firestore", None)
+    reporter = FirestoreRunStatusReporter()
+    assert reporter._get_client() is None
 
 
 def test_get_client_returns_none_when_client_construction_raises(monkeypatch):
@@ -114,13 +119,12 @@ def test_get_client_returns_none_when_client_construction_raises(monkeypatch):
         raise Exception("no ADC credentials found")
 
     fake_firestore = type("FakeFirestoreModule", (), {"Client": staticmethod(_raise)})
-    monkeypatch.setattr(run_status, "firestore", fake_firestore)
-    monkeypatch.setattr(run_status, "_client", None)
-    monkeypatch.setattr(run_status, "_client_init_attempted", False)
-    assert run_status._get_client() is None
+    monkeypatch.setattr(run_status_gcp, "firestore", fake_firestore)
+    reporter = FirestoreRunStatusReporter()
+    assert reporter._get_client() is None
 
 
-def test_update_swallows_exceptions_from_set(monkeypatch):
+def test_update_swallows_exceptions_from_set():
     class _ExplodingClient:
         def collection(self, name):
             class _C:
@@ -131,18 +135,20 @@ def test_update_swallows_exceptions_from_set(monkeypatch):
                     return _D()
             return _C()
 
-    monkeypatch.setattr(run_status, "_get_client", lambda: _ExplodingClient())
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: _ExplodingClient()
     # Must not raise -- a Firestore hiccup can never fail the actual run.
-    run_status.report_started("run-1", "techdebt", "github", "owner/repo")
+    reporter.report_started("run-1", "techdebt", "github", "owner/repo")
 
 
 # --- actual writes when a run_id and a working client are present ------
 
-def test_report_started_writes_expected_fields(monkeypatch):
+def test_report_started_writes_expected_fields():
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
-    run_status.report_started("run-1", "techdebt", "github", "owner/repo", "main")
+    reporter.report_started("run-1", "techdebt", "github", "owner/repo", "main")
 
     doc = client.store["run-1"]
     assert doc["agent_type"] == "techdebt"
@@ -153,23 +159,25 @@ def test_report_started_writes_expected_fields(monkeypatch):
     assert "started_at" in doc
 
 
-def test_report_branch_ready_writes_expected_fields(monkeypatch):
+def test_report_branch_ready_writes_expected_fields():
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
-    run_status.report_branch_ready("run-1", "proj_agent_123", "http://sonar/dashboard?id=proj&branch=proj_agent_123")
+    reporter.report_branch_ready("run-1", "proj_agent_123", "http://sonar/dashboard?id=proj&branch=proj_agent_123")
 
     doc = client.store["run-1"]
     assert doc["branch_name"] == "proj_agent_123"
     assert doc["sonar_dashboard_url"] == "http://sonar/dashboard?id=proj&branch=proj_agent_123"
 
 
-def test_report_finished_success_writes_final_report(monkeypatch):
+def test_report_finished_success_writes_final_report():
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
     final_report = {"branch_name": "proj_agent_123", "issues_fixed": []}
-    run_status.report_finished("run-1", "succeeded", final_report=final_report)
+    reporter.report_finished("run-1", "succeeded", final_report=final_report)
 
     doc = client.store["run-1"]
     assert doc["status"] == "succeeded"
@@ -178,11 +186,12 @@ def test_report_finished_success_writes_final_report(monkeypatch):
     assert "error" not in doc
 
 
-def test_report_finished_failure_writes_error_not_final_report(monkeypatch):
+def test_report_finished_failure_writes_error_not_final_report():
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
-    run_status.report_finished("run-1", "failed", error="build failed")
+    reporter.report_finished("run-1", "failed", error="build failed")
 
     doc = client.store["run-1"]
     assert doc["status"] == "failed"
@@ -190,16 +199,17 @@ def test_report_finished_failure_writes_error_not_final_report(monkeypatch):
     assert "final_report" not in doc
 
 
-def test_updates_across_calls_merge_not_clobber(monkeypatch):
+def test_updates_across_calls_merge_not_clobber():
     # report_started then report_branch_ready then report_finished should
     # all land on the SAME doc, accumulating fields -- exactly what the
     # dashboard needs to show one row per run across its whole lifecycle.
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
-    run_status.report_started("run-1", "techdebt", "github", "owner/repo")
-    run_status.report_branch_ready("run-1", "proj_agent_123", "http://sonar/x")
-    run_status.report_finished("run-1", "succeeded", final_report={"a": 1})
+    reporter.report_started("run-1", "techdebt", "github", "owner/repo")
+    reporter.report_branch_ready("run-1", "proj_agent_123", "http://sonar/x")
+    reporter.report_finished("run-1", "succeeded", final_report={"a": 1})
 
     doc = client.store["run-1"]
     assert doc["agent_type"] == "techdebt"
@@ -210,19 +220,20 @@ def test_updates_across_calls_merge_not_clobber(monkeypatch):
 
 # --- report_event ---------------------------------------------------------
 
-def test_report_event_swallows_exceptions_from_model_dump(monkeypatch):
+def test_report_event_swallows_exceptions_from_model_dump():
     class _BoomEvent:
         id = "evt-1"
 
         def model_dump(self, **kw):
             raise Exception("serialization exploded")
 
-    monkeypatch.setattr(run_status, "_get_client", lambda: _FakeClient())
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: _FakeClient()
     # Must not raise -- a transcript-write failure can never fail the run.
-    run_status.report_event("run-1", _BoomEvent())
+    reporter.report_event("run-1", _BoomEvent())
 
 
-def test_report_event_swallows_exceptions_from_firestore_write(monkeypatch):
+def test_report_event_swallows_exceptions_from_firestore_write():
     class _ExplodingSubcollectionClient:
         def collection(self, name):
             class _RunsCollection:
@@ -239,15 +250,17 @@ def test_report_event_swallows_exceptions_from_firestore_write(monkeypatch):
                     return _RunDoc()
             return _RunsCollection()
 
-    monkeypatch.setattr(run_status, "_get_client", lambda: _ExplodingSubcollectionClient())
-    run_status.report_event("run-1", _FakeEvent())
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: _ExplodingSubcollectionClient()
+    reporter.report_event("run-1", _FakeEvent())
 
 
-def test_report_event_writes_to_events_subcollection(monkeypatch):
+def test_report_event_writes_to_events_subcollection():
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
-    run_status.report_event("run-1", _FakeEvent(event_id="evt-1", author="fix_llm_agent", text="fixed Foo.java"))
+    reporter.report_event("run-1", _FakeEvent(event_id="evt-1", author="fix_llm_agent", text="fixed Foo.java"))
 
     # Doesn't touch the run's own top-level fields...
     assert "run-1" not in client.store or "status" not in client.store.get("run-1", {})
@@ -257,12 +270,13 @@ def test_report_event_writes_to_events_subcollection(monkeypatch):
     assert event_doc["content"]["parts"][0]["text"] == "fixed Foo.java"
 
 
-def test_report_event_multiple_events_land_as_separate_docs(monkeypatch):
+def test_report_event_multiple_events_land_as_separate_docs():
     client = _FakeClient()
-    monkeypatch.setattr(run_status, "_get_client", lambda: client)
+    reporter = FirestoreRunStatusReporter()
+    reporter._get_client = lambda: client
 
-    run_status.report_event("run-1", _FakeEvent(event_id="evt-1", text="first"))
-    run_status.report_event("run-1", _FakeEvent(event_id="evt-2", text="second"))
+    reporter.report_event("run-1", _FakeEvent(event_id="evt-1", text="first"))
+    reporter.report_event("run-1", _FakeEvent(event_id="evt-2", text="second"))
 
     events_store = client.events_store("run-1")
     assert set(events_store.keys()) == {"evt-1", "evt-2"}

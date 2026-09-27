@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import auth, firestore_db, secret_manager
+from .. import audit_log, auth, storage, secrets
 from ..validation import HttpUrlStr, NonEmptyStr
 
 router = APIRouter(prefix="/api/sonar-servers", tags=["sonar-servers"])
@@ -54,7 +54,7 @@ def _to_out(doc: dict) -> SonarServerOut:
 
 
 def _get_owned_or_404(server_id: str, user: auth.CurrentUser) -> dict:
-    doc = firestore_db.get_doc(_COLLECTION, server_id)
+    doc = storage.get_doc(_COLLECTION, server_id)
     # 404, not 403, for a resource that exists but isn't yours -- doesn't
     # confirm to the caller that some other user's server id is real.
     if doc is None or (user.role != "admin" and doc.get("owner_email") != user.email):
@@ -64,7 +64,7 @@ def _get_owned_or_404(server_id: str, user: auth.CurrentUser) -> dict:
 
 @router.get("", response_model=list[SonarServerOut])
 def list_sonar_servers(user: auth.CurrentUser = Depends(auth.get_current_user)):
-    docs = firestore_db.list_docs(_COLLECTION, order_by="name")
+    docs = storage.list_docs(_COLLECTION, order_by="name")
     if user.role != "admin":
         docs = [d for d in docs if d.get("owner_email") == user.email]
     return [_to_out(d) for d in docs]
@@ -80,15 +80,15 @@ def create_sonar_server(body: SonarServerCreate, user: auth.CurrentUser = Depend
     # not worth a two-phase-commit for an admin tool at this scale.
     server_id = str(uuid.uuid4())
     secret_id = _secret_id(server_id)
-    secret_manager.create_secret_with_value(secret_id, body.token)
-    firestore_db.create_doc(_COLLECTION, {
+    secrets.create_secret_with_value(secret_id, body.token)
+    storage.create_doc(_COLLECTION, {
         "name": body.name,
         "base_url": body.base_url,
         "ce_edition": body.ce_edition,
         "secret_name": secret_id,
         "owner_email": user.email,
     }, doc_id=server_id)
-    return _to_out(firestore_db.get_doc(_COLLECTION, server_id))
+    return _to_out(storage.get_doc(_COLLECTION, server_id))
 
 
 @router.put("/{server_id}", response_model=SonarServerOut)
@@ -100,14 +100,16 @@ def update_sonar_server(
         "name": body.name, "base_url": body.base_url, "ce_edition": body.ce_edition,
     }.items() if v is not None}
     if updates:
-        firestore_db.update_doc(_COLLECTION, server_id, updates)
+        storage.update_doc(_COLLECTION, server_id, updates)
     if body.token is not None:
-        secret_manager.add_secret_version(doc["secret_name"], body.token)
-    return _to_out(firestore_db.get_doc(_COLLECTION, server_id))
+        secrets.add_secret_version(doc["secret_name"], body.token)
+        audit_log.credential_rotated(user.email, "sonar_server", server_id)
+    return _to_out(storage.get_doc(_COLLECTION, server_id))
 
 
 @router.delete("/{server_id}", status_code=204)
 def delete_sonar_server(server_id: str, user: auth.CurrentUser = Depends(auth.get_current_user)):
     doc = _get_owned_or_404(server_id, user)
-    secret_manager.delete_secret(doc["secret_name"])
-    firestore_db.delete_doc(_COLLECTION, server_id)
+    secrets.delete_secret(doc["secret_name"])
+    storage.delete_doc(_COLLECTION, server_id)
+    audit_log.credential_deleted(user.email, "sonar_server", server_id)

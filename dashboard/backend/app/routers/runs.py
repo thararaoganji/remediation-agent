@@ -3,7 +3,7 @@
 Doesn't touch the three Cloud Run Jobs' own definitions at all: every
 value they'd otherwise get from --set-env-vars/--set-secrets is supplied
 here instead, per execution, as a container override (see
-core.cloud_run.run_job's docstring). That's what makes "pick any of N
+core.job_runner.run_job's docstring). That's what makes "pick any of N
 saved Sonar servers / GitHub credentials per run" possible without
 redefining a job for every combination.
 
@@ -22,7 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import auth, cloud_run, event_stream, firestore_db, secret_manager
+from .. import auth, job_runner, event_stream, storage, secrets
 from ..validation import NonEmptyStr
 from .llm_configs import VENDOR_ENV_VAR
 
@@ -32,11 +32,11 @@ _COLLECTION = "runs"
 
 
 class RunCreate(BaseModel):
-    # Matches cloud_run.AGENT_JOB_NAMES' keys -- kept as a literal here too
+    # Matches job_runner.AGENT_JOB_NAMES' keys -- kept as a literal here too
     # (rather than relying solely on that dict's own runtime check) so an
     # unknown agent_type 422s immediately instead of creating a "queued"
     # run doc that then fails once create_run actually calls
-    # cloud_run.run_job().
+    # job_runner.run_job().
     agent_type: Literal["techdebt", "coverage", "duplicate"]
     # The dashboard's New Run form should only ever offer "github" (a
     # "local" path only makes sense for a Job whose image already has the
@@ -60,6 +60,13 @@ class RunOut(BaseModel):
     language: str
     sonar_server_id: str
     github_credential_id: str | None = None
+    # Captured once at run-creation time (see create_run) from whichever
+    # LLM config was active then -- deliberately NOT a live lookup of the
+    # *current* active config, so a run's own record of what it used stays
+    # accurate even after someone rotates the key or switches the active
+    # vendor/model on the Connections page later.
+    llm_vendor: str | None = None
+    llm_model: str | None = None
     status: str
     branch_name: str | None = None
     sonar_dashboard_url: str | None = None
@@ -82,7 +89,7 @@ def _owned(doc: dict, user: auth.CurrentUser) -> bool:
 
 @router.get("", response_model=list[RunOut])
 def list_runs(user: auth.CurrentUser = Depends(auth.get_current_user)):
-    docs = firestore_db.list_docs(_COLLECTION, order_by="created_at", descending=True)
+    docs = storage.list_docs(_COLLECTION, order_by="created_at", descending=True)
     if user.role != "admin":
         docs = [d for d in docs if d.get("owner_email") == user.email]
     return [_to_out(d) for d in docs]
@@ -90,7 +97,7 @@ def list_runs(user: auth.CurrentUser = Depends(auth.get_current_user)):
 
 @router.get("/{run_id}", response_model=RunOut)
 def get_run(run_id: str, user: auth.CurrentUser = Depends(auth.get_current_user)):
-    doc = firestore_db.get_doc(_COLLECTION, run_id)
+    doc = storage.get_doc(_COLLECTION, run_id)
     if doc is None or not _owned(doc, user):
         raise HTTPException(status_code=404, detail="Run not found")
     return _to_out(doc)
@@ -104,7 +111,7 @@ def stream_run(run_id: str, user: auth.CurrentUser = Depends(auth.get_current_us
     going (events arrive live, connection closes once it reaches a
     terminal status) or already finished (the full history arrives
     immediately, then the connection closes right away)."""
-    doc = firestore_db.get_doc(_COLLECTION, run_id)
+    doc = storage.get_doc(_COLLECTION, run_id)
     if doc is None or not _owned(doc, user):
         raise HTTPException(status_code=404, detail="Run not found")
     return StreamingResponse(event_stream.stream_run(run_id), media_type="text/event-stream")
@@ -115,13 +122,13 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
     # Same "unknown id" message whether the id truly doesn't exist or just
     # isn't the caller's -- doesn't confirm to the caller that some other
     # user's server/credential id is real.
-    sonar_server = firestore_db.get_doc("sonar_servers", body.sonar_server_id)
+    sonar_server = storage.get_doc("sonar_servers", body.sonar_server_id)
     if sonar_server is None or not _owned(sonar_server, user):
         raise HTTPException(status_code=400, detail="Unknown sonar_server_id")
 
     github_cred = None
     if body.github_credential_id:
-        github_cred = firestore_db.get_doc("github_credentials", body.github_credential_id)
+        github_cred = storage.get_doc("github_credentials", body.github_credential_id)
         if github_cred is None or not _owned(github_cred, user):
             raise HTTPException(status_code=400, detail="Unknown github_credential_id")
 
@@ -130,7 +137,7 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
     # llm_configs.py's docstring. Failing fast here with a clear message
     # avoids a repeat of a run silently burning through every file with
     # "no fix was generated" because no LLM credential was ever resolved.
-    llm_config = next((c for c in firestore_db.list_docs("llm_configs") if c.get("is_active")), None)
+    llm_config = next((c for c in storage.list_docs("llm_configs") if c.get("is_active")), None)
     if llm_config is None:
         raise HTTPException(status_code=400, detail="No active LLM API key configured -- set one up on the Connections page")
 
@@ -142,21 +149,21 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
         "LANGUAGE": body.language,
         "SONAR_BASE_URL": sonar_server["base_url"],
         "CE_EDITION": "true" if sonar_server["ce_edition"] else "false",
-        "SONAR_TOKEN": secret_manager.access_secret_value(sonar_server["secret_name"]),
+        "SONAR_TOKEN": secrets.access_secret_value(sonar_server["secret_name"]),
         "LLM_VENDOR": llm_config["vendor"],
         "LLM_MODEL": llm_config["model"],
-        VENDOR_ENV_VAR[llm_config["vendor"]]: secret_manager.access_secret_value(llm_config["secret_name"]),
+        VENDOR_ENV_VAR[llm_config["vendor"]]: secrets.access_secret_value(llm_config["secret_name"]),
     }
     if body.source_type == "github":
         env["GITHUB_REPO"] = body.source
         if github_cred:
-            env["GITHUB_TOKEN"] = secret_manager.access_secret_value(github_cred["secret_name"])
+            env["GITHUB_TOKEN"] = secrets.access_secret_value(github_cred["secret_name"])
     else:
         env["SOURCE_PATH"] = body.source
     if body.source_branch:
         env["SOURCE_BRANCH"] = body.source_branch
 
-    firestore_db.create_doc(_COLLECTION, {
+    storage.create_doc(_COLLECTION, {
         "agent_type": body.agent_type,
         "source_type": body.source_type,
         "source": body.source,
@@ -164,16 +171,18 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
         "language": body.language,
         "sonar_server_id": body.sonar_server_id,
         "github_credential_id": body.github_credential_id,
+        "llm_vendor": llm_config["vendor"],
+        "llm_model": llm_config["model"],
         "status": "queued",
         "owner_email": user.email,
         "created_at": datetime.now(timezone.utc),
     }, doc_id=run_id)
 
     try:
-        execution_name = cloud_run.run_job(body.agent_type, env)
+        execution_name = job_runner.run_job(body.agent_type, env)
     except Exception as e:
-        firestore_db.update_doc(_COLLECTION, run_id, {"status": "failed", "error": f"failed to start: {e}"})
+        storage.update_doc(_COLLECTION, run_id, {"status": "failed", "error": f"failed to start: {e}"})
         raise HTTPException(status_code=502, detail=f"Failed to start Cloud Run Job: {e}") from e
 
-    firestore_db.update_doc(_COLLECTION, run_id, {"status": "running", "execution_name": execution_name})
-    return _to_out(firestore_db.get_doc(_COLLECTION, run_id))
+    storage.update_doc(_COLLECTION, run_id, {"status": "running", "execution_name": execution_name})
+    return _to_out(storage.get_doc(_COLLECTION, run_id))

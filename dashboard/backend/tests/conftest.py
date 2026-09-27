@@ -18,8 +18,11 @@ os.environ.setdefault("GCP_PROJECT_ID", "test-project")
 os.environ.setdefault("GCP_REGION", "us-central1")
 os.environ.setdefault("SESSION_SECRET_KEY", "test-session-secret")
 
-from app import auth, cloud_run, firestore_db, secret_manager  # noqa: E402
+from app import auth, rate_limit  # noqa: E402
+from app.job_runner_gcp import CloudRunJobRunner  # noqa: E402
 from app.main import app  # noqa: E402
+from app.secrets_gcp import SecretManagerStore  # noqa: E402
+from app.storage_gcp import FirestoreStore  # noqa: E402
 
 
 # --- Fake Firestore ------------------------------------------------------
@@ -192,24 +195,42 @@ class FakeCloudRunClient:
 
 # --- Fixtures --------------------------------------------------------------
 
+@pytest.fixture(autouse=True)
+def _reset_rate_limit():
+    # rate_limit._failures is a module-level dict shared across the whole
+    # test session (same reason storage.get_storage()'s singleton needs no
+    # reset -- see fake_firestore's comment) -- without clearing it, failed
+    # logins accumulated by earlier, unrelated tests (test_login_wrong_
+    # password_401s, etc.) could eventually trip the lockout mid-suite and
+    # 429 a later test that expects a normal 401 or a successful login.
+    rate_limit._failures.clear()
+    yield
+    rate_limit._failures.clear()
+
+
 @pytest.fixture
 def fake_firestore(monkeypatch):
     client = FakeFirestoreClient()
-    monkeypatch.setattr(firestore_db, "_get_client", lambda: client)
+    # Patched on the class, not a module-level function, now that this
+    # lives on FirestoreStore -- the storage.get_storage() singleton is
+    # created once and reused across the whole test session, but since
+    # this replaces the method itself (not just its cached self._client),
+    # every instance's call still returns this test's fake regardless.
+    monkeypatch.setattr(FirestoreStore, "_get_client", lambda self: client)
     return client
 
 
 @pytest.fixture
 def fake_secrets(monkeypatch):
     client = FakeSecretManagerClient()
-    monkeypatch.setattr(secret_manager, "_get_client", lambda: client)
+    monkeypatch.setattr(SecretManagerStore, "_get_client", lambda self: client)
     return client
 
 
 @pytest.fixture
 def fake_cloud_run(monkeypatch):
     client = FakeCloudRunClient()
-    monkeypatch.setattr(cloud_run, "_get_client", lambda: client)
+    monkeypatch.setattr(CloudRunJobRunner, "_get_client", lambda self: client)
     return client
 
 

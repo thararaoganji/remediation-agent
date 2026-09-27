@@ -19,7 +19,7 @@ from fastapi import Cookie, Depends, HTTPException
 from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
 from pydantic import BaseModel
 
-from . import firestore_db
+from . import storage
 
 _COLLECTION = "users"
 COOKIE_NAME = "session"
@@ -62,7 +62,7 @@ def get_current_user(session: str | None = Cookie(default=None)) -> CurrentUser:
     email = _email_from_cookie(session)
     if email is None:
         raise HTTPException(status_code=401, detail="Session expired or invalid")
-    doc = firestore_db.get_doc(_COLLECTION, email)
+    doc = storage.get_doc(_COLLECTION, email)
     if doc is None:
         raise HTTPException(status_code=401, detail="User no longer exists")
     return CurrentUser(email=email, role=doc["role"], must_reset_password=doc.get("must_reset_password", False))

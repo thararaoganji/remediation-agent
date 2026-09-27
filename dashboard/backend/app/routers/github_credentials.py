@@ -12,7 +12,7 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from .. import auth, firestore_db, secret_manager
+from .. import audit_log, auth, storage, secrets
 from ..validation import HttpUrlStr, NonEmptyStr
 
 router = APIRouter(prefix="/api/github-credentials", tags=["github-credentials"])
@@ -51,7 +51,7 @@ def _to_out(doc: dict) -> GithubCredentialOut:
 
 
 def _get_owned_or_404(cred_id: str, user: auth.CurrentUser) -> dict:
-    doc = firestore_db.get_doc(_COLLECTION, cred_id)
+    doc = storage.get_doc(_COLLECTION, cred_id)
     if doc is None or (user.role != "admin" and doc.get("owner_email") != user.email):
         raise HTTPException(status_code=404, detail="GitHub credential not found")
     return doc
@@ -59,7 +59,7 @@ def _get_owned_or_404(cred_id: str, user: auth.CurrentUser) -> dict:
 
 @router.get("", response_model=list[GithubCredentialOut])
 def list_github_credentials(user: auth.CurrentUser = Depends(auth.get_current_user)):
-    docs = firestore_db.list_docs(_COLLECTION, order_by="name")
+    docs = storage.list_docs(_COLLECTION, order_by="name")
     if user.role != "admin":
         docs = [d for d in docs if d.get("owner_email") == user.email]
     return [_to_out(d) for d in docs]
@@ -73,14 +73,14 @@ def create_github_credential(
     # see that function's comment for why.
     cred_id = str(uuid.uuid4())
     secret_id = _secret_id(cred_id)
-    secret_manager.create_secret_with_value(secret_id, body.token)
-    firestore_db.create_doc(_COLLECTION, {
+    secrets.create_secret_with_value(secret_id, body.token)
+    storage.create_doc(_COLLECTION, {
         "name": body.name,
         "api_base_url": body.api_base_url,
         "secret_name": secret_id,
         "owner_email": user.email,
     }, doc_id=cred_id)
-    return _to_out(firestore_db.get_doc(_COLLECTION, cred_id))
+    return _to_out(storage.get_doc(_COLLECTION, cred_id))
 
 
 @router.put("/{cred_id}", response_model=GithubCredentialOut)
@@ -92,14 +92,16 @@ def update_github_credential(
         "name": body.name, "api_base_url": body.api_base_url,
     }.items() if v is not None}
     if updates:
-        firestore_db.update_doc(_COLLECTION, cred_id, updates)
+        storage.update_doc(_COLLECTION, cred_id, updates)
     if body.token is not None:
-        secret_manager.add_secret_version(doc["secret_name"], body.token)
-    return _to_out(firestore_db.get_doc(_COLLECTION, cred_id))
+        secrets.add_secret_version(doc["secret_name"], body.token)
+        audit_log.credential_rotated(user.email, "github_credential", cred_id)
+    return _to_out(storage.get_doc(_COLLECTION, cred_id))
 
 
 @router.delete("/{cred_id}", status_code=204)
 def delete_github_credential(cred_id: str, user: auth.CurrentUser = Depends(auth.get_current_user)):
     doc = _get_owned_or_404(cred_id, user)
-    secret_manager.delete_secret(doc["secret_name"])
-    firestore_db.delete_doc(_COLLECTION, cred_id)
+    secrets.delete_secret(doc["secret_name"])
+    storage.delete_doc(_COLLECTION, cred_id)
+    audit_log.credential_deleted(user.email, "github_credential", cred_id)

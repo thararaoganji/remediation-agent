@@ -1,6 +1,7 @@
 from conftest import login_as
 
-from app import cloud_run
+from app import job_runner
+from app.job_runner_gcp import CloudRunJobRunner
 
 
 def _make_sonar_server(client, name="Prod Sonar", ce_edition=True, token="sonar-tok"):
@@ -48,10 +49,12 @@ def test_create_run_github_source_starts_job_with_resolved_secrets(client, fake_
     assert run["status"] == "running"
     assert run["owner_email"] == "alice@example.com"
     assert run["execution_name"].endswith("/executions/fake-execution-1")
+    assert run["llm_vendor"] == "google"
+    assert run["llm_model"] == "gemini-3.7-flash"
 
     assert len(fake_cloud_run.calls) == 1
     job_path, env = fake_cloud_run.calls[0]
-    assert job_path.endswith(cloud_run.AGENT_JOB_NAMES["techdebt"])
+    assert job_path.endswith(job_runner.AGENT_JOB_NAMES["techdebt"])
     assert env["RUN_ID"] == run["id"]
     assert env["SOURCE_TYPE"] == "github"
     assert env["GITHUB_REPO"] == "owner/repo"
@@ -87,12 +90,12 @@ def test_create_run_picks_correct_job_per_agent_type(client, fake_firestore, fak
     _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
     sonar = _make_sonar_server(client)
-    for agent_type, job_name in cloud_run.AGENT_JOB_NAMES.items():
+    for agent_type, job_name in job_runner.AGENT_JOB_NAMES.items():
         client.post("/api/runs", json={
             "agent_type": agent_type, "source_type": "local", "source": "/x", "sonar_server_id": sonar["id"],
         })
     job_paths = [call[0] for call in fake_cloud_run.calls]
-    assert job_paths == [f"projects/test-project/locations/us-central1/jobs/{name}" for name in cloud_run.AGENT_JOB_NAMES.values()]
+    assert job_paths == [f"projects/test-project/locations/us-central1/jobs/{name}" for name in job_runner.AGENT_JOB_NAMES.values()]
 
 
 def test_create_run_unknown_sonar_server_400s_without_starting_job(client, fake_firestore, fake_cloud_run):
@@ -144,6 +147,33 @@ def test_create_run_uses_the_active_non_google_vendor(client, fake_firestore, fa
     assert "GOOGLE_API_KEY" not in env
 
 
+def test_run_keeps_its_own_llm_config_after_the_active_one_changes(client, fake_firestore, fake_cloud_run):
+    # A run records which LLM it actually started with; switching (or
+    # rotating the key of) the active config afterward must never rewrite
+    # that history -- see runs.py's RunOut.llm_vendor/llm_model comment.
+    _activate_llm_config(client, fake_firestore, vendor="google", model="gemini-3.7-flash", api_key="key-1")
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": sonar["id"],
+    }).json()
+    assert run["llm_vendor"] == "google"
+    assert run["llm_model"] == "gemini-3.7-flash"
+
+    # Now switch the active config to a different vendor entirely -- a
+    # second config never auto-activates (only the first one ever does),
+    # so this needs an explicit /activate call, not just creating it.
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    other_config = _make_llm_config(client, vendor="anthropic", model="claude-3-5-sonnet", api_key="key-2")
+    client.post(f"/api/llm-configs/{other_config['id']}/activate")
+
+    login_as(client, fake_firestore, "alice@example.com")
+    refetched = client.get(f"/api/runs/{run['id']}").json()
+    assert refetched["llm_vendor"] == "google"
+    assert refetched["llm_model"] == "gemini-3.7-flash"
+
+
 def test_create_run_cloud_run_failure_marks_run_failed(client, fake_firestore, monkeypatch):
     _activate_llm_config(client, fake_firestore)
     login_as(client, fake_firestore, "alice@example.com")
@@ -153,7 +183,7 @@ def test_create_run_cloud_run_failure_marks_run_failed(client, fake_firestore, m
         def run_job(self, request):
             raise Exception("simulated Cloud Run API error")
 
-    monkeypatch.setattr(cloud_run, "_get_client", lambda: _FailingCloudRunClient())
+    monkeypatch.setattr(CloudRunJobRunner, "_get_client", lambda self: _FailingCloudRunClient())
 
     resp = client.post("/api/runs", json={
         "agent_type": "techdebt", "source_type": "local", "source": "/x", "sonar_server_id": sonar["id"],
