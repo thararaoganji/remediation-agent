@@ -64,3 +64,12 @@ FILE_LOOP_DONE = "temp:file_loop_done"
 # --- Run metrics (Section 9 report) ---
 RUN_START_TIME = "temp:run_start_time"          # time.time() set right before pipeline_agent runs
 TOKEN_USAGE = "temp:token_usage"                # {"prompt_tokens", "candidates_tokens", "total_tokens"}
+
+# --- LLM systemic-failure circuit breaker (see FixLlmGateStep) ---
+# Consecutive count of fix_llm_agent calls that raised an exception (bad/
+# revoked key, exhausted quota, rate limit, network failure) rather than
+# coming back as a normal response or a content-policy block. Reset to 0 on
+# either of those two non-exception outcomes; once it crosses the threshold
+# the run aborts instead of flagging every remaining file individually for
+# what looks like a per-file problem but is actually one systemic cause.
+LLM_CONSECUTIVE_SYSTEMIC_FAILURES = "temp:llm_consecutive_systemic_failures"

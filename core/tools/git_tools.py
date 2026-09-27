@@ -58,13 +58,77 @@ def _sanitize_args(args: list[str]) -> list[str]:
     return sanitized
 
 
-def _run(args: list[str], cwd: str | None = None, env: dict | None = None) -> subprocess.CompletedProcess:
-    result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True)
+def _run(
+    args: list[str], cwd: str | None = None, env: dict | None = None, timeout: int = 300,
+) -> subprocess.CompletedProcess:
+    """timeout defaults to 5 minutes -- previously unset entirely, so a
+    stalled network operation (bad DNS, a dead TCP connection to a
+    since-unreachable host) hung forever: no exception ever fired, and the
+    run just sat "running" on the dashboard indefinitely. clone/push pass
+    a longer timeout explicitly (large repos, slower transfers); every
+    local-only git operation (status, commit, checkout, ...) comfortably
+    finishes in a small fraction of the default."""
+    try:
+        result = subprocess.run(args, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired as e:
+        sanitized_args = _sanitize_args(args)
+        raise RuntimeError(
+            f"git command timed out after {timeout}s: {' '.join(sanitized_args)} -- "
+            "likely a network issue reaching the remote (or an unusually large repository)."
+        ) from e
     if result.returncode != 0:
         sanitized_args = _sanitize_args(args)
         sanitized_stderr = _sanitize_string(result.stderr)
         raise RuntimeError(f"git command failed: {' '.join(sanitized_args)}\n{sanitized_stderr}")
     return result
+
+
+def _clarify_clone_error(e: RuntimeError, github_token: str | None) -> RuntimeError:
+    """git's own clone failure text is accurate but not always actionable
+    on its own -- this adds a plain-language cause on top of (never
+    instead of) the original message, matched against git/GitHub's known
+    stderr patterns. "Repository not found" deliberately can't be split
+    into "doesn't exist" vs "you don't have access" any further than this:
+    GitHub itself returns the identical message for both on a private
+    repo, specifically so an unauthorized caller can't use the error to
+    confirm a private repo's existence -- said explicitly rather than
+    guessing at just one of the two."""
+    text = str(e)
+    if "Repository not found" in text or "not found" in text.lower():
+        cause = (
+            "Repository not found, or the token doesn't have access to it -- GitHub "
+            "returns the same message for both a nonexistent repo and a private one "
+            "your token can't see, to avoid confirming private repos exist."
+            if github_token else
+            "Repository not found, or it's private and no GITHUB_TOKEN was provided."
+        )
+    elif "could not read Username" in text or "Authentication failed" in text or "Invalid username or token" in text:
+        cause = "The GitHub token is missing, expired, or invalid."
+    elif "Could not resolve host" in text or "Connection timed out" in text or "Connection refused" in text:
+        cause = "Could not reach GitHub -- check network/DNS and that github.com is reachable from this environment."
+    else:
+        return e
+    return RuntimeError(f"{cause}\n\n{text}")
+
+
+def _clarify_push_error(e: RuntimeError) -> RuntimeError:
+    """Unlike clone's ambiguous "not found", a push failure's git/GitHub
+    text usually DOES distinguish the cause clearly -- the token has read
+    access (the clone already succeeded) but not write access is a
+    genuinely different situation from a branch-protection rejection, and
+    each needs a different fix from whoever reads this."""
+    text = str(e)
+    if "Permission to" in text and "denied to" in text:
+        cause = "The token has read access to this repo but not write (push) access."
+    elif "protected branch" in text or "required status check" in text.lower():
+        cause = "The target branch is protected and rejected this push (branch protection rules, required reviews/checks)."
+    elif "could not read Username" in text or "Authentication failed" in text or "Invalid username or token" in text:
+        cause = "The GitHub token is missing, expired, or invalid."
+    elif "Could not resolve host" in text or "Connection timed out" in text or "Connection refused" in text:
+        cause = "Could not reach GitHub -- check network/DNS and that github.com is reachable from this environment."
+    else:
+        return e
+    return RuntimeError(f"{cause}\n\n{text}")
 
 
 def _github_auth_args(github_token: str) -> list[str]:
@@ -124,6 +188,7 @@ def _default_branch(working_dir: str) -> str | None:
     # case here, not a failure worth _run()'s raise-on-nonzero-exit.
     result = subprocess.run(
         ["git", "symbolic-ref", "refs/remotes/origin/HEAD"], cwd=working_dir, capture_output=True, text=True,
+        timeout=60,
     )
     if result.returncode == 0 and result.stdout.strip():
         return result.stdout.strip().rsplit("/", 1)[-1]
@@ -136,13 +201,13 @@ def _default_branch(working_dir: str) -> str | None:
 
 def _branch_exists_locally(working_dir: str, branch: str) -> bool:
     return subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=working_dir,
+        ["git", "show-ref", "--verify", "--quiet", f"refs/heads/{branch}"], cwd=working_dir, timeout=60,
     ).returncode == 0
 
 
 def _remote_branch_exists(working_dir: str, branch: str) -> bool:
     return subprocess.run(
-        ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=working_dir,
+        ["git", "show-ref", "--verify", "--quiet", f"refs/remotes/origin/{branch}"], cwd=working_dir, timeout=60,
     ).returncode == 0
 
 
@@ -272,7 +337,14 @@ def resolve_source(
         if source_branch:
             clone_args += ["--branch", source_branch]
         clone_args += [source, working_dir]
-        _run(clone_args)
+        # 10 minutes, not the default 5 -- a clone transfers real data
+        # (unlike almost every other git_tools call), so a large repo
+        # legitimately needs more headroom before a timeout is the right
+        # call instead of just "still working."
+        try:
+            _run(clone_args, timeout=600)
+        except RuntimeError as e:
+            raise _clarify_clone_error(e, github_token) from e
         return working_dir
 
     raise ValueError(f"Unknown source_type: {source_type!r} (expected 'local' or 'github')")
@@ -414,7 +486,15 @@ def push_branch(working_dir: str, branch_name: str, github_token: str | None = N
         raise RuntimeError("no 'origin' remote configured in this repo — nothing to push to")
 
     auth = _github_auth_args(github_token) if github_token else []
-    _run(["git", *auth, "push", "-u", "origin", f"HEAD:refs/heads/{branch_name}"], cwd=working_dir)
+    try:
+        # 10 minutes, matching clone's own reasoning -- pushing every
+        # commit this run made is real data transfer too.
+        _run(
+            ["git", *auth, "push", "-u", "origin", f"HEAD:refs/heads/{branch_name}"],
+            cwd=working_dir, timeout=600,
+        )
+    except RuntimeError as e:
+        raise _clarify_push_error(e) from e
 
 
 def commit_checkpoint_marker(working_dir: str) -> str:

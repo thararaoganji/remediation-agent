@@ -144,6 +144,15 @@ def _build_fix_llm_agent() -> LlmAgent:
     )
 
 
+# A raised exception from the LLM call (bad/revoked key, exhausted quota,
+# rate limit, dropped connection) almost always repeats identically on
+# every subsequent file too -- this many IN A ROW is treated as proof it's
+# a systemic problem, not coincidental per-file bad luck, and aborts the
+# whole run rather than burning through the entire remaining file queue
+# one confusing "model call failed" flag at a time.
+_LLM_SYSTEMIC_FAILURE_THRESHOLD = 3
+
+
 class FixLlmGateStep(BaseAgent):
     """Wraps an LlmAgent so a file whose issues were fully resolved by a
     deterministic pre-pass (if the embedding agent has one) skips the LLM
@@ -167,6 +176,7 @@ class FixLlmGateStep(BaseAgent):
         # rather than dropping it outright — dropping it would also drop
         # the output_key write that lands PROPOSED_DIFF in session.state.
         llm_call_error = None
+        systemic_failure = False
         try:
             async for event in self.llm_agent.run_async(ctx):
                 llm_call_error = _llm_error_message(event) or llm_call_error
@@ -174,11 +184,33 @@ class FixLlmGateStep(BaseAgent):
         except Exception as e:
             # A transient failure below ADK's own response handling (a
             # dropped connection, a timeout after tenacity's retries are
-            # exhausted, ...) raises out of the async generator instead of
-            # coming back as an error-bearing event. Treated the same way
-            # as a RECITATION block: this file's fix attempt failed, not
-            # the whole run.
+            # exhausted, an auth/quota rejection, ...) raises out of the
+            # async generator instead of coming back as an error-bearing
+            # event -- unlike a content-policy block (RECITATION/SAFETY),
+            # which means the call to the vendor actually succeeded, this
+            # means the call itself never completed, so it's tracked
+            # separately below as a systemic-failure signal.
             llm_call_error = f"{type(e).__name__}: {e}"
+            systemic_failure = True
+
+        if systemic_failure:
+            count = s.get(sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES, 0) + 1
+            s[sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES] = count
+            if count >= _LLM_SYSTEMIC_FAILURE_THRESHOLD:
+                raise RuntimeError(
+                    f"The LLM call failed {count} times in a row with the same kind of "
+                    f"error ({llm_call_error}). This looks like an invalid/expired API "
+                    "key, exhausted quota, or a connectivity problem -- not an issue "
+                    "with any specific file. Stopping the run now instead of flagging "
+                    "every remaining file individually."
+                )
+        else:
+            # A successful call OR a content-policy block both confirm the
+            # connection/auth/quota are actually fine -- only a raised
+            # exception is systemic-failure evidence, so only that
+            # increments the streak above; anything else resets it.
+            s[sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES] = 0
+
         # Consumed by the caller before it ever reads PROPOSED_DIFF -- see
         # _llm_error_message's docstring for why that read can't be
         # trusted when this is set.

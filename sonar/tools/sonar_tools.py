@@ -87,6 +87,16 @@ def _sonar_get(sonar_base_url: str, path: str, token: str, params: dict) -> dict
         params=params,
         timeout=30,
     )
+    if resp.status_code == 429:
+        # Checked before raise_for_status() (which would just raise a
+        # generic HTTPError indistinguishable from any other 4xx) --
+        # every caller of this function gets clear rate-limit handling
+        # for free rather than needing to special-case it individually.
+        # No retry/backoff here by design: this stops the run with a
+        # clear cause instead of silently stalling behind a retry loop.
+        retry_after = resp.headers.get("Retry-After")
+        wait = f" Retry after {retry_after}s." if retry_after else ""
+        raise RuntimeError(f"Sonar server at {sonar_base_url} rate-limited this request (HTTP 429).{wait}")
     resp.raise_for_status()
     return resp.json()
 
@@ -130,7 +140,22 @@ def check_project_analyzed(sonar_base_url: str, project_key: str, token: str) ->
             sonar_base_url, "/api/project_analyses/search", token, {"project": project_key}
         )
     except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 404:
+        status = e.response.status_code if e.response is not None else None
+        if status == 403:
+            # Distinct from 404 below when Sonar's edition/version DOES
+            # separate "doesn't exist" from "exists, but you can't see
+            # it" for this endpoint -- a valid, server-authenticated
+            # token can still lack Browse permission on one specific
+            # project. Not every Sonar version draws this distinction on
+            # every endpoint (some return 404 for both, same privacy
+            # reasoning GitHub uses for private repos -- see the 404
+            # branch's message below for that case).
+            raise SonarPreflightError(
+                f"SONAR_TOKEN doesn't have permission to view project '{project_key}' on "
+                f"{sonar_base_url}. Ask a Sonar admin to grant this token's user 'Browse' "
+                "permission on the project."
+            )
+        if status == 404:
             data = {"analyses": []}
         else:
             raise SonarPreflightError(f"Could not query Sonar server at {sonar_base_url}: {e}")
@@ -142,7 +167,11 @@ def check_project_analyzed(sonar_base_url: str, project_key: str, token: str) ->
     if not data.get("analyses"):
         raise SonarPreflightError(
             f"Project key '{project_key}' has no analysis on this Sonar server "
-            f"({sonar_base_url}) yet. Run an initial scan first — e.g. "
+            f"({sonar_base_url}) yet, or SONAR_TOKEN doesn't have permission to see it "
+            "(some Sonar versions return the same response for both, to avoid "
+            "confirming a project exists to a token that can't see it). If you expect "
+            "analyses to already exist, check the token's project permissions first. "
+            "Otherwise, run an initial scan — e.g. "
             f"`./mvnw sonar:sonar -Dsonar.projectKey={project_key} "
             f"-Dsonar.host.url={sonar_base_url} -Dsonar.token=<token>` (Maven) or "
             f"`./gradlew sonar -Dsonar.projectKey={project_key} "
@@ -192,51 +221,71 @@ def _normalize_issue(raw: dict, project_key: str) -> dict:
     newer per-softwareQuality `impacts` array (Clean Code taxonomy) — see
     _taxonomy_and_severity() above, which keys off whether
     'impact_severities' is present."""
-    text_range = raw.get("textRange") or {}
-    impacts = raw.get("impacts") or []
+    try:
+        text_range = raw.get("textRange") or {}
+        impacts = raw.get("impacts") or []
 
-    category, impact_severity = None, None
-    by_quality = {imp["softwareQuality"]: imp["severity"] for imp in impacts}
-    for quality in ("SECURITY", "RELIABILITY", "MAINTAINABILITY"):
-        if quality in by_quality:
-            category, impact_severity = quality, by_quality[quality]
-            break
-    if category is None:
-        category = _TYPE_TO_CATEGORY.get(raw.get("type"), raw.get("type"))
+        category, impact_severity = None, None
+        by_quality = {imp["softwareQuality"]: imp["severity"] for imp in impacts}
+        for quality in ("SECURITY", "RELIABILITY", "MAINTAINABILITY"):
+            if quality in by_quality:
+                category, impact_severity = quality, by_quality[quality]
+                break
+        if category is None:
+            category = _TYPE_TO_CATEGORY.get(raw.get("type"), raw.get("type"))
 
-    issue = {
-        "issue_key": raw["key"],
-        "rule_key": raw["rule"],
-        "component_path": _component_path(raw["component"], project_key),
-        "category": category,
-        "severity": impact_severity or raw.get("severity", ""),
-        "message": raw.get("message", ""),
-        "start_line": text_range.get("startLine", raw.get("line", 0)) or 0,
-        "end_line": text_range.get("endLine", raw.get("line", 0)) or 0,
-        "start_offset": text_range.get("startOffset", 0) or 0,
-        "end_offset": text_range.get("endOffset", 0) or 0,
-        "effort_minutes": _parse_effort_minutes(raw.get("effort") or raw.get("debt")),
-    }
+        issue = {
+            "issue_key": raw["key"],
+            "rule_key": raw["rule"],
+            "component_path": _component_path(raw["component"], project_key),
+            "category": category,
+            "severity": impact_severity or raw.get("severity", ""),
+            "message": raw.get("message", ""),
+            "start_line": text_range.get("startLine", raw.get("line", 0)) or 0,
+            "end_line": text_range.get("endLine", raw.get("line", 0)) or 0,
+            "start_offset": text_range.get("startOffset", 0) or 0,
+            "end_offset": text_range.get("endOffset", 0) or 0,
+            "effort_minutes": _parse_effort_minutes(raw.get("effort") or raw.get("debt")),
+        }
+    except KeyError as e:
+        # A raw traceback naming just the missing key ("KeyError: 'key'")
+        # is confusing on its own -- this names the endpoint's response
+        # shape as the actual cause (a Sonar version/API mismatch) instead
+        # of looking like a bug in this code, and includes what WAS in the
+        # response to make diagnosing the mismatch possible without
+        # reproducing it live.
+        raise RuntimeError(
+            f"Unexpected shape in a Sonar issue response for project '{project_key}' -- "
+            f"missing field {e}. This usually means a Sonar server version/API mismatch. "
+            f"Fields present on this item: {sorted(raw.keys())}"
+        ) from e
     if impact_severity is not None:
         issue["impact_severities"] = impact_severity
     return issue
 
 
 def _normalize_hotspot(raw: dict, project_key: str) -> dict:
-    return {
-        "issue_key": raw["key"],
-        "rule_key": raw.get("ruleKey", ""),
-        "component_path": _component_path(raw["component"], project_key),
-        "category": "HOTSPOT",
-        "severity": raw.get("vulnerabilityProbability", ""),
-        "vulnerability_probability": raw.get("vulnerabilityProbability"),
-        "message": raw.get("message", ""),
-        "start_line": raw.get("line", 0) or 0,
-        "end_line": raw.get("line", 0) or 0,
-        "start_offset": 0,
-        "end_offset": 0,
-        "effort_minutes": 0,
-    }
+    try:
+        return {
+            "issue_key": raw["key"],
+            "rule_key": raw.get("ruleKey", ""),
+            "component_path": _component_path(raw["component"], project_key),
+            "category": "HOTSPOT",
+            "severity": raw.get("vulnerabilityProbability", ""),
+            "vulnerability_probability": raw.get("vulnerabilityProbability"),
+            "message": raw.get("message", ""),
+            "start_line": raw.get("line", 0) or 0,
+            "end_line": raw.get("line", 0) or 0,
+            "start_offset": 0,
+            "end_offset": 0,
+            "effort_minutes": 0,
+        }
+    except KeyError as e:
+        raise RuntimeError(
+            f"Unexpected shape in a Sonar hotspot response for project '{project_key}' -- "
+            f"missing field {e}. This usually means a Sonar server version/API mismatch. "
+            f"Fields present on this item: {sorted(raw.keys())}"
+        ) from e
 
 
 def _paginate(sonar_base_url: str, path: str, token: str, params: dict, list_key: str) -> tuple[list[dict], dict]:
@@ -607,12 +656,19 @@ def fetch_uncovered_files(sonar_base_url: str, project_key: str, token: str, bra
     }
     if branch:
         params["branch"] = branch
-        
+
+    # A genuine "nothing uncovered" is just an empty components list below
+    # -- never an exception. Letting a real failure here (network blip,
+    # an endpoint-specific permission issue, a Sonar edition/version
+    # difference) fall through to `except: return []` would make the
+    # coverage agent silently report "0 uncovered files, nothing to do"
+    # instead of the run actually failing -- indistinguishable from a
+    # project that's genuinely fully covered.
     try:
         data = _sonar_get(sonar_base_url, "/api/measures/component_tree", token, params)
-    except Exception:
-        return []
-        
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to fetch coverage data from Sonar for '{project_key}': {e}") from e
+
     uncovered_files = []
     for comp in data.get("components", []):
         path = comp.get("path") or comp.get("name")
@@ -647,12 +703,14 @@ def fetch_duplicated_files(sonar_base_url: str, project_key: str, token: str, br
     }
     if branch:
         params["branch"] = branch
-        
+
+    # Same reasoning as fetch_uncovered_files above -- don't let a real
+    # fetch failure masquerade as "no duplicated files."
     try:
         data = _sonar_get(sonar_base_url, "/api/measures/component_tree", token, params)
-    except Exception:
-        return []
-        
+    except requests.exceptions.RequestException as e:
+        raise RuntimeError(f"Failed to fetch duplication data from Sonar for '{project_key}': {e}") from e
+
     duplicated_files = []
     for comp in data.get("components", []):
         path = comp.get("path") or comp.get("name")

@@ -2,6 +2,8 @@ import os
 import stat
 import subprocess
 
+import pytest
+
 from core.tools import git_tools
 
 
@@ -232,7 +234,7 @@ def test_resolve_source_local_checks_out_requested_branch_instead_of_default(git
 def test_resolve_source_github_clone_includes_branch_flag(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run(args, cwd=None, env=None):
+    def fake_run(args, cwd=None, env=None, **kwargs):
         captured["args"] = args
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
@@ -247,7 +249,7 @@ def test_resolve_source_github_clone_includes_branch_flag(monkeypatch, tmp_path)
 def test_resolve_source_github_clone_omits_branch_flag_when_not_given(monkeypatch, tmp_path):
     captured = {}
 
-    def fake_run(args, cwd=None, env=None):
+    def fake_run(args, cwd=None, env=None, **kwargs):
         captured["args"] = args
         return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
@@ -447,4 +449,110 @@ def test_run_failure_exception_message_is_sanitized(git_repo):
     assert "foo" not in exc_message
     assert "AUTHORIZATION: basic [REDACTED]" in exc_message
     assert "https://[REDACTED]@github.com/org/repo.git" in exc_message
+
+
+# --- _run: timeout -----------------------------------------------------------
+# Regression coverage for a real gap: no subprocess call in this module had
+# a timeout at all, so a stalled network operation (bad DNS, a dead
+# connection) hung forever with no exception ever firing -- the run just
+# sat "running" on the dashboard indefinitely.
+
+def test_run_raises_clear_error_on_timeout(monkeypatch, git_repo):
+    def fake_run(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out after"):
+        git_tools._run(["git", "status"], cwd=str(git_repo), timeout=5)
+
+
+def test_run_default_timeout_is_passed_to_subprocess(monkeypatch, git_repo):
+    captured = {}
+
+    def fake_run(*a, **kw):
+        captured["timeout"] = kw.get("timeout")
+        return subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    git_tools._run(["git", "status"], cwd=str(git_repo))
+    assert captured["timeout"] == 300
+
+
+# --- resolve_source (github): clearer clone error messages ------------------
+
+def test_clone_repository_not_found_mentions_access_possibility(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nremote: Repository not found.")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="doesn't have access to it"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path), github_token="tok")
+
+
+def test_clone_repository_not_found_without_token_suggests_private_repo(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nremote: Repository not found.")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="no GITHUB_TOKEN was provided"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+
+
+def test_clone_auth_failure_names_the_token_as_the_cause(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nfatal: Authentication failed for 'https://github.com/owner/repo.git/'")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="token is missing, expired, or invalid"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path), github_token="bad-token")
+
+
+def test_clone_network_failure_names_connectivity_as_the_cause(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nfatal: unable to access 'https://github.com/owner/repo.git/': Could not resolve host: github.com")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="Could not reach GitHub"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+
+
+def test_clone_unrecognized_error_passes_through_unchanged(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nsomething totally unexpected")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="something totally unexpected"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+
+
+# --- push_branch: clearer push error messages -------------------------------
+
+def test_push_permission_denied_names_write_access_as_the_cause(monkeypatch, git_repo):
+    _git(["remote", "add", "origin", "https://example.invalid/owner/repo.git"], str(git_repo))
+
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        if args[:2] == ["git", "remote"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="origin\n", stderr="")
+        raise RuntimeError("git command failed: git push ...\nremote: Permission to owner/repo.git denied to some-user.")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="not write \\(push\\) access"):
+        git_tools.push_branch(str(git_repo), "some-branch", github_token="tok")
+
+
+def test_push_branch_protection_names_protection_as_the_cause(monkeypatch, git_repo):
+    _git(["remote", "add", "origin", "https://example.invalid/owner/repo.git"], str(git_repo))
+
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        if args[:2] == ["git", "remote"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="origin\n", stderr="")
+        raise RuntimeError(
+            "git command failed: git push ...\n"
+            "remote: error: GH006: Protected branch update failed for refs/heads/main.\n"
+            "remote: error: Required status check \"ci\" is expected."
+        )
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="protected"):
+        git_tools.push_branch(str(git_repo), "some-branch")
 
