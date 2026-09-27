@@ -1,16 +1,18 @@
 """One-time bootstrap: creates the first admin user. There's no
 self-registration in this app, so this script (run once per environment,
-against whichever Firestore GCP_PROJECT_ID points at) is the only way an
-admin account comes into existence -- after that, admins create further
-accounts from the dashboard's Users page.
+against whichever store CLOUD_PROVIDER/GCP_PROJECT_ID or
+AZURE_COSMOS_ENDPOINT points at) is the only way an admin account comes
+into existence -- after that, admins create further accounts from the
+dashboard's Users page.
 
-Usage (from dashboard/backend/, with GCP_PROJECT_ID set):
+Usage (from dashboard/backend/, with CLOUD_PROVIDER and that provider's
+own required env vars set):
     python create_admin.py --email you@example.com --password 'a-real-password'
 """
 
 import argparse
 
-from app import auth, firestore_db
+from app import auth, storage
 
 
 def main() -> None:
@@ -20,11 +22,11 @@ def main() -> None:
     args = parser.parse_args()
     email = args.email.lower()  # matches login's/create_user's normalization
 
-    if firestore_db.get_doc("users", email) is not None:
+    if storage.get_doc("users", email) is not None:
         print(f"A user with email {email} already exists -- not overwriting it.")
         return
 
-    firestore_db.create_doc("users", {
+    storage.create_doc("users", {
         "email": email,
         "password_hash": auth.hash_password(args.password),
         "role": "admin",
