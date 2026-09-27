@@ -1,0 +1,50 @@
+# Single entrypoint for deploying both the dashboard and the agents, to both
+# clouds, for both environments. Supersedes the old deploy-gcp.yml (agent-only,
+# GCP-only, no Tofu) now that infra/ manages everything via OpenTofu -- see
+# infra/README.md.
+#
+# sandbox deploys automatically on every push to main that touches deployable
+# code. prod runs the identical reusable workflow against the `prod`
+# GitHub Environment, which pauses for its configured required-reviewer
+# approval before doing anything -- that gate lives in the repo's Environment
+# settings, not in this file.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent_techdebt/**"
+      - "agent_coverage/**"
+      - "agent_duplicate/**"
+      - "sonar/**"
+      - "core/**"
+      - "run_local.py"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "dashboard/**"
+      - "infra/**"
+      - ".github/workflows/deploy.yml"
+      - ".github/workflows/reusable-tofu-deploy.yml"
+      - ".github/actions/tofu-deploy/**"
+  workflow_dispatch: {}
+
+jobs:
+  deploy-sandbox:
+    permissions:
+      contents: read
+      id-token: write
+    environment: sandbox
+    uses: ./.github/workflows/reusable-tofu-deploy.yml
+    with:
+      environment: sandbox
+
+  deploy-prod:
+    needs: deploy-sandbox
+    permissions:
+      contents: read
+      id-token: write
+    environment: prod
+    uses: ./.github/workflows/reusable-tofu-deploy.yml
+    with:
+      environment: prod
