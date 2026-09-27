@@ -30,17 +30,23 @@ import os
 import subprocess
 import uuid
 
-from google.adk.agents import BaseAgent, SequentialAgent
+import pytest
+from google.adk.agents import BaseAgent, LlmAgent, SequentialAgent
 from google.adk.events import Event, EventActions
 from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
-from sonar_autofix_agent import agents, state_schema as sk
-from sonar_autofix_agent.adapters.base import BuildResult
-from sonar_autofix_agent.agents import (
-    ApplyAndVerifyStep, FetchPrioritizeStep, FixLlmGateStep, OuterExitCheck, RunFullVerifyStep,
-)
+from core import state_schema as sk
+from core.adapters.base import BuildResult
+from core.agents.checkpoint import RunFullVerifyStep
+from core.agents.fix_loop import _LLM_SYSTEMIC_FAILURE_THRESHOLD, FixLlmGateStep
+from core.agents.outer_loop import OuterExitCheck
+from agent_techdebt import fix as techdebt_fix
+from agent_techdebt import outer_loop as techdebt_outer_loop
+from agent_techdebt.fix import ApplyAndVerifyStep
+from agent_techdebt.outer_loop import FetchPrioritizeStep
+from core.agents import checkpoint as core_checkpoint
 
 APP_NAME = "test_app"
 
@@ -142,6 +148,101 @@ def _git_out(args, cwd):
     r = subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     return r.stdout.strip()
+
+
+# --- FixLlmGateStep: systemic-failure circuit breaker -----------------------
+# Regression coverage for a real gap: an invalid/revoked API key, exhausted
+# quota, or rate limit used to fail every file individually (each one
+# flagged "model call failed") and the run still completed as "succeeded"
+# after burning through the whole file queue. A raised exception (as
+# opposed to a content-policy block, which means the call actually
+# succeeded) now aborts the run after enough of them in a row.
+
+def _make_fix_llm_gate_step():
+    # Real LlmAgent, not a bare stub -- FixLlmGateStep.llm_agent is a
+    # pydantic-typed field (see _patch_llm_agent_class's docstring in
+    # test_multi_agent.py for why). Constructing one does no network call;
+    # only .run_async (monkeypatched per-test below) would.
+    return FixLlmGateStep(llm_agent=LlmAgent(name="fix_llm_agent", model="gemini-3.7-flash", instruction="x"))
+
+
+def _gate_step_state(**overrides):
+    state = {"temp:skip_llm_fix": False}
+    state.update(overrides)
+    return state
+
+
+def test_single_exception_flags_error_but_does_not_abort(monkeypatch):
+    async def _raise(self, ctx):
+        raise ConnectionError("connection reset")
+        yield  # pragma: no cover -- makes this an async generator
+
+    monkeypatch.setattr(LlmAgent, "run_async", _raise)
+    events, final_state = _run_agent(_make_fix_llm_gate_step(), _gate_step_state())
+
+    assert final_state["llm_call_error"] == "ConnectionError: connection reset"
+    assert final_state[sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES.removeprefix("temp:")] == 1
+
+
+def test_three_consecutive_exceptions_abort_the_run(monkeypatch):
+    async def _raise(self, ctx):
+        raise PermissionError("API_KEY_INVALID")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(LlmAgent, "run_async", _raise)
+
+    # Three separate per-file invocations, threading the counter through
+    # state exactly like three real files hitting the same broken key in a
+    # row would -- not one agent invoked three times in a single call.
+    state = _gate_step_state()
+    for _ in range(_LLM_SYSTEMIC_FAILURE_THRESHOLD - 1):
+        _, state = _run_agent(_make_fix_llm_gate_step(), state)
+        state = {"temp:skip_llm_fix": False, sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES: state[
+            sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES.removeprefix("temp:")
+        ]}
+
+    with pytest.raises(RuntimeError, match="3 times in a row"):
+        _run_agent(_make_fix_llm_gate_step(), state)
+
+
+def test_success_after_a_failure_resets_the_streak(monkeypatch):
+    async def _raise(self, ctx):
+        raise ConnectionError("timeout")
+        yield  # pragma: no cover
+
+    async def _succeed(self, ctx):
+        ctx.session.state[sk.PROPOSED_DIFF] = "```java\nfixed\n```"
+        yield Event(author=self.name, actions=EventActions(state_delta={sk.PROPOSED_DIFF: "```java\nfixed\n```"}))
+
+    monkeypatch.setattr(LlmAgent, "run_async", _raise)
+    _, state = _run_agent(_make_fix_llm_gate_step(), _gate_step_state())
+    assert state[sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES.removeprefix("temp:")] == 1
+
+    monkeypatch.setattr(LlmAgent, "run_async", _succeed)
+    carried = {"temp:skip_llm_fix": False, sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES: state[
+        sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES.removeprefix("temp:")
+    ]}
+    _, state = _run_agent(_make_fix_llm_gate_step(), carried)
+    assert state[sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES.removeprefix("temp:")] == 0
+
+
+def test_repeated_content_policy_blocks_never_abort(monkeypatch):
+    """A RECITATION/SAFETY block means the call to the vendor succeeded --
+    no matter how many files in a row get blocked, that's per-file model
+    behavior, not evidence of a broken key/quota/connection, so it must
+    never trip the same circuit breaker as a raised exception."""
+    async def _blocked(self, ctx):
+        yield Event(author=self.name, error_code="RECITATION", error_message=None)
+
+    monkeypatch.setattr(LlmAgent, "run_async", _blocked)
+
+    state = _gate_step_state()
+    for _ in range(_LLM_SYSTEMIC_FAILURE_THRESHOLD + 2):
+        _, state = _run_agent(_make_fix_llm_gate_step(), state)
+        state = {"temp:skip_llm_fix": False, sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES: state[
+            sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES.removeprefix("temp:")
+        ]}
+    assert state[sk.LLM_CONSECUTIVE_SYSTEMIC_FAILURES] == 0
 
 
 # --- ApplyAndVerifyStep: NO_SAFE_FIX on the first response -----------------
@@ -310,8 +411,8 @@ def test_retry_unresolved_issues_resolves_a_genuine_miss(tmp_path, monkeypatch):
     _git(["commit", "-m", "init"], str(repo))
 
     diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n class A {\n-  int x = 1;\n+  int x = 2;\n }\n"
-    monkeypatch.setattr(agents.fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(techdebt_fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {
@@ -336,10 +437,10 @@ def test_retry_unresolved_issues_declines_via_no_safe_fix(tmp_path, monkeypatch)
     _git(["commit", "-m", "init"], str(repo))
 
     monkeypatch.setattr(
-        agents.fix, "_build_fix_llm_agent",
+        techdebt_fix, "_build_fix_llm_agent",
         lambda: _stub_fix_llm_agent("NO_SAFE_FIX: needs a caller-side contract change"),
     )
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -365,8 +466,8 @@ def test_retry_unresolved_issues_reverts_on_compile_failure(tmp_path, monkeypatc
     _git(["commit", "-m", "init"], str(repo))
 
     diff = "--- a/A.java\n+++ b/A.java\n@@ -1,3 +1,3 @@\n class A {\n-  int x = 1;\n+  int x = 2;\n }\n"
-    monkeypatch.setattr(agents.fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=False))
+    monkeypatch.setattr(techdebt_fix, "_build_fix_llm_agent", lambda: _stub_fix_llm_agent(diff))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=False))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -398,10 +499,10 @@ def test_retry_unresolved_issues_captures_a_connection_error_instead_of_crashing
     _git(["commit", "-m", "init"], str(repo))
 
     monkeypatch.setattr(
-        agents.fix, "_build_fix_llm_agent",
+        techdebt_fix, "_build_fix_llm_agent",
         lambda: _stub_fix_llm_agent_raising(ConnectionResetError("Connection reset by peer")),
     )
-    monkeypatch.setattr(agents.fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
+    monkeypatch.setattr(techdebt_fix, "get_adapter", lambda *a, **kw: _fake_adapter(compile_passed=True))
 
     group = {"file": "A.java", "issues": [_issue(end_line=2)]}
     initial_state = {sk.LANGUAGE: "java-maven", sk.CURRENT_FILE_GROUP: group}
@@ -434,8 +535,8 @@ def test_fetch_prioritize_excludes_reverted_files(monkeypatch):
             "component_path": "Fresh.java", "issue_key": "f1", "rule_key": "java:S4684",
         },
     ]
-    monkeypatch.setattr(agents.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
-    monkeypatch.setattr(agents.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
 
     initial_state = {
         "sonar_base_url": "http://localhost:9000",
@@ -472,8 +573,8 @@ def test_fetch_prioritize_excludes_flagged_but_not_completed_files(monkeypatch):
             "component_path": "Fresh.java", "issue_key": "f1", "rule_key": "java:S4684",
         },
     ]
-    monkeypatch.setattr(agents.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
-    monkeypatch.setattr(agents.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "fetch_issues_and_hotspots", lambda *a, **kw: issues)
+    monkeypatch.setattr(techdebt_outer_loop.sonar_tools, "get_rule_description", lambda *a, **kw: "desc")
 
     initial_state = {
         "sonar_base_url": "http://localhost:9000",
@@ -576,7 +677,7 @@ def test_checkpoint_bisection_restores_innocent_files_reverted_along_the_way(tmp
     _git(["commit", "-m", "fix: sonar issues in B.java"], str(repo))
     sha_b = _git_out(["rev-parse", "HEAD"], str(repo))
 
-    monkeypatch.setattr(agents.checkpoint, "get_adapter", lambda *a, **kw: _GuiltyMarkerAdapter())
+    monkeypatch.setattr(core_checkpoint, "get_adapter", lambda *a, **kw: _GuiltyMarkerAdapter())
 
     batch = [
         {"file": "A.java", "commit_sha": sha_a, "issue_keys": ["ka"]},

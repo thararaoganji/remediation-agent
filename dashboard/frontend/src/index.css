@@ -1,0 +1,824 @@
+:root {
+  color-scheme: light dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+/* Explicit choice overrides "follow system" -- ThemeContext.jsx sets/clears
+   data-theme via setAttribute, not an inline style, so the CSP's style-src
+   doesn't need 'unsafe-inline' for this. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: light-dark(#f7f7f8, #17181c);
+  color: light-dark(#1a1a1a, #e8e8ea);
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.app-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 2rem;
+  padding: 0.75rem 1.5rem;
+  border-bottom: 1px solid light-dark(#ddd, #333);
+  background: light-dark(#fff, #1e1f24);
+}
+
+.app-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.app-header h1 {
+  font-size: 1.1rem;
+  margin: 0;
+}
+
+.header-user {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: light-dark(#555, #aaa);
+}
+
+.app-body {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-footer {
+  flex: none;
+  padding: 1rem 1.5rem;
+  border-top: 1px solid light-dark(#ddd, #333);
+  background: light-dark(#fff, #1e1f24);
+  color: light-dark(#888, #999);
+  font-size: 0.82rem;
+  text-align: center;
+}
+
+.sidebar {
+  flex: none;
+  width: 190px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 1rem 0.6rem;
+  border-right: 1px solid light-dark(#ddd, #333);
+  background: light-dark(#fff, #1e1f24);
+  box-sizing: border-box;
+  transition: width 0.15s ease;
+  overflow-y: auto;
+}
+
+.sidebar.collapsed {
+  width: 56px;
+}
+
+.sidebar a,
+.sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.55rem 0.6rem;
+  border-radius: 6px;
+  text-decoration: none;
+  color: light-dark(#444, #bbb);
+  font-weight: 500;
+  font-size: 0.92rem;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar-toggle {
+  justify-content: center;
+}
+
+.sidebar.collapsed a {
+  justify-content: center;
+}
+
+.sidebar a:hover,
+.sidebar-toggle:hover {
+  background: light-dark(#f0f2f7, #26272e);
+}
+
+.sidebar a.active {
+  background: light-dark(#e8f0fe, #1a2a4a);
+  color: #1a73e8;
+}
+
+.sidebar-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin: 0 0 0.3rem 0.75rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid light-dark(#e2e2e2, #333);
+}
+
+.sidebar-subnav a {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.sidebar-item-row {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.sidebar-item-row a {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-subnav-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: light-dark(#777, #999);
+  cursor: pointer;
+}
+
+.sidebar-subnav-toggle:hover {
+  background: light-dark(#f0f2f7, #26272e);
+}
+
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: light-dark(#666, #999);
+  margin-bottom: 0.75rem;
+}
+
+.breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.breadcrumb a {
+  color: light-dark(#1a73e8, #7aa8f0);
+  text-decoration: none;
+}
+
+.breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumb-item [aria-current='page'] {
+  color: light-dark(#333, #ddd);
+  font-weight: 600;
+}
+
+.breadcrumb-sep {
+  color: light-dark(#bbb, #555);
+}
+
+.sidebar-toggle {
+  margin-top: auto;
+  background: transparent;
+  border: none;
+  color: light-dark(#777, #999);
+  cursor: pointer;
+  font: inherit;
+}
+
+.app-main {
+  flex: 1;
+  min-width: 0;
+  width: 100%;
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 1.5rem 2rem;
+  box-sizing: border-box;
+  overflow-y: auto;
+}
+
+.status-badge {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+/* One class per status instead of an inline style= -- lets the CSP's
+   style-src skip 'unsafe-inline' entirely (see main.py's security-headers
+   middleware). */
+.status-badge.queued {
+  background-color: #9aa0a6;
+}
+
+.status-badge.running {
+  background-color: #1a73e8;
+}
+
+.status-badge.succeeded {
+  background-color: #188038;
+}
+
+.status-badge.failed {
+  background-color: #d93025;
+}
+
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-bottom: 1rem;
+}
+
+.data-table th,
+.data-table td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid light-dark(#e2e2e2, #333);
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.data-table td.empty-note {
+  text-align: left;
+}
+
+/* The Runs table has enough columns (Agent/Owner/Source/Branch/LLM/Status/
+   Created/Duration/Details) that forcing it into 100% width squeezes every
+   cell into an ugly mid-word wrap -- scroll horizontally instead of
+   wrapping. Scoped to this wrapper, not .data-table generally, so the
+   Connections tables keep wrapping long URLs onto multiple lines rather
+   than needing a scrollbar for a single long value. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll .data-table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.table-scroll .data-table th,
+.table-scroll .data-table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
+}
+
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  margin: 0.75rem 0 1.5rem;
+  font-size: 0.85rem;
+  color: light-dark(#555, #aaa);
+}
+
+.pagination button {
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+}
+
+.connections-section {
+  margin-bottom: 2.5rem;
+}
+
+.connections-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0 2.5rem;
+}
+
+@media (max-width: 900px) {
+  .connections-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Sonar Servers and GitHub Credentials sit side by side in equal-width grid
+   columns, but each <table> sizes its own columns independently based on
+   its own content (table-layout: auto's default) -- one table with a long
+   URL value squeezes its Name/Owner columns while the other table's don't,
+   so the two tables end up with different column proportions even though
+   they're the same width overall. Fixed, matching column widths make the
+   Name/Actions columns line up between the two tables regardless of how
+   long either table's URL values happen to be. */
+.connections-grid .data-table {
+  table-layout: fixed;
+}
+
+.connections-grid .data-table th:first-child,
+.connections-grid .data-table td:first-child {
+  width: 22%;
+}
+
+.connections-grid .data-table th:last-child,
+.connections-grid .data-table td:last-child {
+  width: 6.5rem;
+  white-space: nowrap;
+}
+
+/* Owner only exists as a 4th column for admins (:nth-child(3) that is ALSO
+   :nth-last-child(2) only matches when the table has exactly 4 columns) --
+   giving it a fixed, narrower share than the default 50/50 split leaves
+   more room for the actual URL column, which needs it more. */
+.connections-grid .data-table th:nth-child(3):nth-last-child(2),
+.connections-grid .data-table td:nth-child(3):nth-last-child(2) {
+  width: 18%;
+}
+
+.page-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.page-head-row h2 {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.vendor-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.button-link {
+  display: inline-block;
+  padding: 0.4rem 0.8rem;
+  border-radius: 6px;
+  background: #1a73e8;
+  color: #fff;
+  text-decoration: none;
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.icon-button-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  height: 2.25rem;
+  padding: 0;
+  border-radius: 50%;
+}
+
+.connection-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.icon-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border-radius: 6px;
+  background: transparent;
+  border: 1px solid light-dark(#ccc, #444);
+  color: light-dark(#444, #bbb);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.icon-action:hover {
+  background: light-dark(#f0f0f0, #2a2a2e);
+}
+
+.icon-action.danger {
+  background: transparent;
+  border-color: #d93025;
+  color: #d93025;
+}
+
+.icon-action.danger:hover {
+  background: #d93025;
+  color: #fff;
+}
+
+.add-form,
+.rotate-form,
+.new-run-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.new-run-form {
+  flex-direction: column;
+  align-items: stretch;
+  max-width: 480px;
+}
+
+.new-run-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+  font-weight: 500;
+}
+
+.inline-form {
+  background: light-dark(#f7f8fa, #26272e);
+  border: 1px solid light-dark(#e2e2e2, #3a3b42);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* Full-width, side-by-side layout -- overrides .new-run-form's own
+   narrow single-column stack (that's still right for New Run's longer
+   field set, but these inline forms only have 3-4 short fields, so
+   stacking them one per row wastes most of the available width). */
+.inline-form .new-run-form {
+  max-width: none;
+  margin: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  /* flex-start, not flex-end -- a field with a .field-note below its
+     input (e.g. Users' Password) is taller than its siblings, and
+     flex-end aligns by each item's BOTTOM edge, which pushes every
+     shorter field's input down out of line with the taller one's.
+     flex-start keeps every label-text+input pair level regardless of
+     what any one field has trailing underneath it. */
+  align-items: flex-start;
+}
+
+.inline-form .new-run-form label {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+
+/* The buttons have no label-text row above them, unlike every field --
+   this approximates one label's text-line-height + gap so they still
+   land level with the inputs under flex-start. */
+.inline-form .new-run-form .error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.inline-form-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  margin-top: 1.3rem;
+}
+
+.inline-form-actions button[type='button'] {
+  background: transparent;
+  color: light-dark(#444, #bbb);
+  border: 1px solid light-dark(#ccc, #444);
+}
+
+input,
+select,
+button {
+  font: inherit;
+  padding: 0.4rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid light-dark(#ccc, #444);
+}
+
+button {
+  cursor: pointer;
+  background: #1a73e8;
+  color: #fff;
+  border: none;
+}
+
+button.danger {
+  background: #d93025;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.error {
+  color: #d93025;
+}
+
+.warning {
+  color: #b06000;
+}
+
+.success {
+  color: #188038;
+  font-weight: 500;
+}
+
+.section-note,
+.empty-note,
+.field-note {
+  color: light-dark(#666, #999);
+  font-size: 0.85rem;
+}
+
+.run-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.25rem 1rem;
+}
+
+.run-meta dt {
+  font-weight: 600;
+}
+
+.run-meta dd {
+  margin: 0;
+}
+
+.final-report {
+  margin-top: 1.5rem;
+}
+
+.report-fields {
+  padding-left: 1.2rem;
+}
+
+.ratings-list {
+  display: inline-flex;
+  gap: 1rem;
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.event-transcript {
+  margin-top: 2rem;
+}
+
+.event-transcript h3 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.transcript-export-btn {
+  margin-left: auto;
+  font-size: 0.8rem;
+  padding: 0.25rem 0.6rem;
+}
+
+.transcript-live-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: #188038;
+  animation: transcript-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes transcript-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.transcript-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 32rem;
+  overflow-y: auto;
+  border: 1px solid light-dark(#e2e2e2, #333);
+  border-radius: 8px;
+}
+
+.transcript-event {
+  padding: 0.6rem 0.9rem;
+  border-bottom: 1px solid light-dark(#eee, #2a2a2e);
+}
+
+.transcript-event:last-child {
+  border-bottom: none;
+}
+
+.transcript-event-header {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  margin-bottom: 0.3rem;
+}
+
+.transcript-event-time {
+  color: light-dark(#888, #999);
+}
+
+.event-part {
+  margin: 0.25rem 0;
+  font-size: 0.9rem;
+}
+
+.event-part-call code,
+.event-part-response code {
+  background: light-dark(#f0f0f0, #2a2a2e);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  word-break: break-all;
+}
+
+.event-part-thought summary,
+.event-part-state summary {
+  cursor: pointer;
+  color: light-dark(#666, #999);
+}
+
+.dialog-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 100;
+}
+
+.dialog-box {
+  background: light-dark(#fff, #24252b);
+  border-radius: 10px;
+  padding: 1.25rem;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+}
+
+.dialog-box h3 {
+  margin: 0 0 0.5rem;
+}
+
+.dialog-box p {
+  margin: 0 0 1.25rem;
+  color: light-dark(#444, #ccc);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.form-page {
+  max-width: 480px;
+  margin-inline: auto;
+}
+
+.help-page {
+  max-width: 1280px;
+}
+
+.help-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+  gap: 0 3rem;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .help-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+.help-aside {
+  background: light-dark(#fff, #1e1f24);
+  border: 1px solid light-dark(#e2e2e2, #333);
+  border-radius: 10px;
+  padding: 0.25rem 1.25rem;
+}
+
+.help-aside section:first-child {
+  margin-top: 1.25rem;
+}
+
+.help-page section {
+  margin-top: 1.75rem;
+}
+
+.help-page h3 {
+  margin-bottom: 0.5rem;
+}
+
+.help-page p {
+  line-height: 1.6;
+  max-width: 72ch;
+}
+
+.help-page ul {
+  line-height: 1.6;
+  padding-left: 1.3rem;
+  max-width: 72ch;
+}
+
+.help-page li {
+  margin-bottom: 0.4rem;
+}
+
+.help-page code {
+  background: light-dark(#f0f0f0, #2a2a2e);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+
+.help-page pre {
+  background: light-dark(#f0f0f0, #24252b);
+  border-radius: 8px;
+  padding: 0.9rem 1rem;
+  overflow-x: auto;
+  max-width: 72ch;
+}
+
+.help-page pre code {
+  background: none;
+  padding: 0;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 70vh;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 380px;
+  padding: 2rem;
+  border: 1px solid light-dark(#e2e2e2, #333);
+  border-radius: 12px;
+  background: light-dark(#fff, #1e1f24);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+}
+
+.login-brand {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  text-align: center;
+  margin-bottom: 1.5rem;
+}
+
+.login-brand h1 {
+  margin: 0;
+  font-size: 1.25rem;
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 1rem;
+  font-size: 0.9rem;
+  color: light-dark(#444, #bbb);
+}

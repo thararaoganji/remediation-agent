@@ -1,0 +1,65 @@
+import { createContext, useContext, useEffect, useState } from 'react'
+
+const ThemeContext = createContext(null)
+const STORAGE_KEY = 'theme'
+
+function readStoredTheme() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY)
+    return value === 'light' || value === 'dark' ? value : null
+  } catch {
+    return null
+  }
+}
+
+function systemPrefersDark() {
+  return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
+}
+
+// Toggles a data-theme attribute (see index.css's :root[data-theme=...]
+// rules) rather than setting the `color-scheme` CSS property inline via
+// JS -- every color in index.css already goes through light-dark(...),
+// which resolves purely off the computed color-scheme value, and
+// attribute changes (unlike element.style.* assignments) aren't inline
+// styles, so the CSP's style-src can skip 'unsafe-inline' entirely.
+function applyTheme(theme) {
+  if (theme) {
+    document.documentElement.setAttribute('data-theme', theme)
+  } else {
+    document.documentElement.removeAttribute('data-theme')
+  }
+}
+
+export function ThemeProvider({ children }) {
+  // null = "follow system" (never explicitly chosen, or explicitly reset)
+  const [theme, setThemeState] = useState(readStoredTheme)
+
+  useEffect(() => {
+    applyTheme(theme)
+  }, [theme])
+
+  function setTheme(next) {
+    setThemeState(next)
+    try {
+      if (next) localStorage.setItem(STORAGE_KEY, next)
+      else localStorage.removeItem(STORAGE_KEY)
+    } catch {
+      // Nothing to persist to -- the choice still applies for this visit.
+    }
+  }
+
+  function toggleTheme() {
+    const effective = theme || (systemPrefersDark() ? 'dark' : 'light')
+    setTheme(effective === 'dark' ? 'light' : 'dark')
+  }
+
+  const effectiveTheme = theme || (systemPrefersDark() ? 'dark' : 'light')
+
+  return (
+    <ThemeContext.Provider value={{ theme, effectiveTheme, toggleTheme }}>{children}</ThemeContext.Provider>
+  )
+}
+
+export function useTheme() {
+  return useContext(ThemeContext)
+}

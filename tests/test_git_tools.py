@@ -2,7 +2,9 @@ import os
 import stat
 import subprocess
 
-from sonar_autofix_agent.tools import git_tools
+import pytest
+
+from core.tools import git_tools
 
 
 def _git(args, cwd):
@@ -42,6 +44,30 @@ def test_force_rmtree_handles_normal_writable_tree(tmp_path):
     (d / "sub" / "file.txt").write_text("x")
     git_tools._force_rmtree(str(d))
     assert not d.exists()
+
+
+# --- agent_workspace_root --------------------------------------------------
+
+def test_agent_workspace_root_gives_each_agent_its_own_sibling_dir():
+    roots = {
+        slug: git_tools.agent_workspace_root("/tmp/sonar_remediation_workspaces", slug)
+        for slug in ("techdebt", "coverage", "duplicate")
+    }
+    assert roots["techdebt"] == os.path.join("/tmp", "sonar_remediation_techdebt")
+    assert roots["coverage"] == os.path.join("/tmp", "sonar_remediation_coverage")
+    assert len(set(roots.values())) == 3  # no two agents share a workspace
+
+
+def test_agent_workspace_root_discards_the_base_basename():
+    # a stale WORKSPACE_ROOT from the old naming still resolves correctly --
+    # only the parent dir is kept, the basename is replaced.
+    assert git_tools.agent_workspace_root("/tmp/sonar_autofix_workspaces", "coverage") == \
+        git_tools.agent_workspace_root("/tmp/sonar_remediation_workspaces", "coverage")
+
+
+def test_agent_workspace_root_tolerates_a_trailing_slash():
+    assert git_tools.agent_workspace_root("/data/myws/", "duplicate") == \
+        os.path.join("/data", "sonar_remediation_duplicate")
 
 
 # --- _sanitize_branch_component ---------------------------------------------
@@ -134,6 +160,102 @@ def test_resolve_source_local_switches_off_a_stale_agent_branch(git_repo):
     current = _git(["branch", "--show-current"], working_dir).stdout.strip()
     assert current == "main"
     assert (git_repo / "A.java").read_text() == "original\n"
+
+
+# --- _checkout_source_branch / resolve_source(source_branch=...) -------------
+
+def test_checkout_source_branch_uses_existing_local_branch(git_repo):
+    (git_repo / "A.java").write_text("on main\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["checkout", "-b", "develop"], str(git_repo))
+    (git_repo / "A.java").write_text("on develop\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "develop work"], str(git_repo))
+    _git(["checkout", "main"], str(git_repo))
+
+    git_tools._checkout_source_branch(str(git_repo), "develop")
+    assert _git(["branch", "--show-current"], str(git_repo)).stdout.strip() == "develop"
+    assert (git_repo / "A.java").read_text() == "on develop\n"
+
+
+def test_checkout_source_branch_tracks_from_origin_when_only_remote_exists(tmp_path):
+    """Mirrors what a real GitHub-clone repo looks like: a branch that
+    exists as a remote-tracking ref (origin/develop) but was never
+    checked out locally -- resolve_source's local path must still be able
+    to reach it, not just branches that already have a local ref."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(["init", "-q", "-b", "main"], str(upstream))
+    _git(["config", "user.email", "t@example.com"], str(upstream))
+    _git(["config", "user.name", "T"], str(upstream))
+    (upstream / "A.java").write_text("on main\n")
+    _git(["add", "-A"], str(upstream))
+    _git(["commit", "-m", "init"], str(upstream))
+    _git(["checkout", "-b", "develop"], str(upstream))
+    (upstream / "A.java").write_text("on develop\n")
+    _git(["add", "-A"], str(upstream))
+    _git(["commit", "-m", "develop work"], str(upstream))
+
+    clone = tmp_path / "clone"
+    _git(["clone", "-q", str(upstream), str(clone)], str(tmp_path))  # clones main only, by default
+
+    git_tools._checkout_source_branch(str(clone), "develop")
+    assert _git(["branch", "--show-current"], str(clone)).stdout.strip() == "develop"
+    assert (clone / "A.java").read_text() == "on develop\n"
+
+
+def test_checkout_source_branch_raises_when_branch_not_found_anywhere(git_repo):
+    (git_repo / "A.java").write_text("x")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+
+    import pytest
+    with pytest.raises(RuntimeError, match="not found locally or on origin"):
+        git_tools._checkout_source_branch(str(git_repo), "does-not-exist")
+
+
+def test_resolve_source_local_checks_out_requested_branch_instead_of_default(git_repo):
+    (git_repo / "A.java").write_text("on main\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "init"], str(git_repo))
+    _git(["checkout", "-b", "release"], str(git_repo))
+    (git_repo / "A.java").write_text("on release\n")
+    _git(["add", "-A"], str(git_repo))
+    _git(["commit", "-m", "release work"], str(git_repo))
+    _git(["checkout", "main"], str(git_repo))
+
+    working_dir = git_tools.resolve_source(str(git_repo), "local", "/unused", source_branch="release")
+
+    assert _git(["branch", "--show-current"], working_dir).stdout.strip() == "release"
+    assert (git_repo / "A.java").read_text() == "on release\n"
+
+
+def test_resolve_source_github_clone_includes_branch_flag(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    git_tools.resolve_source(
+        "owner/repo", "github", str(tmp_path), source_branch="release/v2",
+    )
+    assert "--branch" in captured["args"]
+    assert captured["args"][captured["args"].index("--branch") + 1] == "release/v2"
+
+
+def test_resolve_source_github_clone_omits_branch_flag_when_not_given(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        captured["args"] = args
+        return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+    assert "--branch" not in captured["args"]
 
 
 # --- create_branch -----------------------------------------------------------
@@ -327,4 +449,110 @@ def test_run_failure_exception_message_is_sanitized(git_repo):
     assert "foo" not in exc_message
     assert "AUTHORIZATION: basic [REDACTED]" in exc_message
     assert "https://[REDACTED]@github.com/org/repo.git" in exc_message
+
+
+# --- _run: timeout -----------------------------------------------------------
+# Regression coverage for a real gap: no subprocess call in this module had
+# a timeout at all, so a stalled network operation (bad DNS, a dead
+# connection) hung forever with no exception ever firing -- the run just
+# sat "running" on the dashboard indefinitely.
+
+def test_run_raises_clear_error_on_timeout(monkeypatch, git_repo):
+    def fake_run(*a, **kw):
+        raise subprocess.TimeoutExpired(cmd=a[0], timeout=kw.get("timeout"))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="timed out after"):
+        git_tools._run(["git", "status"], cwd=str(git_repo), timeout=5)
+
+
+def test_run_default_timeout_is_passed_to_subprocess(monkeypatch, git_repo):
+    captured = {}
+
+    def fake_run(*a, **kw):
+        captured["timeout"] = kw.get("timeout")
+        return subprocess.CompletedProcess(args=a[0], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    git_tools._run(["git", "status"], cwd=str(git_repo))
+    assert captured["timeout"] == 300
+
+
+# --- resolve_source (github): clearer clone error messages ------------------
+
+def test_clone_repository_not_found_mentions_access_possibility(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nremote: Repository not found.")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="doesn't have access to it"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path), github_token="tok")
+
+
+def test_clone_repository_not_found_without_token_suggests_private_repo(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nremote: Repository not found.")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="no GITHUB_TOKEN was provided"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+
+
+def test_clone_auth_failure_names_the_token_as_the_cause(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nfatal: Authentication failed for 'https://github.com/owner/repo.git/'")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="token is missing, expired, or invalid"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path), github_token="bad-token")
+
+
+def test_clone_network_failure_names_connectivity_as_the_cause(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nfatal: unable to access 'https://github.com/owner/repo.git/': Could not resolve host: github.com")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="Could not reach GitHub"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+
+
+def test_clone_unrecognized_error_passes_through_unchanged(monkeypatch, tmp_path):
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        raise RuntimeError("git command failed: git clone ...\nsomething totally unexpected")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="something totally unexpected"):
+        git_tools.resolve_source("owner/repo", "github", str(tmp_path))
+
+
+# --- push_branch: clearer push error messages -------------------------------
+
+def test_push_permission_denied_names_write_access_as_the_cause(monkeypatch, git_repo):
+    _git(["remote", "add", "origin", "https://example.invalid/owner/repo.git"], str(git_repo))
+
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        if args[:2] == ["git", "remote"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="origin\n", stderr="")
+        raise RuntimeError("git command failed: git push ...\nremote: Permission to owner/repo.git denied to some-user.")
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="not write \\(push\\) access"):
+        git_tools.push_branch(str(git_repo), "some-branch", github_token="tok")
+
+
+def test_push_branch_protection_names_protection_as_the_cause(monkeypatch, git_repo):
+    _git(["remote", "add", "origin", "https://example.invalid/owner/repo.git"], str(git_repo))
+
+    def fake_run(args, cwd=None, env=None, **kwargs):
+        if args[:2] == ["git", "remote"]:
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="origin\n", stderr="")
+        raise RuntimeError(
+            "git command failed: git push ...\n"
+            "remote: error: GH006: Protected branch update failed for refs/heads/main.\n"
+            "remote: error: Required status check \"ci\" is expected."
+        )
+
+    monkeypatch.setattr(git_tools, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="protected"):
+        git_tools.push_branch(str(git_repo), "some-branch")
 

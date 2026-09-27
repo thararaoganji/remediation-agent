@@ -1,0 +1,87 @@
+# Builds the dashboard and agent images once, pushes each to BOTH GCP
+# Artifact Registry and Azure ACR tagged with the git SHA, then hands those
+# exact image refs to the tofu-deploy composite action. The caller job sets
+# `environment:` (sandbox or prod) -- that's what makes `vars.*` below
+# resolve to that environment's own project/registry/etc, and what makes
+# prod's GitHub Environment protection rule (required reviewers) pause this
+# workflow before it starts, same as any other job targeting that
+# Environment.
+name: Reusable - Tofu deploy
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # required for keyless auth via WIF/OIDC on both clouds
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Auth to Azure (federated credential)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Configure Docker for GCP Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
+      - name: Set image tags
+        id: images
+        run: |
+          SHA="${{ github.sha }}"
+          GCP_REPO="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/sonar-remediation-repo"
+          AZ_REPO="${{ vars.AZURE_ACR_NAME }}.azurecr.io"
+          echo "gcp_dashboard=${GCP_REPO}/sonar-dashboard:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "gcp_agent=${GCP_REPO}/sonar-remediation-agent:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "azure_dashboard=${AZ_REPO}/sonar-dashboard:${SHA}" >> "$GITHUB_OUTPUT"
+          echo "azure_agent=${AZ_REPO}/sonar-remediation-agent:${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push agent image
+        run: |
+          docker build -f Dockerfile \
+            -t "${{ steps.images.outputs.gcp_agent }}" \
+            -t "${{ steps.images.outputs.azure_agent }}" \
+            .
+          docker push "${{ steps.images.outputs.gcp_agent }}"
+          docker push "${{ steps.images.outputs.azure_agent }}"
+
+      - name: Build and push dashboard image
+        run: |
+          docker build -f dashboard/Dockerfile \
+            -t "${{ steps.images.outputs.gcp_dashboard }}" \
+            -t "${{ steps.images.outputs.azure_dashboard }}" \
+            .
+          docker push "${{ steps.images.outputs.gcp_dashboard }}"
+          docker push "${{ steps.images.outputs.azure_dashboard }}"
+
+      - name: Deploy with OpenTofu
+        uses: ./.github/actions/tofu-deploy
+        with:
+          environment: ${{ inputs.environment }}
+          gcp_dashboard_image: ${{ steps.images.outputs.gcp_dashboard }}
+          gcp_agent_image: ${{ steps.images.outputs.gcp_agent }}
+          azure_dashboard_image: ${{ steps.images.outputs.azure_dashboard }}
+          azure_agent_image: ${{ steps.images.outputs.azure_agent }}

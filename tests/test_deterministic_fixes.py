@@ -6,7 +6,7 @@ transform when the flagged code matches its expected shape, and decline
 test below checks one specific shape or one specific decline case.
 """
 
-from sonar_autofix_agent.tools import deterministic_fixes as df
+from sonar.tools import deterministic_fixes as df
 
 
 def issue(rule_key: str, start_line: int, end_line: int, key: str = "k1") -> dict:

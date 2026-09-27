@@ -1,0 +1,293 @@
+terraform {
+  required_providers {
+    google = {
+      source  = "hashicorp/google"
+      version = "~> 6.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
+  }
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
+}
+
+# --- Artifact Registry -------------------------------------------------------
+
+resource "google_artifact_registry_repository" "repo" {
+  project       = var.project_id
+  location      = var.region
+  repository_id = "sonar-remediation-repo"
+  format        = "DOCKER"
+  labels        = { environment = var.environment }
+}
+
+# --- Dashboard service account + IAM -----------------------------------------
+# Exactly the 4 roles bound live today (roles/secretmanager.admin
+# supersedes secretAccessor, but both are kept -- see the security-review
+# fix earlier this session that added .admin without removing the
+# original .secretAccessor grant; matched here rather than "cleaning it
+# up" so prod's import is a true no-op).
+
+resource "google_service_account" "dashboard_sa" {
+  project      = var.project_id
+  account_id   = "sonar-dashboard-sa"
+  display_name = "Sonar Dashboard backend"
+}
+
+resource "google_project_iam_member" "dashboard_sa_roles" {
+  for_each = toset([
+    "roles/datastore.user",
+    "roles/run.developer",
+    "roles/secretmanager.admin",
+    "roles/secretmanager.secretAccessor",
+  ])
+  project = var.project_id
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.dashboard_sa.email}"
+}
+
+# --- Firestore -----------------------------------------------------------
+
+resource "google_firestore_database" "default" {
+  project     = var.project_id
+  name        = "(default)"
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
+}
+
+# --- Secrets ---------------------------------------------------------------
+# manage_session_secret_version is false for prod (imported secret; a real
+# signing key already backs every live session) and true for sandbox
+# (fresh secret, nothing depends on it yet). google-api-key is the same
+# "unused fallback" the Cloud Run Jobs' own baked-in env still references
+# (see cloud_run.py's docstring -- the dashboard's per-execution override
+# is what every real run actually uses) but the resource must still exist
+# for the job definitions below to apply cleanly.
+
+resource "google_secret_manager_secret" "dashboard_session_secret" {
+  project   = var.project_id
+  secret_id = "dashboard-session-secret"
+  labels    = { environment = var.environment }
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "session_secret" {
+  count   = var.manage_session_secret_version ? 1 : 0
+  length  = 64
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "dashboard_session_secret" {
+  count       = var.manage_session_secret_version ? 1 : 0
+  secret      = google_secret_manager_secret.dashboard_session_secret.id
+  secret_data = random_password.session_secret[0].result
+}
+
+resource "google_secret_manager_secret" "google_api_key" {
+  project   = var.project_id
+  secret_id = "google-api-key"
+  labels    = { environment = var.environment }
+  replication {
+    auto {}
+  }
+}
+
+resource "random_password" "google_api_key_placeholder" {
+  count   = var.manage_session_secret_version ? 1 : 0
+  length  = 32
+  special = false
+}
+
+resource "google_secret_manager_secret_version" "google_api_key" {
+  count  = var.manage_session_secret_version ? 1 : 0
+  secret = google_secret_manager_secret.google_api_key.id
+  # Placeholder only -- this fallback path is never actually read by a
+  # real run (the dashboard always overrides it per-execution). A sandbox
+  # environment that DOES want to exercise this fallback path directly
+  # should set a real version by hand afterward, same as prod's real key
+  # was set outside Tofu originally.
+  secret_data = var.manage_session_secret_version ? random_password.google_api_key_placeholder[0].result : null
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+# --- Cloud Run Jobs (the three agents) ---------------------------------------
+
+resource "google_cloud_run_v2_job" "agent" {
+  for_each = toset(["techdebt", "coverage", "duplicate"])
+  project  = var.project_id
+  name     = "sonar-remediation-${each.key}-job"
+  location = var.region
+  labels   = { environment = var.environment }
+
+  template {
+    task_count = 1
+    template {
+      max_retries = 0
+      timeout     = "3600s"
+      containers {
+        image = var.agent_image
+        resources {
+          limits = {
+            cpu    = "2"
+            memory = "2Gi"
+          }
+        }
+        env {
+          name  = "AGENT_TYPE"
+          value = each.key
+        }
+        # Baked-in fallback values -- every real run overrides these
+        # per-execution from runs.py's create_run(); see cloud_run.py's
+        # module docstring. Kept only so the job has a valid definition.
+        env {
+          name  = "SONAR_BASE_URL"
+          value = "http://placeholder:9000"
+        }
+        env {
+          name  = "GITHUB_REPO"
+          value = "placeholder/placeholder"
+        }
+        env {
+          name  = "LANGUAGE"
+          value = "java"
+        }
+        env {
+          name  = "CE_EDITION"
+          value = "true"
+        }
+        env {
+          name = "GOOGLE_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.google_api_key.secret_id
+              version = "latest"
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+# --- Cloud Run Service (dashboard) -------------------------------------------
+
+resource "google_cloud_run_v2_service" "dashboard" {
+  project  = var.project_id
+  name     = "sonar-dashboard"
+  location = var.region
+  labels   = { environment = var.environment }
+
+  scaling {
+    min_instance_count = 0
+  }
+
+  template {
+    service_account = google_service_account.dashboard_sa.email
+    containers {
+      image = var.dashboard_image
+      ports {
+        name           = "http1"
+        container_port = 8080
+      }
+      resources {
+        cpu_idle          = true
+        startup_cpu_boost = true
+        limits = {
+          cpu    = "1"
+          memory = "512Mi"
+        }
+      }
+      env {
+        name  = "GCP_PROJECT_ID"
+        value = var.project_id
+      }
+      env {
+        name  = "GCP_REGION"
+        value = var.region
+      }
+      env {
+        name  = "COOKIE_SECURE"
+        value = "true"
+      }
+      env {
+        name = "SESSION_SECRET_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.dashboard_session_secret.secret_id
+            version = "latest"
+          }
+        }
+      }
+    }
+  }
+}
+
+# Public HTTPS access -- the app's own login/session system is the access
+# control (see main.py's SecurityHeadersMiddleware docstring and the OWASP
+# review earlier this session), same as any normal internet-facing web app.
+resource "google_cloud_run_v2_service_iam_member" "public" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.dashboard.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+# --- GitHub Actions OIDC (Workload Identity Federation) ----------------------
+# Matches docs/GCP_DEPLOYMENT.md Section 4's design exactly -- that doc was
+# accurate, it just documented steps nobody had actually run yet (confirmed
+# live: no WIF pool existed on GCP before this module). Keyless: GitHub's
+# own OIDC token is exchanged for short-lived credentials, no static
+# service-account key ever stored in GitHub.
+
+resource "google_iam_workload_identity_pool" "github" {
+  project                   = var.project_id
+  workload_identity_pool_id = "github-pool-${var.environment}"
+  display_name              = "GitHub Actions (${var.environment})"
+}
+
+resource "google_iam_workload_identity_pool_provider" "github" {
+  project                            = var.project_id
+  workload_identity_pool_id          = google_iam_workload_identity_pool.github.workload_identity_pool_id
+  workload_identity_pool_provider_id = "github-provider"
+  display_name                       = "GitHub Actions"
+  attribute_mapping = {
+    "google.subject"       = "assertion.sub"
+    "attribute.repository" = "assertion.repository"
+  }
+  attribute_condition = "assertion.repository == '${var.github_repo}'"
+  oidc {
+    issuer_uri = "https://token.actions.githubusercontent.com"
+  }
+}
+
+resource "google_service_account" "github_deployer" {
+  project      = var.project_id
+  account_id   = "github-deployer"
+  display_name = "GitHub Actions deployer (${var.environment})"
+}
+
+resource "google_project_iam_member" "github_deployer_roles" {
+  for_each = toset([
+    "roles/run.developer",
+    "roles/artifactregistry.writer",
+    "roles/iam.serviceAccountUser",
+  ])
+  project = var.project_id
+  role    = each.key
+  member  = "serviceAccount:${google_service_account.github_deployer.email}"
+}
+
+resource "google_service_account_iam_member" "github_deployer_wif" {
+  service_account_id = google_service_account.github_deployer.name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/projects/${data.google_project.current.number}/locations/global/workloadIdentityPools/${google_iam_workload_identity_pool.github.workload_identity_pool_id}/attribute.repository/${var.github_repo}"
+}

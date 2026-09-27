@@ -24,6 +24,27 @@ services:
       SONAR_JDBC_URL: jdbc:postgresql://db:5432/sonar
       SONAR_JDBC_USERNAME: sonar
       SONAR_JDBC_PASSWORD: ${SONAR_DB_PASSWORD}
+      # Heap caps for a smaller VM (e.g. e2-medium, 4GB total) where the
+      # three JVMs below (SonarQube's own defaults assume ~8GB+) plus
+      # Postgres in its own container would otherwise be a real
+      # OOM-kill/crash-loop risk, particularly the bundled Elasticsearch
+      # ("search") process. ~1.5GB of heap across all three, leaving
+      # headroom for JVM overhead (metaspace, thread stacks, direct
+      # memory -- actual RSS per process runs higher than -Xmx alone) plus
+      # Postgres plus the OS/Docker itself. Trades scan throughput/
+      # concurrency for fitting into less RAM -- raise or remove these if
+      # you resize up to e2-standard-2 or larger.
+      #
+      # Deliberately SONAR_*_JAVAOPTS (replaces the default JVM args), NOT
+      # SONAR_WEB_JAVAADDITIONALOPTS/SONAR_CE_JAVAADDITIONALOPTS -- those
+      # two carry this image's own baked-in `-javaagent:...` flags for the
+      # community-branch-plugin (see the module comment above); setting
+      # JAVAOPTS instead leaves them completely untouched, so branch
+      # analysis keeps working. No ADDITIONALOPTS variant exists for
+      # SEARCH -- the plugin doesn't need to patch that process.
+      SONAR_SEARCH_JAVAOPTS: "-Xmx512m -Xms512m"
+      SONAR_WEB_JAVAOPTS: "-Xmx512m -Xms256m"
+      SONAR_CE_JAVAOPTS: "-Xmx512m -Xms256m"
     ports:
       - "9000:9000"
     volumes:

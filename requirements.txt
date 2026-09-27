@@ -1,3 +1,26 @@
-google-adk
-python-dotenv
-requests
+# Versions pinned to what's actually installed/tested (`pip freeze`) --
+# OWASP A06 (vulnerable/outdated components): an unpinned requirements.txt
+# means every build silently gets whatever's newest at build time, so a
+# breaking or compromised release reaches production before anyone chose
+# to take it. Bump deliberately (re-run the test suite, update the pin)
+# rather than automatically.
+#
+# [extensions] pulls in litellm -- needed for core/llm_config.py's LiteLlm
+# wrapper, which is how non-Google vendors (OpenAI, Anthropic) get called;
+# plain google-adk only talks to Gemini natively.
+google-adk[extensions]==2.6.1
+python-dotenv==1.2.2
+requests==2.34.2
+# Optional dashboard run-status reporting (core/tools/run_status.py) --
+# a no-op everywhere RUN_ID isn't set, so this has zero effect on a normal
+# run. Pulls in a newer opentelemetry-api than google-adk's own pinned
+# range, which pip flags as a resolver conflict -- confirmed harmless (the
+# full test suite passes either way), not something to "fix" by pinning.
+# Both cloud providers' SDKs are installed regardless of which one a given
+# deployment actually uses (core/tools/run_status.py picks at runtime via
+# CLOUD_PROVIDER) -- same one-image-either-cloud approach as the dashboard
+# backend's requirements.txt, so the agent image doesn't need building
+# twice. Both are try/except-imported and no-op if genuinely absent.
+google-cloud-firestore==2.31.0
+azure-cosmos==4.17.1
+azure-identity==1.25.3

@@ -1,8 +1,8 @@
 import pytest
 import requests
 
-from sonar_autofix_agent.adapters.base import SonarPreflightError
-from sonar_autofix_agent.tools import sonar_tools
+from sonar.adapters import SonarPreflightError
+from sonar.tools import sonar_tools
 
 
 # --- _parse_effort_minutes ---------------------------------------------------
@@ -12,6 +12,25 @@ from sonar_autofix_agent.tools import sonar_tools
 ])
 def test_parse_effort_minutes(effort, expected):
     assert sonar_tools._parse_effort_minutes(effort) == expected
+
+
+# --- dashboard_url ------------------------------------------------------
+
+def test_dashboard_url_builds_expected_link():
+    url = sonar_tools.dashboard_url("http://sonar.example.com", "my:proj", "my-proj_agent_20260101_120000")
+    assert url == (
+        "http://sonar.example.com/dashboard?id=my%3Aproj&branch=my-proj_agent_20260101_120000"
+    )
+
+
+def test_dashboard_url_strips_trailing_slash_on_base():
+    url = sonar_tools.dashboard_url("http://sonar.example.com/", "proj", "main")
+    assert url == "http://sonar.example.com/dashboard?id=proj&branch=main"
+
+
+def test_dashboard_url_encodes_special_characters_in_branch():
+    url = sonar_tools.dashboard_url("http://sonar", "proj", "feature/foo bar")
+    assert url == "http://sonar/dashboard?id=proj&branch=feature%2Ffoo%20bar"
 
 
 # --- _component_path ---------------------------------------------------------
@@ -147,9 +166,10 @@ def test_partition_ranks_all_four_categories_in_order():
 # --- validate_connection / check_project_analyzed (mocked HTTP) ------------
 
 class _FakeResponse:
-    def __init__(self, json_data, status_code=200):
+    def __init__(self, json_data, status_code=200, headers=None):
         self._json = json_data
         self.status_code = status_code
+        self.headers = headers or {}
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -195,6 +215,53 @@ def test_check_project_analyzed_empty_analyses_raises(monkeypatch):
     monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"analyses": []}))
     with pytest.raises(SonarPreflightError, match="no analysis"):
         sonar_tools.check_project_analyzed("http://localhost:9000", "my-key", "token")
+
+
+def test_check_project_analyzed_403_raises_permission_error(monkeypatch):
+    """A valid, server-authenticated token can still lack Browse permission
+    on one specific project -- this must be reported as a permission
+    problem, not the misleading "run an initial scan" message a 404 gets."""
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({}, status_code=403))
+    with pytest.raises(SonarPreflightError, match="permission"):
+        sonar_tools.check_project_analyzed("http://localhost:9000", "my-key", "token")
+
+
+def test_check_project_analyzed_404_message_mentions_permission_too(monkeypatch):
+    """Some Sonar versions/endpoints return 404, not 403, for a permission
+    problem too (same not-found-vs-no-access ambiguity GitHub has) -- the
+    message must not claim with false confidence that this is definitely
+    "never analyzed" when it could just as well be a permission issue."""
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({}, status_code=404))
+    with pytest.raises(SonarPreflightError, match="permission"):
+        sonar_tools.check_project_analyzed("http://localhost:9000", "my-key", "token")
+
+
+# --- _sonar_get: rate limiting ----------------------------------------------
+
+def test_sonar_get_429_raises_clear_rate_limit_error(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({}, status_code=429))
+    with pytest.raises(RuntimeError, match="rate-limited"):
+        sonar_tools._sonar_get("http://localhost:9000", "/api/issues/search", "token", {})
+
+
+def test_sonar_get_429_includes_retry_after_when_present(monkeypatch):
+    monkeypatch.setattr(
+        requests, "get", lambda *a, **kw: _FakeResponse({}, status_code=429, headers={"Retry-After": "30"})
+    )
+    with pytest.raises(RuntimeError, match="Retry after 30s"):
+        sonar_tools._sonar_get("http://localhost:9000", "/api/issues/search", "token", {})
+
+
+# --- _normalize_issue / _normalize_hotspot: malformed responses ------------
+
+def test_normalize_issue_missing_key_raises_clear_error():
+    with pytest.raises(RuntimeError, match="missing field 'key'"):
+        sonar_tools._normalize_issue({"rule": "java:S1234", "component": "proj:A.java"}, "proj")
+
+
+def test_normalize_hotspot_missing_component_raises_clear_error():
+    with pytest.raises(RuntimeError, match="missing field 'component'"):
+        sonar_tools._normalize_hotspot({"key": "h1"}, "proj")
 
 
 # --- get_maintainability_debt_ratio ------------------------------------
@@ -253,3 +320,40 @@ def test_branch_exists_false_when_branch_never_got_created(monkeypatch):
     assert sonar_tools.branch_exists(
         "http://localhost:9000", "my-key", "my-project_agent_20260101_000000", "token",
     ) is False
+
+
+# --- fetch_uncovered_files / fetch_duplicated_files -------------------------
+# Regression coverage for a real bug: both used to swallow every exception
+# from the component_tree fetch and return [], making a genuine Sonar
+# failure (network blip, permissions, schema drift) indistinguishable from
+# "this project has 100% coverage / zero duplication." A real failure must
+# now raise, not silently report "nothing to do."
+
+def test_fetch_uncovered_files_empty_components_is_not_an_error(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"components": []}))
+    assert sonar_tools.fetch_uncovered_files("http://localhost:9000", "my-key", "token", None) == []
+
+
+def test_fetch_uncovered_files_raises_on_fetch_failure(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({}, status_code=500))
+    with pytest.raises(RuntimeError, match="Failed to fetch coverage data"):
+        sonar_tools.fetch_uncovered_files("http://localhost:9000", "my-key", "token", None)
+
+
+def test_fetch_uncovered_files_raises_on_connection_error(monkeypatch):
+    def raise_conn_error(*a, **kw):
+        raise requests.exceptions.ConnectionError("refused")
+    monkeypatch.setattr(requests, "get", raise_conn_error)
+    with pytest.raises(RuntimeError, match="Failed to fetch coverage data"):
+        sonar_tools.fetch_uncovered_files("http://localhost:9000", "my-key", "token", None)
+
+
+def test_fetch_duplicated_files_empty_components_is_not_an_error(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({"components": []}))
+    assert sonar_tools.fetch_duplicated_files("http://localhost:9000", "my-key", "token", None) == []
+
+
+def test_fetch_duplicated_files_raises_on_fetch_failure(monkeypatch):
+    monkeypatch.setattr(requests, "get", lambda *a, **kw: _FakeResponse({}, status_code=500))
+    with pytest.raises(RuntimeError, match="Failed to fetch duplication data"):
+        sonar_tools.fetch_duplicated_files("http://localhost:9000", "my-key", "token", None)
