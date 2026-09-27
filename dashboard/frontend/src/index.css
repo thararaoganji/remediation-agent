@@ -3,6 +3,17 @@
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
 }
 
+/* Explicit choice overrides "follow system" -- ThemeContext.jsx sets/clears
+   data-theme via setAttribute, not an inline style, so the CSP's style-src
+   doesn't need 'unsafe-inline' for this. */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
 html,
 body,
 #root {
@@ -123,6 +134,85 @@ body {
   color: #1a73e8;
 }
 
+.sidebar-subnav {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  margin: 0 0 0.3rem 0.75rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid light-dark(#e2e2e2, #333);
+}
+
+.sidebar-subnav a {
+  padding: 0.4rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 400;
+}
+
+.sidebar-item-row {
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+}
+
+.sidebar-item-row a {
+  flex: 1;
+  min-width: 0;
+}
+
+.sidebar-subnav-toggle {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: light-dark(#777, #999);
+  cursor: pointer;
+}
+
+.sidebar-subnav-toggle:hover {
+  background: light-dark(#f0f2f7, #26272e);
+}
+
+.breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: light-dark(#666, #999);
+  margin-bottom: 0.75rem;
+}
+
+.breadcrumb-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.breadcrumb a {
+  color: light-dark(#1a73e8, #7aa8f0);
+  text-decoration: none;
+}
+
+.breadcrumb a:hover {
+  text-decoration: underline;
+}
+
+.breadcrumb-item [aria-current='page'] {
+  color: light-dark(#333, #ddd);
+  font-weight: 600;
+}
+
+.breadcrumb-sep {
+  color: light-dark(#bbb, #555);
+}
+
 .sidebar-toggle {
   margin-top: auto;
   background: transparent;
@@ -153,6 +243,25 @@ body {
   text-transform: uppercase;
 }
 
+/* One class per status instead of an inline style= -- lets the CSP's
+   style-src skip 'unsafe-inline' entirely (see main.py's security-headers
+   middleware). */
+.status-badge.queued {
+  background-color: #9aa0a6;
+}
+
+.status-badge.running {
+  background-color: #1a73e8;
+}
+
+.status-badge.succeeded {
+  background-color: #188038;
+}
+
+.status-badge.failed {
+  background-color: #d93025;
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -170,6 +279,27 @@ body {
 
 .data-table td.empty-note {
   text-align: left;
+}
+
+/* The Runs table has enough columns (Agent/Owner/Source/Branch/LLM/Status/
+   Created/Duration/Details) that forcing it into 100% width squeezes every
+   cell into an ugly mid-word wrap -- scroll horizontally instead of
+   wrapping. Scoped to this wrapper, not .data-table generally, so the
+   Connections tables keep wrapping long URLs onto multiple lines rather
+   than needing a scrollbar for a single long value. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+.table-scroll .data-table {
+  width: max-content;
+  min-width: 100%;
+}
+
+.table-scroll .data-table th,
+.table-scroll .data-table td {
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
 
 .pagination {
@@ -337,11 +467,56 @@ body {
   font-weight: 500;
 }
 
-.checkbox-label {
+.inline-form {
+  background: light-dark(#f7f8fa, #26272e);
+  border: 1px solid light-dark(#e2e2e2, #3a3b42);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+/* Full-width, side-by-side layout -- overrides .new-run-form's own
+   narrow single-column stack (that's still right for New Run's longer
+   field set, but these inline forms only have 3-4 short fields, so
+   stacking them one per row wastes most of the available width). */
+.inline-form .new-run-form {
+  max-width: none;
+  margin: 0;
+  flex-direction: row;
+  flex-wrap: wrap;
+  /* flex-start, not flex-end -- a field with a .field-note below its
+     input (e.g. Users' Password) is taller than its siblings, and
+     flex-end aligns by each item's BOTTOM edge, which pushes every
+     shorter field's input down out of line with the taller one's.
+     flex-start keeps every label-text+input pair level regardless of
+     what any one field has trailing underneath it. */
+  align-items: flex-start;
+}
+
+.inline-form .new-run-form label {
+  flex: 1 1 180px;
+  min-width: 160px;
+}
+
+/* The buttons have no label-text row above them, unlike every field --
+   this approximates one label's text-line-height + gap so they still
+   land level with the inputs under flex-start. */
+.inline-form .new-run-form .error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.inline-form-actions {
   display: flex;
-  align-items: center;
-  gap: 0.35rem;
-  font-size: 0.9rem;
+  gap: 0.5rem;
+  flex: 0 0 auto;
+  margin-top: 1.3rem;
+}
+
+.inline-form-actions button[type='button'] {
+  background: transparent;
+  color: light-dark(#444, #bbb);
+  border: 1px solid light-dark(#ccc, #444);
 }
 
 input,

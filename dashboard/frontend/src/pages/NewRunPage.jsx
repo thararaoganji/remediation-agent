@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router-dom'
 import { api } from '../api.js'
 import { usePageTitle } from '../usePageTitle.js'
 import { isNonEmpty } from '../validation.js'
@@ -88,13 +88,10 @@ export default function NewRunPage() {
 
   return (
     <div className="new-run-page form-page">
-      <Link to="/runs" className="back-link">
-        ← Back to Runs
-      </Link>
       <h2>Start a new run</h2>
       {noSonarServers && (
         <p className="warning">
-          No Sonar servers configured yet — add one on the <a href="/connections">Connections</a> page first.
+          No Sonar servers configured yet — add one on the <a href="/connections/sonar-servers">Connections</a> page first.
         </p>
       )}
       <form className="new-run-form" onSubmit={handleSubmit}>

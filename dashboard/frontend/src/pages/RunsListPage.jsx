@@ -5,9 +5,10 @@ import { useAuth } from '../AuthContext.jsx'
 import { PlayIcon } from '../components/icons.jsx'
 import Pagination from '../components/Pagination.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
-import { formatTimestamp, runDuration } from '../format.js'
+import { formatTimestamp, pushFailed, runDuration } from '../format.js'
 import { usePagination } from '../usePagination.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { VendorBadge } from '../vendors.jsx'
 
 const POLL_INTERVAL_MS = 5000
 const PAGE_SIZE = 10
@@ -54,53 +55,65 @@ export default function RunsListPage() {
           <PlayIcon size={18} />
         </Link>
       </div>
-      <table className="data-table">
-        <thead>
-          <tr>
-            <th>Agent</th>
-            {isAdmin && <th>Owner</th>}
-            <th>Source</th>
-            <th>Branch</th>
-            <th>Status</th>
-            <th>Created</th>
-            <th>Duration</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {pageItems.map((run) => (
-            <tr key={run.id}>
-              <td>{run.agent_type}</td>
-              {isAdmin && <td>{run.owner_email || '—'}</td>}
-              <td>{run.source}</td>
-              <td>
-                {run.sonar_dashboard_url ? (
-                  <a href={run.sonar_dashboard_url} target="_blank" rel="noreferrer">
-                    {run.branch_name}
-                  </a>
-                ) : (
-                  run.branch_name || '—'
-                )}
-              </td>
-              <td>
-                <StatusBadge status={run.status} />
-              </td>
-              <td>{formatTimestamp(run.created_at)}</td>
-              <td>{runDuration(run)}</td>
-              <td>
-                <Link to={`/runs/${run.id}`}>Details</Link>
-              </td>
-            </tr>
-          ))}
-          {runs.length === 0 && (
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead>
             <tr>
-              <td className="empty-note" colSpan={isAdmin ? 8 : 7}>
-                No runs yet — <Link to="/runs/new">start one</Link>.
-              </td>
+              <th>Agent</th>
+              {isAdmin && <th>Owner</th>}
+              <th>Source</th>
+              <th>Branch</th>
+              <th>LLM</th>
+              <th>Status</th>
+              <th>Created</th>
+              <th>Duration</th>
+              <th></th>
             </tr>
-          )}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {pageItems.map((run) => (
+              <tr key={run.id}>
+                <td>{run.agent_type}</td>
+                {isAdmin && <td>{run.owner_email || '—'}</td>}
+                <td>{run.source}</td>
+                <td>
+                  {run.sonar_dashboard_url ? (
+                    <a href={run.sonar_dashboard_url} target="_blank" rel="noreferrer">
+                      {run.branch_name}
+                    </a>
+                  ) : (
+                    run.branch_name || '—'
+                  )}
+                </td>
+                <td>
+                  <VendorBadge vendor={run.llm_vendor} model={run.llm_model} />
+                </td>
+                <td>
+                  <StatusBadge status={run.status} />
+                  {pushFailed(run.final_report) && (
+                    <span className="warning" title={run.final_report.push_result}>
+                      {' '}
+                      ⚠ push failed
+                    </span>
+                  )}
+                </td>
+                <td>{formatTimestamp(run.created_at)}</td>
+                <td>{runDuration(run)}</td>
+                <td>
+                  <Link to={`/runs/${run.id}`}>Details</Link>
+                </td>
+              </tr>
+            ))}
+            {runs.length === 0 && (
+              <tr>
+                <td className="empty-note" colSpan={isAdmin ? 9 : 8}>
+                  No runs yet — <Link to="/runs/new">start one</Link>.
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
       <Pagination page={page} pageCount={pageCount} onPageChange={setPage} />
     </div>
   )

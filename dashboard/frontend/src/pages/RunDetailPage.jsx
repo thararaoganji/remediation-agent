@@ -3,8 +3,9 @@ import { useParams } from 'react-router-dom'
 import { api } from '../api.js'
 import EventTranscript from '../components/EventTranscript.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
-import { formatTimestamp, runDuration } from '../format.js'
+import { formatTimestamp, pushFailed, runDuration } from '../format.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { VendorBadge } from '../vendors.jsx'
 
 const POLL_INTERVAL_MS = 5000
 const ACTIVE_STATUSES = new Set(['queued', 'running'])
@@ -69,11 +70,19 @@ function FinalReport({ report }) {
             Final ratings: <RatingsList ratings={report.final_ratings} />
           </li>
         )}
-        {report.push_result && <li>Push: {report.push_result}</li>}
+        {report.push_result && (
+          <li className={pushFailed(report) ? 'error' : undefined}>Push: {report.push_result}</li>
+        )}
         {typeof report.duration_seconds === 'number' && (
           <li>Duration: {Math.round(report.duration_seconds)}s</li>
         )}
-        {report.tokens_consumed && <li>Tokens consumed: {report.tokens_consumed.total_tokens}</li>}
+        {report.tokens_consumed && (
+          <li>
+            Tokens consumed: {report.tokens_consumed.total_tokens.toLocaleString()} total (
+            {report.tokens_consumed.prompt_tokens.toLocaleString()} prompt +{' '}
+            {report.tokens_consumed.candidates_tokens.toLocaleString()} completion)
+          </li>
+        )}
       </ul>
     </div>
   )
@@ -140,6 +149,13 @@ export default function RunDetailPage() {
             'not created yet'
           )}
         </dd>
+        {/* Frozen at the moment this run started -- switching or rotating
+            the active LLM config afterward never changes what a past run
+            recorded using, see runs.py's RunOut comment. */}
+        <dt>LLM</dt>
+        <dd>
+          <VendorBadge vendor={run.llm_vendor} model={run.llm_model} showModel />
+        </dd>
         <dt>Created</dt>
         <dd>{formatTimestamp(run.created_at)}</dd>
         <dt>Duration</dt>
@@ -149,6 +165,14 @@ export default function RunDetailPage() {
       {run.status === 'failed' && run.error && (
         <p className="error">
           <strong>Error:</strong> {run.error}
+        </p>
+      )}
+
+      {run.status !== 'failed' && pushFailed(run.final_report) && (
+        <p className="warning">
+          <strong>Note:</strong> the fixes below were made and committed, but pushing the
+          branch to GitHub failed — see "Push" in the result below. Nothing was lost; the
+          branch just isn't on GitHub yet.
         </p>
       )}
 

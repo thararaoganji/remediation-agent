@@ -1,20 +1,19 @@
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { AuthProvider, useAuth } from './AuthContext.jsx'
+import Breadcrumb from './components/Breadcrumb.jsx'
 import Logo from './components/Logo.jsx'
 import Sidebar from './components/Sidebar.jsx'
 import ThemeToggle from './components/ThemeToggle.jsx'
 import { ThemeProvider } from './ThemeContext.jsx'
-import ConnectionsPage from './pages/ConnectionsPage.jsx'
-import GithubCredentialFormPage from './pages/GithubCredentialFormPage.jsx'
+import GithubCredentialsPage from './pages/GithubCredentialsPage.jsx'
 import HelpPage from './pages/HelpPage.jsx'
-import LlmConfigFormPage from './pages/LlmConfigFormPage.jsx'
+import LlmConfigsPage from './pages/LlmConfigsPage.jsx'
 import LoginPage from './pages/LoginPage.jsx'
 import NewRunPage from './pages/NewRunPage.jsx'
 import ResetPasswordPage from './pages/ResetPasswordPage.jsx'
 import RunDetailPage from './pages/RunDetailPage.jsx'
 import RunsListPage from './pages/RunsListPage.jsx'
-import SonarServerFormPage from './pages/SonarServerFormPage.jsx'
-import UserFormPage from './pages/UserFormPage.jsx'
+import SonarServersPage from './pages/SonarServersPage.jsx'
 import UsersPage from './pages/UsersPage.jsx'
 
 function RequireAuth({ children }) {
@@ -92,59 +91,28 @@ function AppRoutes() {
           </RequireAuth>
         }
       />
+      <Route path="/connections" element={<Navigate to="/connections/sonar-servers" replace />} />
       <Route
-        path="/connections"
+        path="/connections/sonar-servers"
         element={
           <RequireAuth>
-            <ConnectionsPage />
+            <SonarServersPage />
           </RequireAuth>
         }
       />
       <Route
-        path="/connections/sonar-servers/new"
+        path="/connections/github-credentials"
         element={
           <RequireAuth>
-            <SonarServerFormPage />
+            <GithubCredentialsPage />
           </RequireAuth>
         }
       />
       <Route
-        path="/connections/sonar-servers/:id/edit"
+        path="/connections/llm-configs"
         element={
           <RequireAuth>
-            <SonarServerFormPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/connections/github-credentials/new"
-        element={
-          <RequireAuth>
-            <GithubCredentialFormPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/connections/github-credentials/:id/edit"
-        element={
-          <RequireAuth>
-            <GithubCredentialFormPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/connections/llm-configs/new"
-        element={
-          <RequireAuth>
-            <LlmConfigFormPage />
-          </RequireAuth>
-        }
-      />
-      <Route
-        path="/connections/llm-configs/:id/edit"
-        element={
-          <RequireAuth>
-            <LlmConfigFormPage />
+            <LlmConfigsPage />
           </RequireAuth>
         }
       />
@@ -174,16 +142,6 @@ function AppRoutes() {
           </RequireAuth>
         }
       />
-      <Route
-        path="/users/new"
-        element={
-          <RequireAuth>
-            <RequireAdmin>
-              <UserFormPage />
-            </RequireAdmin>
-          </RequireAuth>
-        }
-      />
     </Routes>
   )
 }
@@ -197,6 +155,7 @@ export default function App() {
           <div className="app-body">
             <Sidebar />
             <main className="app-main">
+              <Breadcrumb />
               <AppRoutes />
             </main>
           </div>

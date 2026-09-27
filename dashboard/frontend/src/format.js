@@ -22,3 +22,13 @@ export function formatTimestamp(iso) {
   if (!iso) return '—'
   return new Date(iso).toLocaleString()
 }
+
+// A push failure doesn't unwind the run (fixes are already committed
+// locally, see git_tools.push_branch's docstring for why that's
+// deliberate) -- but the dashboard must not let that read as unqualified
+// success either. Detected from the exact "failed — {reason}" shape
+// PushStep (core/agents/report.py) always uses. Shared by RunsListPage
+// (a compact indicator) and RunDetailPage (the full warning banner).
+export function pushFailed(finalReport) {
+  return typeof finalReport?.push_result === 'string' && finalReport.push_result.startsWith('failed')
+}

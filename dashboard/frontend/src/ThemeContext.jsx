@@ -16,15 +16,13 @@ function systemPrefersDark() {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches
 }
 
-// Deliberately just toggles the `color-scheme` CSS property rather than
-// introducing a parallel [data-theme] selector system -- every color in
-// index.css already goes through light-dark(...), which resolves purely
-// off the computed color-scheme value. Setting it inline on the root
-// element overrides the stylesheet's `color-scheme: light dark` (which
-// otherwise just follows the OS), so this is the entire theming
-// mechanism -- no other CSS needed.
+// Toggles a data-theme attribute (see index.css's :root[data-theme=...]
+// rules) rather than setting the `color-scheme` CSS property inline via
+// JS -- every color in index.css already goes through light-dark(...),
+// which resolves purely off the computed color-scheme value, and
+// attribute changes (unlike element.style.* assignments) aren't inline
+// styles, so the CSP's style-src can skip 'unsafe-inline' entirely.
 function applyTheme(theme) {
-  document.documentElement.style.colorScheme = theme || ''
   if (theme) {
     document.documentElement.setAttribute('data-theme', theme)
   } else {
