@@ -43,6 +43,19 @@ CI possible in the first place:
    imported): `gcloud projects create <id>` + link it to a billing account,
    then enable `artifactregistry`, `run`, `firestore`, `secretmanager`,
    `iam`, `iamcredentials`, `cloudresourcemanager`, `sts`.
+1a. **Grant that environment's `github-deployer` SA access to the state
+   bucket**: the bucket lives in `aiproject-495122` (prod's project) but
+   every environment's CI identity needs to read/write state in it,
+   regardless of which project ITS resources live in -- a fresh
+   environment's `github-deployer` SA has zero permissions there by
+   default (confirmed the hard way: `tofu init` in CI failed with
+   `storage.objects.list` denied on first use). Grant it directly on the
+   bucket, not the whole project:
+   ```bash
+   gcloud storage buckets add-iam-policy-binding gs://sonar-remediation-tofu-state \
+     --member="serviceAccount:github-deployer@<project-id>.iam.gserviceaccount.com" \
+     --role="roles/storage.objectAdmin"
+   ```
 2. **Azure resource provider**: `az provider register --namespace Microsoft.App`
    (Container Apps) -- one-time per subscription, not per resource group.
 3. **`tofu apply`** to create the base resources (resource group, ACR, Cosmos
