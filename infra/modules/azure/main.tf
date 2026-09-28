@@ -115,16 +115,15 @@ resource "azurerm_key_vault_secret" "session_secret" {
   name         = "dashboard-session-secret"
   value        = random_password.session_secret.result
   key_vault_id = azurerm_key_vault.main.id
-  depends_on   = [azurerm_role_assignment.deployer_kv_admin]
-}
-
-# The identity applying this Tofu config needs its own Key Vault access to
-# write the session secret above -- RBAC-mode vaults grant nothing by
-# default, unlike the old access-policy model.
-resource "azurerm_role_assignment" "deployer_kv_admin" {
-  scope                = azurerm_key_vault.main.id
-  role_definition_name = "Key Vault Administrator"
-  principal_id         = data.azurerm_client_config.current.object_id
+  # github_deployer_kv_admin (below) grants the identity that actually runs
+  # `tofu apply` in CI its own Key Vault Secrets Officer access -- this used
+  # to instead self-grant "whoever's running this" Key Vault Administrator
+  # (a control-plane role), which broke the first time CI itself (rather
+  # than a human) ran apply: github_deployer had no
+  # Microsoft.Authorization/roleAssignments/delete rights on this vault, so
+  # replacing that self-granted binding 403'd. A dedicated, stable grant for
+  # the actual CI identity is both simpler and avoids that churn.
+  depends_on = [azurerm_role_assignment.github_deployer_kv_admin]
 }
 
 # --- Managed identities (least-privilege split, mirrors the GCP SAs) ---------
@@ -221,10 +220,15 @@ resource "azurerm_container_app_job" "agent" {
 
   template {
     container {
-      name   = "agent"
-      image  = var.agent_image
+      name  = "agent"
+      image = var.agent_image
+      # Consumption-plan Container Apps only accept a fixed set of
+      # cpu:memory ratios (2:1 GiB per vCPU) -- 2 vCPU must pair with 4Gi,
+      # not 2Gi (confirmed the hard way: ContainerAppInvalidResourceTotal).
+      # GCP's Cloud Run Job has no such restriction, hence the asymmetry
+      # with that module's cpu=2/memory=2Gi.
       cpu    = 2.0
-      memory = "2Gi"
+      memory = "4Gi"
 
       env {
         name  = "AGENT_TYPE"
