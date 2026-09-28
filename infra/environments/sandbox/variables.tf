@@ -19,8 +19,21 @@ variable "azure_location" {
 }
 
 variable "github_repo" {
-  type    = string
-  default = "thararaoganji/remediation-agent"
+  description = "Plain OWNER/REPO -- feeds the GCP module's assertion.repository condition."
+  type        = string
+  default     = "thararaoganji/remediation-agent"
+}
+
+variable "azure_github_repo" {
+  description = <<-EOT
+    Exactly what GitHub's OIDC token puts in the `sub` claim for this
+    repo -- confirmed from a live token (Azure logs the presented
+    subject on a mismatch) to include stable owner/repo IDs, not just
+    the plain names. See infra/modules/azure/variables.tf's github_repo
+    for how to re-derive this if it ever needs to change.
+  EOT
+  type        = string
+  default     = "thararaoganji@176417932/remediation-agent@1322380487"
 }
 
 variable "gcp_dashboard_image" {
