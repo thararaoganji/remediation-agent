@@ -1,0 +1,95 @@
+# Builds the dashboard and agent images, pushes both to Azure Container
+# Registry tagged with the git SHA, then hands those image refs to the
+# tofu-deploy composite action (scoped to module.azure only). This job's
+# own `environment:` (set from the `environment` input below, sandbox or
+# prod) is what makes `vars.*` resolve to that environment's own project/
+# registry/etc. It has to live here rather than on the caller job in
+# deploy-azure.yml -- GitHub's schema for a job that calls a reusable
+# workflow via `uses:` doesn't accept `environment:` alongside it.
+#
+# Azure-only, EXCEPT for one unavoidable exception: it still authenticates
+# to GCP, because Tofu's own state backend lives in a GCS bucket
+# regardless of which cloud's resources this run touches. That's the only
+# GCP step here -- no gcloud CLI setup, no GCP image build/push, no GCP
+# image inputs to the composite action. See reusable-deploy-gcp.yml for
+# GCP's equivalent.
+name: Reusable - Deploy Azure
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # required for keyless auth via WIF/OIDC on both clouds
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tofu's state backend lives in GCS -- this auth is for that, not
+      # for anything being deployed in this run.
+      - name: Auth to GCP (for Tofu's state backend)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Auth to Azure (federated credential)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
+      - name: Set image tags
+        id: images
+        run: |
+          SHA="${{ github.sha }}"
+          REPO="${{ vars.AZURE_ACR_NAME }}.azurecr.io"
+          {
+            echo "dashboard=${REPO}/sonar-dashboard:${SHA}"
+            echo "agent=${REPO}/sonar-remediation-agent:${SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push agent image
+        run: |
+          docker build -f Dockerfile -t "${{ steps.images.outputs.agent }}" .
+          docker push "${{ steps.images.outputs.agent }}"
+
+      - name: Build and push dashboard image
+        run: |
+          docker build -f dashboard/Dockerfile -t "${{ steps.images.outputs.dashboard }}" .
+          docker push "${{ steps.images.outputs.dashboard }}"
+
+      - name: Deploy with OpenTofu
+        uses: ./.github/actions/tofu-deploy
+        with:
+          environment: ${{ inputs.environment }}
+          cloud: azure
+          # Composite actions can't read `vars`/`secrets` themselves -- only
+          # this job (a normal reusable-workflow-call job) can, so they're
+          # passed through explicitly. gcp_project_id/gcp_wif_provider/
+          # gcp_deploy_service_account are still required by the composite
+          # action itself (same state-backend reasoning as the auth step
+          # above), not because anything GCP-specific is being deployed.
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_wif_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp_deploy_service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          tofu_state_bucket: ${{ vars.TOFU_STATE_BUCKET }}
+          azure_dashboard_image: ${{ steps.images.outputs.dashboard }}
+          azure_agent_image: ${{ steps.images.outputs.agent }}

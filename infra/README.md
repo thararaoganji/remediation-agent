@@ -106,10 +106,19 @@ on their own):
 Plus one repo-level Variable shared by both: `TOFU_STATE_BUCKET` =
 `sonar-remediation-tofu-state`.
 
-`prod`'s Environment additionally has a required-reviewers protection rule
-configured in repo Settings -> Environments -- that's what makes
-`deploy-prod` in `.github/workflows/deploy.yml` pause for approval. Nothing
-in the workflow YAML itself encodes that gate.
+Deployment is manual-trigger-only for both environments -- there's no push
+trigger at all, by design. Run `.github/workflows/deploy-gcp.yml` or
+`deploy-azure.yml` from the Actions tab and pick `sandbox`, `prod`, or
+`both`; each calls its cloud's own `reusable-deploy-{gcp,azure}.yml`,
+which in turn calls the shared `tofu-deploy` composite action
+(`.github/actions/tofu-deploy`) scoped to that one cloud's module.
+
+`prod`'s Environment has a required-reviewers protection rule configured
+in repo Settings -> Environments, but it's not actually enforced: GitHub
+Environment protection rules need GitHub Pro/Team on a private repo, and
+this repo is private. Until/unless that changes, the manual trigger
+itself is the only real gate -- there's no second approval click on top
+of it.
 
 ## GCP prod's import
 
