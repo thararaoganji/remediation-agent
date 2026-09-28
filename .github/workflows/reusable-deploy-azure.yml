@@ -1,18 +1,20 @@
 # Builds the dashboard and agent images, pushes both to Azure Container
 # Registry tagged with the git SHA, then hands those image refs to the
-# tofu-deploy composite action (scoped to module.azure only). This job's
-# own `environment:` (set from the `environment` input below, sandbox or
-# prod) is what makes `vars.*` resolve to that environment's own project/
-# registry/etc. It has to live here rather than on the caller job in
-# deploy-azure.yml -- GitHub's schema for a job that calls a reusable
-# workflow via `uses:` doesn't accept `environment:` alongside it.
+# tofu-deploy-azure composite action (infra/environments/<env>/azure --
+# its own Tofu root with its own state file, in Azure Storage). This
+# job's own `environment:` (set from the `environment` input below,
+# sandbox or prod) is what makes `vars.*` resolve to that environment's
+# own project/registry/etc. It has to live here rather than on the caller
+# job in deploy-azure.yml -- GitHub's schema for a job that calls a
+# reusable workflow via `uses:` doesn't accept `environment:` alongside
+# it.
 #
-# Azure-only, EXCEPT for one unavoidable exception: it still authenticates
-# to GCP, because Tofu's own state backend lives in a GCS bucket
-# regardless of which cloud's resources this run touches. That's the only
-# GCP step here -- no gcloud CLI setup, no GCP image build/push, no GCP
-# image inputs to the composite action. See reusable-deploy-gcp.yml for
-# GCP's equivalent.
+# Fully Azure-only, deliberately: no GCP auth, no GCP image build/push, no
+# GCP state, no GCP anything. This used to still need GCP credentials
+# purely because Tofu's state lived in a shared GCS bucket -- now that
+# Azure's state has its own Storage Account, that dependency is gone
+# entirely, and the two clouds' deploys share nothing. See
+# reusable-deploy-gcp.yml for GCP's mirror-image equivalent.
 name: Reusable - Deploy Azure
 
 on:
@@ -25,7 +27,7 @@ on:
 
 permissions:
   contents: read
-  id-token: write # required for keyless auth via WIF/OIDC on both clouds
+  id-token: write # required for keyless auth via Azure's federated credential
 
 jobs:
   build-and-deploy:
@@ -33,15 +35,6 @@ jobs:
     environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v5
-
-      # Tofu's state backend lives in GCS -- this auth is for that, not
-      # for anything being deployed in this run.
-      - name: Auth to GCP (for Tofu's state backend)
-        uses: google-github-actions/auth@v3
-        with:
-          project_id: ${{ vars.GCP_PROJECT_ID }}
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
 
       - name: Auth to Azure (federated credential)
         uses: azure/login@v3
@@ -74,22 +67,17 @@ jobs:
           docker push "${{ steps.images.outputs.dashboard }}"
 
       - name: Deploy with OpenTofu
-        uses: ./.github/actions/tofu-deploy
+        uses: ./.github/actions/tofu-deploy-azure
         with:
           environment: ${{ inputs.environment }}
-          cloud: azure
           # Composite actions can't read `vars`/`secrets` themselves -- only
           # this job (a normal reusable-workflow-call job) can, so they're
-          # passed through explicitly. gcp_project_id/gcp_wif_provider/
-          # gcp_deploy_service_account are still required by the composite
-          # action itself (same state-backend reasoning as the auth step
-          # above), not because anything GCP-specific is being deployed.
-          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
-          gcp_wif_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          gcp_deploy_service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          # passed through explicitly.
           azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
           azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
           azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          tofu_state_bucket: ${{ vars.TOFU_STATE_BUCKET }}
+          tofu_state_resource_group: ${{ vars.TOFU_STATE_AZURE_RESOURCE_GROUP }}
+          tofu_state_storage_account: ${{ vars.TOFU_STATE_AZURE_STORAGE_ACCOUNT }}
+          tofu_state_container: ${{ vars.TOFU_STATE_AZURE_CONTAINER }}
           azure_dashboard_image: ${{ steps.images.outputs.dashboard }}
           azure_agent_image: ${{ steps.images.outputs.agent }}
