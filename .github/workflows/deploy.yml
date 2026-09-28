@@ -38,7 +38,7 @@ on:
           - both
           - sandbox
           - prod
-        default: both
+        default: sandbox
 
 jobs:
   deploy-sandbox:
