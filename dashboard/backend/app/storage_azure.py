@@ -27,7 +27,15 @@ class CosmosStore(DocumentStore):
 
     def _get_client(self) -> CosmosClient:
         if self._client is None:
-            self._client = CosmosClient(url=os.environ["AZURE_COSMOS_ENDPOINT"], credential=DefaultAzureCredential())
+            # managed_identity_client_id: this Container App/Job has a
+            # USER-assigned identity, not a system-assigned one --
+            # DefaultAzureCredential can't infer which identity to request
+            # a token for without this hint (confirmed the hard way:
+            # ManagedIdentityCredential failed with "configuration not
+            # found in environment" despite the identity being correctly
+            # attached and role-assigned).
+            credential = DefaultAzureCredential(managed_identity_client_id=os.environ.get("AZURE_MANAGED_IDENTITY_CLIENT_ID"))
+            self._client = CosmosClient(url=os.environ["AZURE_COSMOS_ENDPOINT"], credential=credential)
         return self._client
 
     def _container(self, collection: str):

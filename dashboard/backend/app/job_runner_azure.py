@@ -32,8 +32,12 @@ class ContainerAppsJobRunner(JobRunner):
 
     def _get_client(self) -> ContainerAppsAPIClient:
         if self._client is None:
+            # managed_identity_client_id: see storage_azure.py's
+            # CosmosStore._get_client -- this Container App has a
+            # USER-assigned identity, which DefaultAzureCredential can't
+            # resolve without an explicit client id hint.
             self._client = ContainerAppsAPIClient(
-                credential=DefaultAzureCredential(),
+                credential=DefaultAzureCredential(managed_identity_client_id=os.environ.get("AZURE_MANAGED_IDENTITY_CLIENT_ID")),
                 subscription_id=os.environ["AZURE_SUBSCRIPTION_ID"],
             )
         return self._client

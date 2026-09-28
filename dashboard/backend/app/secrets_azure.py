@@ -20,7 +20,12 @@ class KeyVaultStore(SecretStore):
 
     def _get_client(self) -> SecretClient:
         if self._client is None:
-            self._client = SecretClient(vault_url=os.environ["AZURE_KEY_VAULT_URL"], credential=DefaultAzureCredential())
+            # managed_identity_client_id: see storage_azure.py's
+            # CosmosStore._get_client -- this Container App has a
+            # USER-assigned identity, which DefaultAzureCredential can't
+            # resolve without an explicit client id hint.
+            credential = DefaultAzureCredential(managed_identity_client_id=os.environ.get("AZURE_MANAGED_IDENTITY_CLIENT_ID"))
+            self._client = SecretClient(vault_url=os.environ["AZURE_KEY_VAULT_URL"], credential=credential)
         return self._client
 
     def create_secret_with_value(self, secret_id: str, value: str) -> None:

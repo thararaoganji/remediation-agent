@@ -265,6 +265,13 @@ resource "azurerm_container_app_job" "agent" {
         name  = "AZURE_KEY_VAULT_URL"
         value = azurerm_key_vault.main.vault_uri
       }
+      env {
+        # This identity is user-assigned, not system-assigned --
+        # DefaultAzureCredential (storage_azure.py/secrets_azure.py) can't
+        # infer which identity to use without this hint.
+        name  = "AZURE_MANAGED_IDENTITY_CLIENT_ID"
+        value = azurerm_user_assigned_identity.agent.client_id
+      }
       # Baked-in fallback values -- every real run overrides these
       # per-execution from runs.py's create_run(), same as the GCP jobs.
       env {
@@ -332,6 +339,12 @@ resource "azurerm_container_app" "dashboard" {
       env {
         name  = "AZURE_KEY_VAULT_URL"
         value = azurerm_key_vault.main.vault_uri
+      }
+      env {
+        # See the agent job's identical env var above -- user-assigned
+        # identity, DefaultAzureCredential needs the client id explicitly.
+        name  = "AZURE_MANAGED_IDENTITY_CLIENT_ID"
+        value = azurerm_user_assigned_identity.dashboard.client_id
       }
       env {
         name  = "COOKIE_SECURE"
