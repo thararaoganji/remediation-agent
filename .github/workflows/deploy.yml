@@ -34,7 +34,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: sandbox
     uses: ./.github/workflows/reusable-tofu-deploy.yml
     with:
       environment: sandbox
@@ -44,7 +43,6 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    environment: prod
     uses: ./.github/workflows/reusable-tofu-deploy.yml
     with:
       environment: prod
