@@ -1,0 +1,66 @@
+# Deploys the dashboard and agents to GCP only -- sandbox then prod (prod
+# still pauses for its GitHub Environment's required-reviewer approval --
+# that gate lives in the repo's Environment settings, not in this file). A
+# push to main always runs both environments; a manual run
+# (workflow_dispatch) lets you pick just one.
+#
+# Split from a single cloud-picker workflow into one file per cloud so GCP
+# and Azure deploys run as independent, parallel workflow runs with their
+# own clear pass/fail status, instead of one always sequential run that
+# tried to do both. See deploy-azure.yml for Azure's identical structure --
+# both call the same cloud-parameterized reusable-tofu-deploy.yml.
+name: Deploy (GCP)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "agent_techdebt/**"
+      - "agent_coverage/**"
+      - "agent_duplicate/**"
+      - "sonar/**"
+      - "core/**"
+      - "run_local.py"
+      - "requirements.txt"
+      - "Dockerfile"
+      - "dashboard/**"
+      - "infra/**"
+      - ".github/workflows/deploy-gcp.yml"
+      - ".github/workflows/reusable-tofu-deploy.yml"
+      - ".github/actions/tofu-deploy/**"
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment(s) to deploy"
+        required: true
+        type: choice
+        options:
+          - both
+          - sandbox
+          - prod
+        default: sandbox
+
+jobs:
+  deploy-sandbox:
+    if: github.event_name == 'push' || inputs.environment == 'both' || inputs.environment == 'sandbox'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-tofu-deploy.yml
+    with:
+      environment: sandbox
+      cloud: gcp
+
+  deploy-prod:
+    needs: deploy-sandbox
+    if: |
+      always() &&
+      (needs.deploy-sandbox.result == 'success' || needs.deploy-sandbox.result == 'skipped') &&
+      (github.event_name == 'push' || inputs.environment == 'both' || inputs.environment == 'prod')
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-tofu-deploy.yml
+    with:
+      environment: prod
+      cloud: gcp
