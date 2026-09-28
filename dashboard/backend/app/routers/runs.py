@@ -186,3 +186,18 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
 
     storage.update_doc(_COLLECTION, run_id, {"status": "running", "execution_name": execution_name})
     return _to_out(storage.get_doc(_COLLECTION, run_id))
+
+
+@router.delete("/{run_id}", status_code=204)
+def delete_run(run_id: str, user: auth.CurrentUser = Depends(auth.get_current_user)):
+    # No status check on purpose: a run stuck on "running" forever (its
+    # container already finished but never reported back, e.g. the
+    # env-var-wiping bug job_runner_azure.py had) is indistinguishable
+    # from a genuinely still-running one at this layer, and clearing out
+    # exactly those stuck rows is the point of this endpoint. Doesn't
+    # touch the underlying job execution -- Container Apps/Cloud Run keep
+    # their own execution history regardless of this doc.
+    doc = storage.get_doc(_COLLECTION, run_id)
+    if doc is None or not _owned(doc, user):
+        raise HTTPException(status_code=404, detail="Run not found")
+    storage.delete_doc(_COLLECTION, run_id)

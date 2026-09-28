@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../api.js'
 import { useAuth } from '../AuthContext.jsx'
-import { PlayIcon } from '../components/icons.jsx'
+import ConfirmDialog from '../components/ConfirmDialog.jsx'
+import { PlayIcon, TrashIcon } from '../components/icons.jsx'
 import Pagination from '../components/Pagination.jsx'
 import StatusBadge from '../components/StatusBadge.jsx'
 import { formatTimestamp, pushFailed, runDuration } from '../format.js'
@@ -12,6 +13,42 @@ import { VendorBadge } from '../vendors.jsx'
 
 const POLL_INTERVAL_MS = 5000
 const PAGE_SIZE = 10
+
+function DeleteRunButton({ run, onDeleted }) {
+  const [confirming, setConfirming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState(null)
+
+  async function handleDelete() {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.deleteRun(run.id)
+      onDeleted(run.id)
+    } catch (err) {
+      setError(err.message)
+      setBusy(false)
+      setConfirming(false)
+    }
+  }
+
+  return (
+    <>
+      <button onClick={() => setConfirming(true)} className="icon-action danger" aria-label="Delete run" title="Delete run">
+        <TrashIcon />
+      </button>
+      {error && <p className="error">{error}</p>}
+      <ConfirmDialog
+        open={confirming}
+        title="Delete run"
+        message={`Delete this ${run.agent_type} run against "${run.source}"? This only removes it from the dashboard -- it doesn't affect anything already pushed.`}
+        busy={busy}
+        onConfirm={handleDelete}
+        onCancel={() => setConfirming(false)}
+      />
+    </>
+  )
+}
 
 export default function RunsListPage() {
   usePageTitle('Runs')
@@ -44,6 +81,10 @@ export default function RunsListPage() {
     }
   }, [])
 
+  function handleRunDeleted(runId) {
+    setRuns((current) => (current || []).filter((r) => r.id !== runId))
+  }
+
   if (error) return <p className="error">Failed to load runs: {error}</p>
   if (runs === null) return <p>Loading…</p>
 
@@ -67,6 +108,7 @@ export default function RunsListPage() {
               <th>Status</th>
               <th>Created</th>
               <th>Duration</th>
+              <th></th>
               <th></th>
             </tr>
           </thead>
@@ -102,11 +144,14 @@ export default function RunsListPage() {
                 <td>
                   <Link to={`/runs/${run.id}`}>Details</Link>
                 </td>
+                <td>
+                  <DeleteRunButton run={run} onDeleted={handleRunDeleted} />
+                </td>
               </tr>
             ))}
             {runs.length === 0 && (
               <tr>
-                <td className="empty-note" colSpan={isAdmin ? 9 : 8}>
+                <td className="empty-note" colSpan={isAdmin ? 10 : 9}>
                   No runs yet — <Link to="/runs/new">start one</Link>.
                 </td>
               </tr>

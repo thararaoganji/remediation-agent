@@ -66,4 +66,5 @@ export const api = {
   listRuns: () => request('/runs'),
   getRun: (id) => request(`/runs/${id}`),
   createRun: (data) => request('/runs', { method: 'POST', body: JSON.stringify(data) }),
+  deleteRun: (id) => request(`/runs/${id}`, { method: 'DELETE' }),
 }

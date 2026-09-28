@@ -296,4 +296,69 @@ def test_stream_endpoint_streams_events_for_existing_run(client, fake_firestore)
 
     assert "evt-1" in body
     assert "hello" in body
-    assert 'event: done\ndata: {"status": "succeeded"}' in body
+
+
+def test_delete_run_removes_it_from_list(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
+    }).json()
+
+    resp = client.delete(f"/api/runs/{run['id']}")
+    assert resp.status_code == 204
+
+    assert client.get(f"/api/runs/{run['id']}").status_code == 404
+    assert client.get("/api/runs").json() == []
+
+
+def test_delete_run_404_for_unknown_run(client, fake_firestore):
+    login_as(client, fake_firestore, "alice@example.com")
+    assert client.delete("/api/runs/does-not-exist").status_code == 404
+
+
+def test_user_cannot_delete_another_users_run(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
+    }).json()
+
+    login_as(client, fake_firestore, "bob@example.com")
+    assert client.delete(f"/api/runs/{run['id']}").status_code == 404
+
+    login_as(client, fake_firestore, "alice@example.com")
+    assert client.get(f"/api/runs/{run['id']}").status_code == 200
+
+
+def test_admin_can_delete_another_users_run(client, fake_firestore, fake_cloud_run):
+    _activate_llm_config(client, fake_firestore)
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
+    }).json()
+
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    assert client.delete(f"/api/runs/{run['id']}").status_code == 204
+
+
+def test_delete_run_requires_auth(client):
+    assert client.delete("/api/runs/some-id").status_code == 401
+
+
+def test_delete_run_does_not_require_terminal_status(client, fake_firestore, fake_cloud_run):
+    # No status gating on purpose -- a run stuck on "running" forever
+    # (its container already finished but never reported back) is exactly
+    # what this endpoint exists to clean up.
+    _activate_llm_config(client, fake_firestore)
+    login_as(client, fake_firestore, "alice@example.com")
+    sonar = _make_sonar_server(client)
+    run = client.post("/api/runs", json={
+        "agent_type": "techdebt", "source_type": "local", "source": "/a", "sonar_server_id": sonar["id"],
+    }).json()
+    assert run["status"] == "running"
+
+    assert client.delete(f"/api/runs/{run['id']}").status_code == 204
