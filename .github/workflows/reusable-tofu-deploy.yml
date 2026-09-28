@@ -1,11 +1,13 @@
 # Builds the dashboard and agent images once, pushes each to BOTH GCP
 # Artifact Registry and Azure ACR tagged with the git SHA, then hands those
-# exact image refs to the tofu-deploy composite action. The caller job sets
-# `environment:` (sandbox or prod) -- that's what makes `vars.*` below
-# resolve to that environment's own project/registry/etc, and what makes
-# prod's GitHub Environment protection rule (required reviewers) pause this
-# workflow before it starts, same as any other job targeting that
-# Environment.
+# exact image refs to the tofu-deploy composite action. This job's own
+# `environment:` (set from the `environment` input below, sandbox or prod)
+# is what makes `vars.*` resolve to that environment's own
+# project/registry/etc, and what makes prod's GitHub Environment
+# protection rule (required reviewers) pause this workflow before it
+# starts. It has to live here rather than on the caller job in deploy.yml
+# -- GitHub's schema for a job that calls a reusable workflow via `uses:`
+# doesn't accept `environment:` alongside it.
 name: Reusable - Tofu deploy
 
 on:
@@ -23,6 +25,7 @@ permissions:
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -54,10 +57,12 @@ jobs:
           SHA="${{ github.sha }}"
           GCP_REPO="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/sonar-remediation-repo"
           AZ_REPO="${{ vars.AZURE_ACR_NAME }}.azurecr.io"
-          echo "gcp_dashboard=${GCP_REPO}/sonar-dashboard:${SHA}" >> "$GITHUB_OUTPUT"
-          echo "gcp_agent=${GCP_REPO}/sonar-remediation-agent:${SHA}" >> "$GITHUB_OUTPUT"
-          echo "azure_dashboard=${AZ_REPO}/sonar-dashboard:${SHA}" >> "$GITHUB_OUTPUT"
-          echo "azure_agent=${AZ_REPO}/sonar-remediation-agent:${SHA}" >> "$GITHUB_OUTPUT"
+          {
+            echo "gcp_dashboard=${GCP_REPO}/sonar-dashboard:${SHA}"
+            echo "gcp_agent=${GCP_REPO}/sonar-remediation-agent:${SHA}"
+            echo "azure_dashboard=${AZ_REPO}/sonar-dashboard:${SHA}"
+            echo "azure_agent=${AZ_REPO}/sonar-remediation-agent:${SHA}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push agent image
         run: |
