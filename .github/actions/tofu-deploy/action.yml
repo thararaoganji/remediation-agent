@@ -53,7 +53,7 @@ runs:
   using: composite
   steps:
     - name: Auth to GCP (Workload Identity Federation)
-      uses: google-github-actions/auth@v2
+      uses: google-github-actions/auth@v3
       with:
         project_id: ${{ inputs.gcp_project_id }}
         workload_identity_provider: ${{ inputs.gcp_wif_provider }}
@@ -61,14 +61,14 @@ runs:
 
     - name: Auth to Azure (federated credential)
       if: inputs.cloud != 'gcp'
-      uses: azure/login@v2
+      uses: azure/login@v3
       with:
         client-id: ${{ inputs.azure_client_id }}
         tenant-id: ${{ inputs.azure_tenant_id }}
         subscription-id: ${{ inputs.azure_subscription_id }}
 
     - name: Install OpenTofu
-      uses: opentofu/setup-opentofu@v1
+      uses: opentofu/setup-opentofu@v2
       with:
         tofu_version: "1.12.6"
 
