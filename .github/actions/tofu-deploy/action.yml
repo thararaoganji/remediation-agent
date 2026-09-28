@@ -1,14 +1,13 @@
 name: Tofu deploy
 description: >-
   Authenticates to GCP (and, unless cloud=gcp, Azure) via OIDC (no stored
-  keys) using the calling job's GitHub Environment, then runs `tofu
-  init/plan/apply` against infra/environments/<environment>. GCP auth is
-  always required even for an azure-only run, since Tofu's state backend
-  itself lives in a GCS bucket. Self-contained so any workflow can call it,
-  not just this repo's deploy.yml -- reads its cloud/backend config from
-  that Environment's own Variables (GCP_PROJECT_ID, GCP_WIF_PROVIDER,
-  GCP_DEPLOY_SERVICE_ACCOUNT, AZURE_SUBSCRIPTION_ID, AZURE_TENANT_ID,
-  AZURE_CLIENT_ID, TOFU_STATE_BUCKET) rather than taking them as inputs.
+  keys), then runs `tofu init/plan/apply` against
+  infra/environments/<environment>. GCP auth is always required even for an
+  azure-only run, since Tofu's state backend itself lives in a GCS bucket.
+  Composite actions can't read the `vars`/`secrets` contexts directly (only
+  normal job steps and reusable-workflow-call jobs can) -- unlike a
+  workflow, this action needs its GitHub Environment's Variables handed to
+  it explicitly by the caller.
 
 inputs:
   environment:
@@ -18,6 +17,20 @@ inputs:
     description: "both | gcp | azure -- which cloud's module to plan/apply (-target); both means the whole config."
     required: false
     default: "both"
+  gcp_project_id:
+    required: true
+  gcp_wif_provider:
+    required: true
+  gcp_deploy_service_account:
+    required: true
+  azure_client_id:
+    required: true
+  azure_tenant_id:
+    required: true
+  azure_subscription_id:
+    required: true
+  tofu_state_bucket:
+    required: true
   gcp_dashboard_image:
     required: false
     default: ""
@@ -37,17 +50,17 @@ runs:
     - name: Auth to GCP (Workload Identity Federation)
       uses: google-github-actions/auth@v2
       with:
-        project_id: ${{ vars.GCP_PROJECT_ID }}
-        workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-        service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        project_id: ${{ inputs.gcp_project_id }}
+        workload_identity_provider: ${{ inputs.gcp_wif_provider }}
+        service_account: ${{ inputs.gcp_deploy_service_account }}
 
     - name: Auth to Azure (federated credential)
       if: inputs.cloud != 'gcp'
       uses: azure/login@v2
       with:
-        client-id: ${{ vars.AZURE_CLIENT_ID }}
-        tenant-id: ${{ vars.AZURE_TENANT_ID }}
-        subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+        client-id: ${{ inputs.azure_client_id }}
+        tenant-id: ${{ inputs.azure_tenant_id }}
+        subscription-id: ${{ inputs.azure_subscription_id }}
 
     - name: Install OpenTofu
       uses: opentofu/setup-opentofu@v1
@@ -59,7 +72,7 @@ runs:
       working-directory: infra/environments/${{ inputs.environment }}
       run: |
         tofu init -input=false \
-          -backend-config="bucket=${{ vars.TOFU_STATE_BUCKET }}" \
+          -backend-config="bucket=${{ inputs.tofu_state_bucket }}" \
           -backend-config="prefix=${{ inputs.environment }}"
 
     - name: tofu plan
