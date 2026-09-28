@@ -185,6 +185,25 @@ resource "azurerm_role_assignment" "dashboard_container_apps" {
   principal_id         = azurerm_user_assigned_identity.dashboard.principal_id
 }
 
+# The container/job `registry { identity = ... }` blocks below name which
+# identity Container Apps should use to pull the image, but naming it
+# there doesn't grant it anything -- confirmed the hard way, the first
+# real apply with a genuine image still failed with "unable to pull image
+# using Managed identity" until these existed. github_deployer's AcrPush
+# (below) is a separate identity, for CI pushing at build time, not for
+# either of these two pulling at run time.
+resource "azurerm_role_assignment" "agent_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.agent.principal_id
+}
+
+resource "azurerm_role_assignment" "dashboard_acr_pull" {
+  scope                = azurerm_container_registry.acr.id
+  role_definition_name = "AcrPull"
+  principal_id         = azurerm_user_assigned_identity.dashboard.principal_id
+}
+
 # --- Container Apps environment, jobs, and the dashboard app -----------------
 
 resource "azurerm_container_app_environment" "main" {
