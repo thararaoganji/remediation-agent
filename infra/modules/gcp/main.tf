@@ -317,6 +317,13 @@ resource "google_project_iam_member" "github_deployer_roles" {
     "roles/run.admin",
     "roles/artifactregistry.admin",
     "roles/iam.serviceAccountAdmin",
+    # serviceAccountAdmin lets it create/manage SAs, but NOT attach one to
+    # a resource (that's the separate actAs permission) -- confirmed the
+    # hard way: updating a Cloud Run Job/Service that references
+    # sonar-agent-sa/dashboard_sa 403'd with "Permission
+    # iam.serviceaccounts.actAs denied" once this role was dropped in
+    # favor of serviceAccountAdmin.
+    "roles/iam.serviceAccountUser",
     "roles/resourcemanager.projectIamAdmin",
     "roles/datastore.owner",
     "roles/secretmanager.admin",
