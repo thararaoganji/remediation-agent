@@ -84,7 +84,13 @@ runs:
           gcp) TARGET_ARGS=(-target=module.gcp) ;;
           azure) TARGET_ARGS=(-target=module.azure) ;;
         esac
-        tofu plan -input=false -out=tfplan "${TARGET_ARGS[@]}" \
+        # -lock-timeout: deploy-gcp.yml and deploy-azure.yml are separate,
+        # parallel workflows, but both apply against the SAME state file
+        # (one environment root manages both clouds' modules together) --
+        # confirmed the hard way, the first time both ran from the same
+        # push, GCP's plan hit Azure's apply holding the lock and failed
+        # immediately instead of just waiting its turn.
+        tofu plan -input=false -lock-timeout=300s -out=tfplan "${TARGET_ARGS[@]}" \
           -var="gcp_dashboard_image=${{ inputs.gcp_dashboard_image }}" \
           -var="gcp_agent_image=${{ inputs.gcp_agent_image }}" \
           -var="azure_dashboard_image=${{ inputs.azure_dashboard_image }}" \
@@ -93,4 +99,7 @@ runs:
     - name: tofu apply
       shell: bash
       working-directory: infra/environments/${{ inputs.environment }}
-      run: tofu apply -input=false -auto-approve tfplan
+      # apply re-acquires the state lock independently of plan (plan
+      # releases it once the plan file is written), so it needs the same
+      # -lock-timeout for the same reason.
+      run: tofu apply -input=false -lock-timeout=300s -auto-approve tfplan
