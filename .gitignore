@@ -45,3 +45,7 @@ crash.log
 crash.*.log
 *.tfvars
 *.tfvars.json
+
+# Local backups of pulled Tofu state before delicate operations -- these
+# can contain secret VALUES in plaintext, never commit them.
+.state-backup/

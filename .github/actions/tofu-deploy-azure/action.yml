@@ -1,0 +1,80 @@
+name: Tofu deploy (Azure)
+description: >-
+  Authenticates to Azure via OIDC (no stored keys), then runs
+  `tofu init/plan/apply` against infra/environments/<environment>/azure --
+  a dedicated Tofu root with its own state file (in Azure Storage, not
+  GCS), entirely separate from GCP's. This action has no GCP touchpoint
+  at all: not the provider, not auth, not state -- unlike the old shared
+  design, an Azure deploy no longer needs GCP credentials for anything.
+  Composite actions can't read the `vars`/`secrets` contexts themselves
+  (only normal job steps and reusable-workflow-call jobs can), so this
+  needs its GitHub Environment's Variables handed to it explicitly by the
+  caller.
+
+inputs:
+  environment:
+    description: "sandbox | prod -- selects infra/environments/<environment>/azure and its state key."
+    required: true
+  azure_client_id:
+    required: true
+  azure_tenant_id:
+    required: true
+  azure_subscription_id:
+    required: true
+  tofu_state_resource_group:
+    description: "Resource group holding the Azure Storage account used for Tofu state (not the environment's own resource group)."
+    required: true
+  tofu_state_storage_account:
+    required: true
+  tofu_state_container:
+    required: true
+  azure_dashboard_image:
+    required: true
+  azure_agent_image:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Auth to Azure (federated credential)
+      uses: azure/login@v3
+      with:
+        client-id: ${{ inputs.azure_client_id }}
+        tenant-id: ${{ inputs.azure_tenant_id }}
+        subscription-id: ${{ inputs.azure_subscription_id }}
+
+    - name: Install OpenTofu
+      uses: opentofu/setup-opentofu@v2
+      with:
+        tofu_version: "1.12.6"
+
+    - name: tofu init
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      run: |
+        tofu init -input=false \
+          -backend-config="resource_group_name=${{ inputs.tofu_state_resource_group }}" \
+          -backend-config="storage_account_name=${{ inputs.tofu_state_storage_account }}" \
+          -backend-config="container_name=${{ inputs.tofu_state_container }}" \
+          -backend-config="key=${{ inputs.environment }}.tfstate"
+
+    - name: tofu plan
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      # For log visibility only -- see tofu apply below for why this
+      # doesn't save/reuse a plan file.
+      run: |
+        tofu plan -input=false -lock-timeout=300s \
+          -var="azure_dashboard_image=${{ inputs.azure_dashboard_image }}" \
+          -var="azure_agent_image=${{ inputs.azure_agent_image }}"
+
+    - name: tofu apply
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      # No -out/apply-from-file, same reasoning as tofu-deploy-gcp's apply
+      # step -- a fresh plan computed atomically under the lock, not a
+      # possibly-stale saved one.
+      run: |
+        tofu apply -input=false -lock-timeout=300s -auto-approve \
+          -var="azure_dashboard_image=${{ inputs.azure_dashboard_image }}" \
+          -var="azure_agent_image=${{ inputs.azure_agent_image }}"
