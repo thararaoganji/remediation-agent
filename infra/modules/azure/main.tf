@@ -185,6 +185,23 @@ resource "azurerm_role_assignment" "dashboard_container_apps" {
   principal_id         = azurerm_user_assigned_identity.dashboard.principal_id
 }
 
+# "Container Apps Contributor" (above) only grants Microsoft.App/containerApps/*
+# -- Container App JOBS are a separate resource type under the same
+# Microsoft.App namespace and get none of that role's actions. Confirmed
+# the hard way: job_runner_azure.py's client.jobs.get/begin_start 403'd
+# with AuthorizationFailed on Microsoft.App/jobs/read despite this identity
+# already holding Container Apps Contributor at the same resource group
+# scope. "Jobs Operator" (not "Jobs Contributor") is the right grant --
+# the dashboard only ever reads a job's current definition and starts an
+# execution (see job_runner_azure.py), it never creates/updates/deletes a
+# job definition, so Contributor's extra write/delete would be unused
+# privilege.
+resource "azurerm_role_assignment" "dashboard_container_apps_jobs" {
+  scope                = azurerm_resource_group.main.id
+  role_definition_name = "Container Apps Jobs Operator"
+  principal_id         = azurerm_user_assigned_identity.dashboard.principal_id
+}
+
 # The container/job `registry { identity = ... }` blocks below name which
 # identity Container Apps should use to pull the image, but naming it
 # there doesn't grant it anything -- confirmed the hard way, the first
@@ -206,11 +223,43 @@ resource "azurerm_role_assignment" "dashboard_acr_pull" {
 
 # --- Container Apps environment, jobs, and the dashboard app -----------------
 
-resource "azurerm_container_app_environment" "main" {
-  name                = "sonar-remediation-${var.environment}-env"
+# Without a Log Analytics Workspace attached, Container Apps has nowhere to
+# ship stdout/stderr to -- the portal's "Logs" tab shows "Could not find a
+# corresponding Log Analytics Workspace for the environment hosting your
+# app" and every execution's console output is unrecoverable, confirmed
+# the hard way against a real run. 30-day retention matches Cloud Run's
+# own default log retention on the GCP side, so the two clouds behave the
+# same for a user comparing them side by side.
+#
+# CAUTION for any environment that already exists (sandbox, at the time
+# this was added): setting `log_analytics_workspace_id` on an EXISTING
+# azurerm_container_app_environment via `tofu apply` is silently a no-op
+# -- the provider's PATCH reports success and `tofu plan` goes clean, but
+# Azure's control plane never actually attaches the workspace (confirmed
+# by reading appLogsConfiguration back via `az containerapp env show`
+# straight after a clean apply: still `"destination": ""`). Container
+# Apps only honors this field at environment CREATION time. A fresh
+# environment (prod, not yet created as of this writing) picks it up
+# correctly with no extra step. An already-existing one needs a one-time
+# `az containerapp env update --logs-destination log-analytics
+# --logs-workspace-id <customerId> --logs-workspace-key <primarySharedKey>`
+# run by hand -- after that, state and reality agree and `tofu plan`
+# stays clean going forward.
+resource "azurerm_log_analytics_workspace" "main" {
+  name                = "sonar-remediation-${var.environment}-logs"
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
+  sku                 = "PerGB2018"
+  retention_in_days   = 30
   tags                = { environment = var.environment }
+}
+
+resource "azurerm_container_app_environment" "main" {
+  name                       = "sonar-remediation-${var.environment}-env"
+  resource_group_name        = azurerm_resource_group.main.name
+  location                   = azurerm_resource_group.main.location
+  log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id
+  tags                       = { environment = var.environment }
 }
 
 resource "azurerm_container_app_job" "agent" {

@@ -113,7 +113,15 @@ CI possible in the first place:
    - Key Vault Administrator (to the identity that will run future applies)
    - Key Vault Secrets User -> the agent managed identity
    - Key Vault Secrets Officer -> the dashboard managed identity
-   - Container Apps Contributor (resource group scope) -> the dashboard managed identity
+   - Container Apps Contributor (resource group scope) -> the dashboard managed
+     identity (covers `Microsoft.App/containerApps/*` only -- does NOT cover
+     Jobs, see the next line)
+   - Container Apps Jobs Operator (resource group scope) -> the dashboard
+     managed identity (`Microsoft.App/jobs/*` read + start; Container Apps
+     Jobs is a separate resource type from Container Apps and gets none of
+     Contributor's actions above -- confirmed the hard way when starting a
+     run 403'd with `AuthorizationFailed` on `Microsoft.App/jobs/read`
+     despite Container Apps Contributor already being granted)
    - AcrPull (registry scope) -> both managed identities (naming an identity
      in a container/job's `registry { identity = ... }` block doesn't grant
      it anything by itself)

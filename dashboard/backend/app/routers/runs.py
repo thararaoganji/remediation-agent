@@ -182,7 +182,7 @@ def create_run(body: RunCreate, user: auth.CurrentUser = Depends(auth.get_curren
         execution_name = job_runner.run_job(body.agent_type, env)
     except Exception as e:
         storage.update_doc(_COLLECTION, run_id, {"status": "failed", "error": f"failed to start: {e}"})
-        raise HTTPException(status_code=502, detail=f"Failed to start Cloud Run Job: {e}") from e
+        raise HTTPException(status_code=502, detail=f"Failed to start agent job: {e}") from e
 
     storage.update_doc(_COLLECTION, run_id, {"status": "running", "execution_name": execution_name})
     return _to_out(storage.get_doc(_COLLECTION, run_id))

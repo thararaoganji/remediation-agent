@@ -36,7 +36,17 @@ class CosmosRunStatusReporter(RunStatusReporter):
         self._client_init_attempted = True
         try:
             endpoint = os.environ["AZURE_COSMOS_ENDPOINT"]
-            self._client = CosmosClient(url=endpoint, credential=DefaultAzureCredential())
+            # managed_identity_client_id: see storage_azure.py's
+            # CosmosStore._get_client -- this job's USER-assigned identity
+            # can't be resolved by DefaultAzureCredential without this
+            # hint. Missing it here (unlike every other Azure client in
+            # this codebase) meant every report_started/report_finished
+            # write silently failed -- caught by _update()'s bare except,
+            # by design, so a status-reporting hiccup never breaks a real
+            # run -- leaving the dashboard stuck on "running" forever even
+            # though the job itself succeeded.
+            credential = DefaultAzureCredential(managed_identity_client_id=os.environ.get("AZURE_MANAGED_IDENTITY_CLIENT_ID"))
+            self._client = CosmosClient(url=endpoint, credential=credential)
         except Exception:
             self._client = None
         return self._client
