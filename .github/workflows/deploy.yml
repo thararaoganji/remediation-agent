@@ -3,11 +3,12 @@
 # GCP-only, no Tofu) now that infra/ manages everything via OpenTofu -- see
 # infra/README.md.
 #
-# sandbox deploys automatically on every push to main that touches deployable
-# code. prod runs the identical reusable workflow against the `prod`
-# GitHub Environment, which pauses for its configured required-reviewer
-# approval before doing anything -- that gate lives in the repo's Environment
-# settings, not in this file.
+# A push to main always runs both, sandbox then prod (prod still pauses for
+# its GitHub Environment's required-reviewer approval -- that gate lives in
+# the repo's Environment settings, not in this file). A manual run
+# (workflow_dispatch) lets you instead pick just one environment from the
+# dropdown, e.g. to redeploy prod alone after approving it, or to re-push
+# sandbox alone without waiting on prod's gate.
 name: Deploy
 
 on:
@@ -27,10 +28,21 @@ on:
       - ".github/workflows/deploy.yml"
       - ".github/workflows/reusable-tofu-deploy.yml"
       - ".github/actions/tofu-deploy/**"
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment(s) to deploy"
+        required: true
+        type: choice
+        options:
+          - both
+          - sandbox
+          - prod
+        default: both
 
 jobs:
   deploy-sandbox:
+    if: github.event_name == 'push' || inputs.environment == 'both' || inputs.environment == 'sandbox'
     permissions:
       contents: read
       id-token: write
@@ -40,6 +52,10 @@ jobs:
 
   deploy-prod:
     needs: deploy-sandbox
+    if: |
+      always() &&
+      (needs.deploy-sandbox.result == 'success' || needs.deploy-sandbox.result == 'skipped') &&
+      (github.event_name == 'push' || inputs.environment == 'both' || inputs.environment == 'prod')
     permissions:
       contents: read
       id-token: write
