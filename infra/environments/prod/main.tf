@@ -12,6 +12,10 @@ module "gcp" {
   # Imported secret already signs every live session -- Tofu must never
   # rotate its value. See infra/modules/gcp/variables.tf's docstring.
   manage_session_secret_version = false
+
+  # Unlike sandbox, an accidental destroy-and-recreate here would take
+  # down the real, currently-serving dashboard and agents.
+  deletion_protection = true
 }
 
 module "azure" {

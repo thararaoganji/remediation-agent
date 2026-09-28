@@ -121,11 +121,12 @@ resource "google_secret_manager_secret_version" "google_api_key" {
 # --- Cloud Run Jobs (the three agents) ---------------------------------------
 
 resource "google_cloud_run_v2_job" "agent" {
-  for_each = toset(["techdebt", "coverage", "duplicate"])
-  project  = var.project_id
-  name     = "sonar-remediation-${each.key}-job"
-  location = var.region
-  labels   = { environment = var.environment }
+  for_each            = toset(["techdebt", "coverage", "duplicate"])
+  project             = var.project_id
+  name                = "sonar-remediation-${each.key}-job"
+  location            = var.region
+  labels              = { environment = var.environment }
+  deletion_protection = var.deletion_protection
 
   template {
     task_count = 1
@@ -180,10 +181,11 @@ resource "google_cloud_run_v2_job" "agent" {
 # --- Cloud Run Service (dashboard) -------------------------------------------
 
 resource "google_cloud_run_v2_service" "dashboard" {
-  project  = var.project_id
-  name     = "sonar-dashboard"
-  location = var.region
-  labels   = { environment = var.environment }
+  project             = var.project_id
+  name                = "sonar-dashboard"
+  location            = var.region
+  labels              = { environment = var.environment }
+  deletion_protection = var.deletion_protection
 
   scaling {
     min_instance_count = 0

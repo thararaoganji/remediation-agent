@@ -43,3 +43,17 @@ variable "manage_session_secret_version" {
   type        = bool
   default     = true
 }
+
+variable "deletion_protection" {
+  description = <<-EOT
+    Passed to the Cloud Run Jobs and Service. The provider defaults this
+    to true, which silently blocks any `tofu apply` that needs to
+    destroy-and-recreate one of these (confirmed the hard way: a tainted
+    resource -- e.g. from a bad image -- couldn't be replaced until this
+    was explicitly set false). False for sandbox, where that churn is
+    expected; true for prod, where an accidental destroy would take down
+    the live dashboard/agents.
+  EOT
+  type        = bool
+  default     = false
+}
