@@ -1,13 +1,13 @@
-# Builds the dashboard and agent images once, pushes each to BOTH GCP
-# Artifact Registry and Azure ACR tagged with the git SHA, then hands those
-# exact image refs to the tofu-deploy composite action. This job's own
-# `environment:` (set from the `environment` input below, sandbox or prod)
-# is what makes `vars.*` resolve to that environment's own
-# project/registry/etc, and what makes prod's GitHub Environment
-# protection rule (required reviewers) pause this workflow before it
-# starts. It has to live here rather than on the caller job in deploy.yml
-# -- GitHub's schema for a job that calls a reusable workflow via `uses:`
-# doesn't accept `environment:` alongside it.
+# Builds the dashboard and agent images and pushes each to whichever
+# registries `cloud` selects (both GCP Artifact Registry and Azure ACR by
+# default), tagged with the git SHA, then hands those image refs to the
+# tofu-deploy composite action. This job's own `environment:` (set from the
+# `environment` input below, sandbox or prod) is what makes `vars.*` resolve
+# to that environment's own project/registry/etc, and what makes prod's
+# GitHub Environment protection rule (required reviewers) pause this
+# workflow before it starts. It has to live here rather than on the caller
+# job in deploy.yml -- GitHub's schema for a job that calls a reusable
+# workflow via `uses:` doesn't accept `environment:` alongside it.
 name: Reusable - Tofu deploy
 
 on:
@@ -17,6 +17,11 @@ on:
         description: "sandbox | prod"
         required: true
         type: string
+      cloud:
+        description: "both | gcp | azure -- which cloud(s) to build/push/deploy to"
+        required: false
+        type: string
+        default: both
 
 permissions:
   contents: read
@@ -29,6 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # GCP auth is always needed even for an azure-only run -- Tofu's own
+      # state backend lives in a GCS bucket.
       - name: Auth to GCP (Workload Identity Federation)
         uses: google-github-actions/auth@v2
         with:
@@ -39,6 +46,7 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v2
 
       - name: Auth to Azure (federated credential)
+        if: inputs.cloud != 'gcp'
         uses: azure/login@v2
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
@@ -46,9 +54,11 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
 
       - name: Configure Docker for GCP Artifact Registry
+        if: inputs.cloud != 'azure'
         run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
 
       - name: Log in to Azure Container Registry
+        if: inputs.cloud != 'gcp'
         run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
 
       - name: Set image tags
@@ -64,28 +74,35 @@ jobs:
             echo "azure_agent=${AZ_REPO}/sonar-remediation-agent:${SHA}"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Build and push agent image
+      - name: Build and push agent image (GCP)
+        if: inputs.cloud != 'azure'
         run: |
-          docker build -f Dockerfile \
-            -t "${{ steps.images.outputs.gcp_agent }}" \
-            -t "${{ steps.images.outputs.azure_agent }}" \
-            .
+          docker build -f Dockerfile -t "${{ steps.images.outputs.gcp_agent }}" .
           docker push "${{ steps.images.outputs.gcp_agent }}"
+
+      - name: Build and push agent image (Azure)
+        if: inputs.cloud != 'gcp'
+        run: |
+          docker build -f Dockerfile -t "${{ steps.images.outputs.azure_agent }}" .
           docker push "${{ steps.images.outputs.azure_agent }}"
 
-      - name: Build and push dashboard image
+      - name: Build and push dashboard image (GCP)
+        if: inputs.cloud != 'azure'
         run: |
-          docker build -f dashboard/Dockerfile \
-            -t "${{ steps.images.outputs.gcp_dashboard }}" \
-            -t "${{ steps.images.outputs.azure_dashboard }}" \
-            .
+          docker build -f dashboard/Dockerfile -t "${{ steps.images.outputs.gcp_dashboard }}" .
           docker push "${{ steps.images.outputs.gcp_dashboard }}"
+
+      - name: Build and push dashboard image (Azure)
+        if: inputs.cloud != 'gcp'
+        run: |
+          docker build -f dashboard/Dockerfile -t "${{ steps.images.outputs.azure_dashboard }}" .
           docker push "${{ steps.images.outputs.azure_dashboard }}"
 
       - name: Deploy with OpenTofu
         uses: ./.github/actions/tofu-deploy
         with:
           environment: ${{ inputs.environment }}
+          cloud: ${{ inputs.cloud }}
           gcp_dashboard_image: ${{ steps.images.outputs.gcp_dashboard }}
           gcp_agent_image: ${{ steps.images.outputs.gcp_agent }}
           azure_dashboard_image: ${{ steps.images.outputs.azure_dashboard }}

@@ -3,12 +3,14 @@
 # GCP-only, no Tofu) now that infra/ manages everything via OpenTofu -- see
 # infra/README.md.
 #
-# A push to main always runs both, sandbox then prod (prod still pauses for
-# its GitHub Environment's required-reviewer approval -- that gate lives in
-# the repo's Environment settings, not in this file). A manual run
-# (workflow_dispatch) lets you instead pick just one environment from the
-# dropdown, e.g. to redeploy prod alone after approving it, or to re-push
-# sandbox alone without waiting on prod's gate.
+# A push to main always runs both environments and both clouds, sandbox
+# then prod (prod still pauses for its GitHub Environment's
+# required-reviewer approval -- that gate lives in the repo's Environment
+# settings, not in this file). A manual run (workflow_dispatch) lets you
+# instead pick just one environment and/or just one cloud from the
+# dropdowns, e.g. to redeploy prod alone after approving it, to re-push
+# sandbox alone without waiting on prod's gate, or to push only to Azure
+# while GCP is untouched.
 name: Deploy
 
 on:
@@ -39,6 +41,15 @@ on:
           - sandbox
           - prod
         default: sandbox
+      cloud:
+        description: "Which cloud(s) to deploy"
+        required: true
+        type: choice
+        options:
+          - both
+          - gcp
+          - azure
+        default: both
 
 jobs:
   deploy-sandbox:
@@ -49,6 +60,7 @@ jobs:
     uses: ./.github/workflows/reusable-tofu-deploy.yml
     with:
       environment: sandbox
+      cloud: ${{ inputs.cloud || 'both' }}
 
   deploy-prod:
     needs: deploy-sandbox
@@ -62,3 +74,4 @@ jobs:
     uses: ./.github/workflows/reusable-tofu-deploy.yml
     with:
       environment: prod
+      cloud: ${{ inputs.cloud || 'both' }}
