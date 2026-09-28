@@ -1,17 +1,15 @@
-# Single entrypoint for deploying both the dashboard and the agents, to both
-# clouds, for both environments. Supersedes the old deploy-gcp.yml (agent-only,
-# GCP-only, no Tofu) now that infra/ manages everything via OpenTofu -- see
-# infra/README.md.
+# Deploys the dashboard and agents to Azure only -- sandbox then prod (prod
+# still pauses for its GitHub Environment's required-reviewer approval --
+# that gate lives in the repo's Environment settings, not in this file). A
+# push to main always runs both environments; a manual run
+# (workflow_dispatch) lets you pick just one.
 #
-# A push to main always runs both environments and both clouds, sandbox
-# then prod (prod still pauses for its GitHub Environment's
-# required-reviewer approval -- that gate lives in the repo's Environment
-# settings, not in this file). A manual run (workflow_dispatch) lets you
-# instead pick just one environment and/or just one cloud from the
-# dropdowns, e.g. to redeploy prod alone after approving it, to re-push
-# sandbox alone without waiting on prod's gate, or to push only to Azure
-# while GCP is untouched.
-name: Deploy
+# Split from a single cloud-picker workflow into one file per cloud so GCP
+# and Azure deploys run as independent, parallel workflow runs with their
+# own clear pass/fail status, instead of one always sequential run that
+# tried to do both. See deploy-gcp.yml for GCP's identical structure --
+# both call the same cloud-parameterized reusable-tofu-deploy.yml.
+name: Deploy (Azure)
 
 on:
   push:
@@ -27,7 +25,7 @@ on:
       - "Dockerfile"
       - "dashboard/**"
       - "infra/**"
-      - ".github/workflows/deploy.yml"
+      - ".github/workflows/deploy-azure.yml"
       - ".github/workflows/reusable-tofu-deploy.yml"
       - ".github/actions/tofu-deploy/**"
   workflow_dispatch:
@@ -41,15 +39,6 @@ on:
           - sandbox
           - prod
         default: sandbox
-      cloud:
-        description: "Which cloud(s) to deploy"
-        required: true
-        type: choice
-        options:
-          - both
-          - gcp
-          - azure
-        default: both
 
 jobs:
   deploy-sandbox:
@@ -60,7 +49,7 @@ jobs:
     uses: ./.github/workflows/reusable-tofu-deploy.yml
     with:
       environment: sandbox
-      cloud: ${{ inputs.cloud || 'both' }}
+      cloud: azure
 
   deploy-prod:
     needs: deploy-sandbox
@@ -74,4 +63,4 @@ jobs:
     uses: ./.github/workflows/reusable-tofu-deploy.yml
     with:
       environment: prod
-      cloud: ${{ inputs.cloud || 'both' }}
+      cloud: azure
