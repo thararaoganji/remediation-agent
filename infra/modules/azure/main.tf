@@ -371,3 +371,15 @@ resource "azurerm_role_assignment" "github_deployer_acr_push" {
   role_definition_name = "AcrPush"
   principal_id         = azuread_service_principal.github_deployer.object_id
 }
+
+resource "azurerm_role_assignment" "github_deployer_kv_admin" {
+  # Contributor (github_deployer_rg, above) is control-plane only --
+  # reading/writing the actual SECRET VALUE in azurerm_key_vault_secret
+  # is a Key Vault data-plane action, same distinction as the Cosmos DB
+  # SQL role split elsewhere in this module. The first real CI apply
+  # proved this: `tofu plan` failed reading dashboard-session-secret with
+  # a 403 on Microsoft.KeyVault/vaults/secrets/getSecret/action.
+  scope                = azurerm_key_vault.main.id
+  role_definition_name = "Key Vault Secrets Officer"
+  principal_id         = azuread_service_principal.github_deployer.object_id
+}

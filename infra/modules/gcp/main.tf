@@ -276,10 +276,24 @@ resource "google_service_account" "github_deployer" {
 }
 
 resource "google_project_iam_member" "github_deployer_roles" {
+  # This SA runs `tofu apply` for the whole GCP module, not just "push an
+  # image and update a running service" -- the first real CI run proved
+  # run.developer/artifactregistry.writer/iam.serviceAccountUser weren't
+  # enough: Tofu also needs to READ (and on drift, write) the project's
+  # IAM bindings, the Firestore database, the Secret Manager secrets, and
+  # the WIF pool itself, none of which those three roles cover. Scoped to
+  # what the module's resource types actually need, short of project
+  # Owner -- projectIamAdmin is still broad (can grant/revoke any role to
+  # any principal on this project), but it's the one role this can't
+  # avoid needing, since the module itself manages project IAM bindings.
   for_each = toset([
-    "roles/run.developer",
-    "roles/artifactregistry.writer",
-    "roles/iam.serviceAccountUser",
+    "roles/run.admin",
+    "roles/artifactregistry.admin",
+    "roles/iam.serviceAccountAdmin",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/datastore.owner",
+    "roles/secretmanager.admin",
+    "roles/iam.workloadIdentityPoolAdmin",
   ])
   project = var.project_id
   role    = each.key
