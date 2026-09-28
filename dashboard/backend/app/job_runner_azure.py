@@ -50,13 +50,37 @@ class ContainerAppsJobRunner(JobRunner):
         job = client.jobs.get(resource_group, job_name)
         current = job.properties.template.containers[0]
 
+        # `env` here is only the small set of PER-RUN values runs.py's
+        # create_run() resolves (RUN_ID, SONAR_BASE_URL, the LLM/GitHub
+        # secrets, etc.) -- never the job's baked-in defaults
+        # (CLOUD_PROVIDER, AZURE_MANAGED_IDENTITY_CLIENT_ID,
+        # AZURE_COSMOS_ENDPOINT, AZURE_KEY_VAULT_URL -- see the Tofu
+        # module's "Baked-in fallback values" env blocks). Since `template`
+        # REPLACES the whole container rather than overlaying (this
+        # docstring's own opening paragraph), building the override from
+        # ONLY the per-run dict -- as an earlier version of this function
+        # did -- silently wiped those baked-in vars from every real
+        # execution. That's not cosmetic: with CLOUD_PROVIDER gone,
+        # core/tools/run_status.py's os.environ.get("CLOUD_PROVIDER",
+        # "gcp") falls back to "gcp", so every run tried (and silently
+        # failed, by design) to report status to Firestore instead of
+        # Cosmos -- confirmed the hard way: runs stayed stuck on
+        # "running" forever with zero events, even though the job itself
+        # completed successfully. Starting from current.env and
+        # overlaying the per-run dict on top (per-run wins on overlapping
+        # keys like SONAR_BASE_URL/LANGUAGE/CE_EDITION/AGENT_TYPE, which
+        # the job's own env intentionally seeds with placeholders for
+        # exactly this override) keeps both.
+        merged_env = {v.name: v.value for v in (current.env or [])}
+        merged_env.update(env)
+
         override_container = JobExecutionContainer(
             image=current.image,
             name=current.name,
             command=current.command,
             args=current.args,
             resources=current.resources,
-            env=[EnvironmentVar(name=k, value=v) for k, v in env.items()],
+            env=[EnvironmentVar(name=k, value=v) for k, v in merged_env.items()],
         )
         poller = client.jobs.begin_start(
             resource_group_name=resource_group,
