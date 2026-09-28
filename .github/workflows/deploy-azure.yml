@@ -1,8 +1,11 @@
-# Deploys the dashboard and agents to Azure only -- sandbox then prod (prod
-# still pauses for its GitHub Environment's required-reviewer approval --
-# that gate lives in the repo's Environment settings, not in this file). A
-# push to main always runs both environments; a manual run
-# (workflow_dispatch) lets you pick just one.
+# A push to main deploys sandbox only, automatically. prod NEVER deploys
+# from a push -- it only runs from a manual workflow_dispatch that
+# explicitly picks "prod" or "both", by design (prod holds real user
+# data; nothing should touch it without a deliberate, human-initiated
+# action). Note: GitHub's required-reviewer environment protection rules
+# need GitHub Pro/Team on a private repo, which this account doesn't have
+# -- so "manually triggered" is the actual gate here, not a second
+# approval click on top of it.
 #
 # Split from a single cloud-picker workflow into one file per cloud so GCP
 # and Azure deploys run as independent, parallel workflow runs with their
@@ -56,7 +59,8 @@ jobs:
     if: |
       always() &&
       (needs.deploy-sandbox.result == 'success' || needs.deploy-sandbox.result == 'skipped') &&
-      (github.event_name == 'push' || inputs.environment == 'both' || inputs.environment == 'prod')
+      github.event_name == 'workflow_dispatch' &&
+      (inputs.environment == 'both' || inputs.environment == 'prod')
     permissions:
       contents: read
       id-token: write
