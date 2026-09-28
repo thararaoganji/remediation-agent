@@ -10,6 +10,7 @@ attached managed identity in Azure, matching the same "no long-lived
 credentials" approach the GCP docs already use for GitHub Actions'
 Workload Identity Federation."""
 
+import datetime
 import os
 from typing import Any
 
@@ -19,6 +20,28 @@ from azure.identity import DefaultAzureCredential
 from .storage import DocumentStore
 
 _DATABASE_NAME = "dashboard"
+
+
+def _json_safe(value: Any) -> Any:
+    """Recursively converts datetime objects to ISO 8601 strings. Cosmos's
+    SDK just json.dumps()s whatever body it's given -- unlike Firestore's,
+    which accepts native datetime objects and stores them as a proper
+    Timestamp type -- so a raw `datetime.now(...)` anywhere in a doc (e.g.
+    runs.py's create_run) 500s with "Object of type datetime is not JSON
+    serializable" the moment it hits Cosmos. Every create_doc/update_doc
+    caller in this app passes plain values straight from FastAPI/Pydantic,
+    not already-JSON-safe data, so this walks the whole structure rather
+    than just the top level -- fixing it here once, in the storage layer
+    itself, rather than requiring every caller to remember Cosmos's
+    limitation (storage.py's whole point is that callers shouldn't need
+    to know which backend they're talking to)."""
+    if isinstance(value, datetime.datetime):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {k: _json_safe(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    return value
 
 
 class CosmosStore(DocumentStore):
@@ -45,7 +68,7 @@ class CosmosStore(DocumentStore):
         import uuid
 
         doc_id = doc_id or str(uuid.uuid4())
-        body = {**data, "id": doc_id}
+        body = _json_safe({**data, "id": doc_id})
         self._container(collection).upsert_item(body=body)
         return doc_id
 
@@ -69,7 +92,7 @@ class CosmosStore(DocumentStore):
         # set(merge=True) semantics exactly (shallow field merge, creates
         # the doc if it didn't already exist).
         existing = self.get_doc(collection, doc_id) or {}
-        merged = {**existing, **data, "id": doc_id}
+        merged = _json_safe({**existing, **data, "id": doc_id})
         self._container(collection).upsert_item(body=merged)
 
     def delete_doc(self, collection: str, doc_id: str) -> None:
