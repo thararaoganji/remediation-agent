@@ -50,6 +50,30 @@ resource "google_project_iam_member" "dashboard_sa_roles" {
   member  = "serviceAccount:${google_service_account.dashboard_sa.email}"
 }
 
+# --- Agent service account -----------------------------------------------
+# The Cloud Run Jobs never had an explicit service_account set, so they'd
+# silently run as the default compute SA. That was invisible on prod
+# (created before mid-2024, when GCP still auto-granted that SA a broad
+# Editor role at project creation) but sandbox -- created fresh during
+# this session -- got a near-empty default SA, and the very first real
+# job update failed reading google-api-key: "Permission denied ... must
+# be granted Secret Manager Secret Accessor". Rather than lean on that
+# legacy auto-grant (itself an anti-pattern GCP has since dropped), giving
+# the jobs their own least-privilege identity is the correct fix, not a
+# workaround -- mirrors the agent/dashboard identity split already used on
+# the Azure side.
+resource "google_service_account" "agent_sa" {
+  project      = var.project_id
+  account_id   = "sonar-agent-sa"
+  display_name = "Sonar agent Cloud Run Jobs"
+}
+
+resource "google_project_iam_member" "agent_sa_secret_accessor" {
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = "serviceAccount:${google_service_account.agent_sa.email}"
+}
+
 # --- Firestore -----------------------------------------------------------
 
 resource "google_firestore_database" "default" {
@@ -131,8 +155,9 @@ resource "google_cloud_run_v2_job" "agent" {
   template {
     task_count = 1
     template {
-      max_retries = 0
-      timeout     = "3600s"
+      max_retries     = 0
+      timeout         = "3600s"
+      service_account = google_service_account.agent_sa.email
       containers {
         image = var.agent_image
         resources {
