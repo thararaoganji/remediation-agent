@@ -1,36 +1,20 @@
-# A push to main deploys sandbox only, automatically. prod NEVER deploys
-# from a push -- it only runs from a manual workflow_dispatch that
-# explicitly picks "prod" or "both", by design (prod holds real user
-# data; nothing should touch it without a deliberate, human-initiated
-# action). Note: GitHub's required-reviewer environment protection rules
-# need GitHub Pro/Team on a private repo, which this account doesn't have
-# -- so "manually triggered" is the actual gate here, not a second
-# approval click on top of it.
+# Manual-trigger-only: nothing deploys automatically on push, for either
+# environment. Run this from the Actions tab and pick which environment(s)
+# to deploy. prod additionally requires explicitly selecting "prod" or
+# "both" -- picking "sandbox" (the default) never touches prod.
 #
-# Split from a single cloud-picker workflow into one file per cloud so GCP
-# and Azure deploys run as independent, parallel workflow runs with their
-# own clear pass/fail status, instead of one always sequential run that
-# tried to do both. See deploy-gcp.yml for GCP's identical structure --
-# both call the same cloud-parameterized reusable-tofu-deploy.yml.
+# GitHub's required-reviewer environment protection rules need GitHub
+# Pro/Team on a private repo, which this account doesn't have, so there's
+# no second approval click enforced on top of triggering this by hand --
+# that manual trigger is the actual gate today.
+#
+# Azure-only: calls reusable-deploy-azure.yml, which has no GCP deployment
+# steps (it does still authenticate to GCP once, since Tofu's state
+# backend lives in a GCS bucket regardless of which cloud is being
+# touched). See deploy-gcp.yml for GCP's identical structure.
 name: Deploy (Azure)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - "agent_techdebt/**"
-      - "agent_coverage/**"
-      - "agent_duplicate/**"
-      - "sonar/**"
-      - "core/**"
-      - "run_local.py"
-      - "requirements.txt"
-      - "Dockerfile"
-      - "dashboard/**"
-      - "infra/**"
-      - ".github/workflows/deploy-azure.yml"
-      - ".github/workflows/reusable-tofu-deploy.yml"
-      - ".github/actions/tofu-deploy/**"
   workflow_dispatch:
     inputs:
       environment:
@@ -45,26 +29,23 @@ on:
 
 jobs:
   deploy-sandbox:
-    if: github.event_name == 'push' || inputs.environment == 'both' || inputs.environment == 'sandbox'
+    if: inputs.environment == 'both' || inputs.environment == 'sandbox'
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-tofu-deploy.yml
+    uses: ./.github/workflows/reusable-deploy-azure.yml
     with:
       environment: sandbox
-      cloud: azure
 
   deploy-prod:
     needs: deploy-sandbox
     if: |
       always() &&
       (needs.deploy-sandbox.result == 'success' || needs.deploy-sandbox.result == 'skipped') &&
-      github.event_name == 'workflow_dispatch' &&
       (inputs.environment == 'both' || inputs.environment == 'prod')
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-tofu-deploy.yml
+    uses: ./.github/workflows/reusable-deploy-azure.yml
     with:
       environment: prod
-      cloud: azure

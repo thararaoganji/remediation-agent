@@ -1,0 +1,81 @@
+# Builds the dashboard and agent images, pushes both to GCP Artifact
+# Registry tagged with the git SHA, then hands those image refs to the
+# tofu-deploy composite action (scoped to module.gcp only). This job's own
+# `environment:` (set from the `environment` input below, sandbox or prod)
+# is what makes `vars.*` resolve to that environment's own project/
+# registry/etc. It has to live here rather than on the caller job in
+# deploy-gcp.yml -- GitHub's schema for a job that calls a reusable
+# workflow via `uses:` doesn't accept `environment:` alongside it.
+#
+# GCP-only: no Azure auth, no Azure image build/push, no Azure inputs to
+# the composite action. See reusable-deploy-azure.yml for Azure's
+# equivalent (which, unlike this one, does still need a GCP auth step --
+# Tofu's own state backend lives in a GCS bucket regardless of which
+# cloud's resources are being touched).
+name: Reusable - Deploy GCP
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write # required for keyless auth via Workload Identity Federation
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Auth to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCP Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Set image tags
+        id: images
+        run: |
+          SHA="${{ github.sha }}"
+          REPO="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/sonar-remediation-repo"
+          {
+            echo "dashboard=${REPO}/sonar-dashboard:${SHA}"
+            echo "agent=${REPO}/sonar-remediation-agent:${SHA}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push agent image
+        run: |
+          docker build -f Dockerfile -t "${{ steps.images.outputs.agent }}" .
+          docker push "${{ steps.images.outputs.agent }}"
+
+      - name: Build and push dashboard image
+        run: |
+          docker build -f dashboard/Dockerfile -t "${{ steps.images.outputs.dashboard }}" .
+          docker push "${{ steps.images.outputs.dashboard }}"
+
+      - name: Deploy with OpenTofu
+        uses: ./.github/actions/tofu-deploy
+        with:
+          environment: ${{ inputs.environment }}
+          cloud: gcp
+          # Composite actions can't read `vars`/`secrets` themselves -- only
+          # this job (a normal reusable-workflow-call job) can, so they're
+          # passed through explicitly.
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_wif_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp_deploy_service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          tofu_state_bucket: ${{ vars.TOFU_STATE_BUCKET }}
+          gcp_dashboard_image: ${{ steps.images.outputs.dashboard }}
+          gcp_agent_image: ${{ steps.images.outputs.agent }}

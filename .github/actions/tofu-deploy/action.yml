@@ -23,12 +23,17 @@ inputs:
     required: true
   gcp_deploy_service_account:
     required: true
+  # Optional: reusable-deploy-gcp.yml doesn't have these to pass (cloud is
+  # always "gcp" there, so the Azure auth step below never runs).
   azure_client_id:
-    required: true
+    required: false
+    default: ""
   azure_tenant_id:
-    required: true
+    required: false
+    default: ""
   azure_subscription_id:
-    required: true
+    required: false
+    default: ""
   tofu_state_bucket:
     required: true
   gcp_dashboard_image:
