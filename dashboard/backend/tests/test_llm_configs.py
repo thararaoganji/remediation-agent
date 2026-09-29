@@ -73,3 +73,25 @@ def test_unknown_vendor_rejected(client, fake_firestore):
     login_as(client, fake_firestore, "admin@example.com", role="admin")
     resp = client.post("/api/llm-configs", json={"vendor": "carrier-pigeon", "model": "x", "api_key": "k"})
     assert resp.status_code == 422  # rejected by the Vendor Literal type before the handler runs
+
+
+def test_copilot_vendor_rejected(client, fake_firestore):
+    # Not a typo-guard test like the one above -- Copilot specifically has
+    # no static API key at all (see VENDOR_ENV_VAR's docstring), so it must
+    # never be accepted here even though it's a well-known LLM product.
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    resp = client.post("/api/llm-configs", json={"vendor": "copilot", "model": "gpt-4o", "api_key": "k"})
+    assert resp.status_code == 422
+
+
+def test_new_vendors_accepted(client, fake_firestore, fake_secrets):
+    login_as(client, fake_firestore, "admin@example.com", role="admin")
+    for vendor, model in [
+        ("mistral", "mistral-large-latest"),
+        ("groq", "llama-3.3-70b-versatile"),
+        ("deepseek", "deepseek-chat"),
+        ("openrouter", "anthropic/claude-3.5-sonnet"),
+    ]:
+        resp = client.post("/api/llm-configs", json={"vendor": vendor, "model": model, "api_key": "k"})
+        assert resp.status_code == 201, resp.text
+        assert resp.json()["vendor"] == vendor

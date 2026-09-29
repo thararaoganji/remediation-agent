@@ -143,6 +143,40 @@ export function AnthropicVendorIcon({ size = 18 }) {
   )
 }
 
+export function MistralVendorIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="#fa520f">
+      <path d="M4 5h4v14H4Zm12 0h4v14h-4ZM4 11h16v2H4Z" />
+    </svg>
+  )
+}
+
+export function GroqVendorIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="#f55036">
+      <path d="M13 2 4 14h6l-1 8 9-12h-6Z" />
+    </svg>
+  )
+}
+
+export function DeepSeekVendorIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#4d6bfe" strokeWidth="2">
+      <circle cx="12" cy="12" r="8" />
+      <circle cx="12" cy="12" r="2.5" fill="#4d6bfe" />
+    </svg>
+  )
+}
+
+export function OpenRouterVendorIcon({ size = 18 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="#6467f2" strokeWidth="2">
+      <circle cx="8" cy="8" r="5" />
+      <circle cx="16" cy="16" r="5" />
+    </svg>
+  )
+}
+
 export function SunIcon({ size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">

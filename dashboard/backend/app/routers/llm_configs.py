@@ -23,10 +23,23 @@ _COLLECTION = "llm_configs"
 # container override -- see core/llm_config.py on the agent side, which
 # this mirrors (the dashboard backend doesn't depend on core/, so this is
 # a small intentional duplication rather than a cross-package import).
+# Every one of these goes through ADK's LiteLlm wrapper except "google"
+# (core/llm_config.py's native path) -- confirmed each exact env var name
+# against the installed litellm's own provider resolution code rather
+# than assumed, since a wrong name here would silently 401 at run time
+# instead of failing at config-save time. Deliberately excludes
+# "copilot"/GitHub Copilot: it has no static API key at all (litellm's
+# github_copilot provider requires an interactive OAuth device-code login
+# that caches tokens to local disk, fundamentally incompatible with a
+# stateless per-run container).
 VENDOR_ENV_VAR = {
     "google": "GOOGLE_API_KEY",
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "groq": "GROQ_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "openrouter": "OPENROUTER_API_KEY",
 }
 
 # Kept in sync with VENDOR_ENV_VAR's keys by hand -- Literal needs its
@@ -35,7 +48,7 @@ VENDOR_ENV_VAR = {
 # Pydantic itself (422) before create/update's handler code ever runs, so
 # there's no separate runtime "is this a known vendor" check left to keep
 # in sync too.
-Vendor = Literal["google", "openai", "anthropic"]
+Vendor = Literal["google", "openai", "anthropic", "mistral", "groq", "deepseek", "openrouter"]
 
 
 def _secret_id(config_id: str) -> str:
