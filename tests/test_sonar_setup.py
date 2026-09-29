@@ -119,3 +119,30 @@ def test_setup_step_skips_branch_check_when_no_source_branch_given(tmp_path, mon
     state = _base_state(tmp_path)
     _drain(setup_mod.SetupStep(), state)
     assert state[sk.BRANCH_NAME] == "proj_agent_x"
+
+
+def test_setup_step_event_carries_state_delta_for_branch_ready(tmp_path, monkeypatch):
+    """Regression: SetupStep used to only write branch_name/sonar_project_key
+    via direct ctx.session.state mutation, with no state_delta on its
+    yielded event. That's invisible to any caller outside this run's own
+    execution that re-fetches the session via session_service.get_session()
+    -- confirmed empirically against the installed ADK version -- which is
+    exactly what run_local.py's _maybe_report_branch() does. The practical
+    effect: every run's branch was created and pushed correctly (every
+    later step reads ctx.session.state directly, in-process, so that part
+    always worked), but the dashboard's "branch ready" notification
+    (branch_name/sonar_dashboard_url) never fired for any run."""
+    monkeypatch.setattr(setup_mod.git_tools, "resolve_source", lambda *a, **kw: str(tmp_path))
+    monkeypatch.setattr(setup_mod.git_tools, "create_branch", lambda *a, **kw: "proj_agent_x")
+    monkeypatch.setattr(setup_mod.git_tools, "current_sha", lambda *a, **kw: "base0000")
+    monkeypatch.setattr(setup_mod, "get_adapter", lambda *a, **kw: _FakeAdapter())
+    monkeypatch.setattr(setup_mod.sonar_tools, "validate_connection", lambda *a, **kw: None)
+    monkeypatch.setattr(setup_mod.sonar_tools, "check_project_analyzed", lambda *a, **kw: None)
+
+    state = _base_state(tmp_path)
+    events = _drain(setup_mod.SetupStep(), state)
+
+    setup_events = [e for e in events if e.author == "setup_step"]
+    assert len(setup_events) == 1
+    assert setup_events[0].actions.state_delta[sk.BRANCH_NAME] == "proj_agent_x"
+    assert setup_events[0].actions.state_delta[sk.SONAR_PROJECT_KEY] == "proj"
