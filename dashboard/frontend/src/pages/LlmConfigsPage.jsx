@@ -12,11 +12,34 @@ import { VENDOR_ICONS, VENDOR_LABELS } from '../vendors.jsx'
 
 const PAGE_SIZE = 10
 
+// Curated, not exhaustive -- each vendor's catalog moves faster than this
+// file does, so the form always offers "Other (custom)" too rather than
+// ever blocking a model that isn't listed here yet. Deliberately no
+// "copilot" entry: see llm_configs.py's VENDOR_ENV_VAR docstring --
+// Copilot has no static API key to even put in this form.
 const VENDORS = [
-  { value: 'google', label: 'Google', modelPlaceholder: 'e.g. gemini-3.7-flash' },
-  { value: 'openai', label: 'OpenAI', modelPlaceholder: 'e.g. gpt-4o' },
-  { value: 'anthropic', label: 'Anthropic', modelPlaceholder: 'e.g. claude-3-5-sonnet-20241022' },
+  { value: 'google', label: 'Google', models: ['gemini-3.7-flash', 'gemini-3.7-pro', 'gemini-2.5-flash', 'gemini-2.5-pro'] },
+  { value: 'openai', label: 'OpenAI', models: ['gpt-4o', 'gpt-4o-mini', 'gpt-4.1', 'gpt-4.1-mini'] },
+  {
+    value: 'anthropic',
+    label: 'Anthropic',
+    models: ['claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022', 'claude-3-opus-20240229'],
+  },
+  {
+    value: 'mistral',
+    label: 'Mistral',
+    models: ['mistral-large-latest', 'mistral-small-latest', 'codestral-latest', 'open-mixtral-8x22b'],
+  },
+  { value: 'groq', label: 'Groq', models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'mixtral-8x7b-32768'] },
+  { value: 'deepseek', label: 'DeepSeek', models: ['deepseek-chat', 'deepseek-reasoner'] },
+  {
+    value: 'openrouter',
+    label: 'OpenRouter',
+    models: ['anthropic/claude-3.5-sonnet', 'meta-llama/llama-3.1-70b-instruct', 'google/gemini-flash-1.5'],
+  },
 ]
+
+const CUSTOM_MODEL = '__custom__'
 
 function LlmConfigRow({ config, onEdit, onChanged }) {
   const [confirming, setConfirming] = useState(false)
@@ -95,7 +118,7 @@ function LlmConfigRow({ config, onEdit, onChanged }) {
   )
 }
 
-const BLANK_FORM = { vendor: VENDORS[0].value, model: '', apiKey: '' }
+const BLANK_FORM = { vendor: VENDORS[0].value, model: VENDORS[0].models[0], apiKey: '' }
 
 export default function LlmConfigsPage() {
   usePageTitle('LLM API Keys')
@@ -108,6 +131,12 @@ export default function LlmConfigsPage() {
   const [formOpen, setFormOpen] = useState(false)
   const [editingId, setEditingId] = useState(null)
   const [form, setForm] = useState(BLANK_FORM)
+  // Separate from form.model: a config's stored model might not be one of
+  // the curated options above (an older run, or a newer model the vendor
+  // shipped after this list was written) -- editing it must show that
+  // real value in a free-text field, never silently swap it out for the
+  // first dropdown option.
+  const [customModel, setCustomModel] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
 
@@ -128,6 +157,7 @@ export default function LlmConfigsPage() {
   function openCreate() {
     setEditingId(null)
     setForm(BLANK_FORM)
+    setCustomModel(false)
     setFormError(null)
     setFormOpen(true)
   }
@@ -135,8 +165,26 @@ export default function LlmConfigsPage() {
   function openEdit(config) {
     setEditingId(config.id)
     setForm({ vendor: config.vendor, model: config.model, apiKey: '' })
+    const knownModels = VENDORS.find((v) => v.value === config.vendor)?.models || []
+    setCustomModel(!knownModels.includes(config.model))
     setFormError(null)
     setFormOpen(true)
+  }
+
+  function handleVendorChange(vendor) {
+    const firstModel = VENDORS.find((v) => v.value === vendor)?.models[0] || ''
+    setForm((f) => ({ ...f, vendor, model: firstModel }))
+    setCustomModel(false)
+  }
+
+  function handleModelSelectChange(value) {
+    if (value === CUSTOM_MODEL) {
+      setCustomModel(true)
+      setForm((f) => ({ ...f, model: '' }))
+    } else {
+      setCustomModel(false)
+      setForm((f) => ({ ...f, model: value }))
+    }
   }
 
   function closeForm() {
@@ -179,7 +227,7 @@ export default function LlmConfigsPage() {
   if (!isAdmin) return <Navigate to="/connections/sonar-servers" replace />
 
   const isEdit = Boolean(editingId)
-  const modelPlaceholder = VENDORS.find((v) => v.value === form.vendor)?.modelPlaceholder
+  const vendorModels = VENDORS.find((v) => v.value === form.vendor)?.models || []
 
   return (
     <div className="connections-page">
@@ -198,7 +246,7 @@ export default function LlmConfigsPage() {
             <form className="new-run-form" onSubmit={handleSubmit}>
               <label>
                 Vendor
-                <select value={form.vendor} onChange={(e) => setForm((f) => ({ ...f, vendor: e.target.value }))}>
+                <select value={form.vendor} onChange={(e) => handleVendorChange(e.target.value)}>
                   {VENDORS.map((v) => (
                     <option key={v.value} value={v.value}>
                       {v.label}
@@ -208,14 +256,30 @@ export default function LlmConfigsPage() {
               </label>
               <label>
                 Model
-                <input
-                  placeholder={modelPlaceholder}
-                  value={form.model}
-                  onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
-                  required
-                  autoFocus
-                />
+                <select
+                  value={customModel ? CUSTOM_MODEL : form.model}
+                  onChange={(e) => handleModelSelectChange(e.target.value)}
+                >
+                  {vendorModels.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                  <option value={CUSTOM_MODEL}>Other (custom)…</option>
+                </select>
               </label>
+              {customModel && (
+                <label>
+                  Custom model name
+                  <input
+                    placeholder="e.g. gemini-flash-latest"
+                    value={form.model}
+                    onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}
+                    required
+                    autoFocus
+                  />
+                </label>
+              )}
               <label>
                 {isEdit ? 'New API key (leave blank to keep the current one)' : 'API key'}
                 <input
