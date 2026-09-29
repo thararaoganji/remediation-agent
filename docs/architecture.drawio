@@ -1,0 +1,438 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mxfile host="app.diagrams.net" modified="2026-09-29T00:00:00.000Z" agent="claude-code" version="24.7.17">
+  <diagram id="page-gcp" name="GCP">
+    <mxGraphModel dx="1700" dy="1250" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1250" math="0" shadow="0">
+      <root>
+        <mxCell id="g0" />
+        <mxCell id="g1" parent="g0" />
+        <mxCell id="gn2" value="Sonar Remediation Agent — GCP Architecture (GitHub Pipeline · Cloud Services · Tech Stack)" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="20" y="10" width="1660" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="gn3" value="Developer" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#666666;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="20" y="90" width="130" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gn4" value="GitHub Repo&#10;main branch" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#24292F;strokeColor=#0B0D0E;fontColor=#FFFFFF;" vertex="1" parent="g1">
+          <mxGeometry x="190" y="90" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gn5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn3" target="gn4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn6" value="GitHub Actions — manual trigger only (workflow_dispatch), never on push" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=15;fontStyle=1;fillColor=#F6F8FA;strokeColor=#0B0D0E;arcSize=4;" vertex="1" parent="g1">
+          <mxGeometry x="380" y="40" width="1300" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="gn7" value="deploy-gcp.yml" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="420" y="90" width="190" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="gn8" value="trigger (sandbox/prod)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn4" target="gn7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn9" value="reusable-deploy-gcp.yml&#10;(build + push agent &amp; dashboard images)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="650" y="90" width="260" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="gn10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn7" target="gn9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn11" value="tofu-deploy-gcp&#10;(composite action)&#10;tofu init / plan / apply" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="950" y="90" width="220" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="gn12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn9" target="gn11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn13" value="OpenTofu state&#10;GCS bucket — gs://sonar-remediation-tofu-state&#10;(sandbox/gcp, prod/gcp prefixes)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#666666;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="1210" y="78" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gn14" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn11" target="gn13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn15" value="Keyless CI auth: Workload Identity Federation — no long-lived service-account keys stored anywhere" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="g1">
+          <mxGeometry x="420" y="155" width="990" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="gn16" value="GCP — project: sonar-remediation-sandbox (sandbox) / aiproject-495122 (prod)" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=15;fontStyle=1;fillColor=#E8F0FE;strokeColor=#4285F4;arcSize=4;" vertex="1" parent="g1">
+          <mxGeometry x="20" y="240" width="1660" height="370" as="geometry" />
+        </mxCell>
+        <mxCell id="gn17" value="Cloud Run Service&#10;sonar-dashboard&#10;(FastAPI + React build, scale-to-zero)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="60" y="290" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="gn18" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.cloud_run;" vertex="1" parent="g1">
+          <mxGeometry x="346" y="296" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="gn19" value="Cloud Run Job&#10;techdebt-job" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="60" y="400" width="250" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gn20" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.cloud_run;" vertex="1" parent="g1">
+          <mxGeometry x="280" y="406" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="gn21" value="Cloud Run Job&#10;coverage-job" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="60" y="465" width="250" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gn22" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.cloud_run;" vertex="1" parent="g1">
+          <mxGeometry x="280" y="471" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="gn23" value="Cloud Run Job&#10;duplicate-job" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="60" y="530" width="250" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gn24" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.cloud_run;" vertex="1" parent="g1">
+          <mxGeometry x="280" y="536" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="gn25" value="per-run container&#10;override (env)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn17" target="gn19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn17" target="gn21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn27" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn17" target="gn23">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn28" value="Firestore (Native mode)&#10;users · sonar_servers · github_credentials&#10;llm_configs · runs · events" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="470" y="290" width="260" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gn29" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#FF6D01;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.firestore;" vertex="1" parent="g1">
+          <mxGeometry x="696" y="296" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="gn30" value="Secret Manager&#10;API keys, tokens, session secret" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="470" y="390" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gn31" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.secret_manager;" vertex="1" parent="g1">
+          <mxGeometry x="696" y="396" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="gn32" value="Artifact Registry&#10;Docker images (SHA-tagged)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="470" y="465" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gn33" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.artifact_registry;" vertex="1" parent="g1">
+          <mxGeometry x="696" y="471" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="gn34" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn17" target="gn28">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn35" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn17" target="gn30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn36" value="self-reported&#10;status/events" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn19" target="gn28">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn37" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="g1" source="gn19" target="gn30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn38" value="IAM Service Accounts&#10;dashboard-sa · agent-sa · github-deployer&#10;(least-privilege roles per identity)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="780" y="290" width="260" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gn39" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#4285F4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.gcp2.identity_and_access_management;" vertex="1" parent="g1">
+          <mxGeometry x="1006" y="296" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="gn40" value="Cloud Logging — automatic for Cloud Run&#10;(no separate resource to provision)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#4285F4;fontColor=#222222;" vertex="1" parent="g1">
+          <mxGeometry x="780" y="400" width="260" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gn41" value="SonarQube Server&#10;(user-provided)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;" vertex="1" parent="g1">
+          <mxGeometry x="1120" y="290" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gn42" value="GitHub&#10;(source repo, fix branch push)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;" vertex="1" parent="g1">
+          <mxGeometry x="1120" y="360" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gn43" value="LLM Vendor APIs&#10;Google · OpenAI · Anthropic · Mistral&#10;Groq · DeepSeek · OpenRouter" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;" vertex="1" parent="g1">
+          <mxGeometry x="1120" y="430" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gn44" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="g1" source="gn19" target="gn41">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn45" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="g1" source="gn21" target="gn41">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn46" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="g1" source="gn23" target="gn41">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn47" value="fetch source,&#10;push fix branch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="g1" source="gn19" target="gn42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn48" value="code analysis &amp; fix&#10;generation (via LiteLlm)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="g1" source="gn19" target="gn43">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="gn49" value="Cloud-agnostic facade: storage.py · secrets.py · job_runner.py · run_status.py — picked by CLOUD_PROVIDER env var" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="g1">
+          <mxGeometry x="60" y="630" width="980" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="gn50" value="Tech Stack" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=15;fontStyle=1;fillColor=#FFF8E1;strokeColor=#B8860B;arcSize=4;" vertex="1" parent="g1">
+          <mxGeometry x="60" y="665" width="1620" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gn51" value="Frontend: React 18 + Vite   ·   Backend: FastAPI (Python)   ·   Agent Core: Python + Google ADK (LiteLlm for non-Google vendors)   ·   IaC: OpenTofu (one root per cloud per environment)   ·   CI/CD: GitHub Actions, reusable workflows + composite actions, manual trigger only" style="text;html=1;align=left;verticalAlign=middle;fontSize=11.5;fontColor=#333333;" vertex="1" parent="g1">
+          <mxGeometry x="80" y="700" width="1580" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="gn52" value="Legend:  solid arrow = call/data flow · dashed box = external system, not owned by this repo" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="g1">
+          <mxGeometry x="20" y="745" width="1660" height="25" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="page-azure" name="Azure">
+    <mxGraphModel dx="1700" dy="1250" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1250" math="0" shadow="0">
+      <root>
+        <mxCell id="a0" />
+        <mxCell id="a1" parent="a0" />
+        <mxCell id="an2" value="Sonar Remediation Agent — Azure Architecture (GitHub Pipeline · Cloud Services · Tech Stack)" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="20" y="10" width="1660" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="an3" value="Developer" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#666666;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="20" y="90" width="130" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="an4" value="GitHub Repo&#10;main branch" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#24292F;strokeColor=#0B0D0E;fontColor=#FFFFFF;" vertex="1" parent="a1">
+          <mxGeometry x="190" y="90" width="150" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="an5" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an3" target="an4">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an6" value="GitHub Actions — manual trigger only (workflow_dispatch), never on push" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=15;fontStyle=1;fillColor=#F6F8FA;strokeColor=#0B0D0E;arcSize=4;" vertex="1" parent="a1">
+          <mxGeometry x="380" y="40" width="1300" height="150" as="geometry" />
+        </mxCell>
+        <mxCell id="an7" value="deploy-azure.yml" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="420" y="90" width="190" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="an8" value="trigger (sandbox/prod)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an4" target="an7">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an9" value="reusable-deploy-azure.yml&#10;(build + push agent &amp; dashboard images)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="650" y="90" width="260" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="an10" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an7" target="an9">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an11" value="tofu-deploy-azure&#10;(composite action)&#10;tofu init / plan / apply" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="950" y="90" width="220" height="45" as="geometry" />
+        </mxCell>
+        <mxCell id="an12" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an9" target="an11">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an13" value="OpenTofu state&#10;Azure Storage Account — sonarremediationtfstate&#10;(sandbox.tfstate, prod.tfstate blobs)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#666666;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="1210" y="78" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="an14" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an11" target="an13">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an15" value="Keyless CI auth: OIDC federated credential (Azure AD app) — no long-lived service-principal secrets stored anywhere" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="a1">
+          <mxGeometry x="420" y="155" width="990" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="an16" value="Azure — resource group: sonar-remediation-sandbox-rg" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=15;fontStyle=1;fillColor=#E5F1FB;strokeColor=#0078D4;arcSize=4;" vertex="1" parent="a1">
+          <mxGeometry x="20" y="240" width="1660" height="370" as="geometry" />
+        </mxCell>
+        <mxCell id="an17" value="Container App&#10;sonar-dashboard&#10;(FastAPI + React build, scale-to-zero)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="60" y="290" width="320" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="an18" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.container_instances;" vertex="1" parent="a1">
+          <mxGeometry x="346" y="296" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="an19" value="Container Apps Job&#10;techdebt-job" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="60" y="400" width="250" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="an20" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.container_instances;" vertex="1" parent="a1">
+          <mxGeometry x="280" y="406" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="an21" value="Container Apps Job&#10;coverage-job" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="60" y="465" width="250" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="an22" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.container_instances;" vertex="1" parent="a1">
+          <mxGeometry x="280" y="471" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="an23" value="Container Apps Job&#10;duplicate-job" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="60" y="530" width="250" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="an24" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.container_instances;" vertex="1" parent="a1">
+          <mxGeometry x="280" y="536" width="24" height="24" as="geometry" />
+        </mxCell>
+        <mxCell id="an25" value="per-run execution override&#10;(env merged with baked-in vars)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an17" target="an19">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an26" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an17" target="an21">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an27" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an17" target="an23">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an28" value="Cosmos DB (serverless, NoSQL API)&#10;users · sonar_servers · github_credentials&#10;llm_configs · runs · events" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="470" y="290" width="260" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="an29" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.azure_cosmos_db;" vertex="1" parent="a1">
+          <mxGeometry x="696" y="296" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="an30" value="Key Vault&#10;API keys, tokens, session secret" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="470" y="390" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="an31" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.key_vaults;" vertex="1" parent="a1">
+          <mxGeometry x="696" y="396" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="an32" value="Azure Container Registry&#10;Docker images (SHA-tagged)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="470" y="465" width="260" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="an33" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.container_registries;" vertex="1" parent="a1">
+          <mxGeometry x="696" y="471" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="an34" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an17" target="an28">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an35" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an17" target="an30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an36" value="self-reported&#10;status/events" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an19" target="an28">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an37" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;elbow=vertical;fontSize=11;strokeColor=#666666;" edge="1" parent="a1" source="an19" target="an30">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an38" value="User-Assigned Managed Identities&#10;dashboard-identity · agent-identity&#10;(least-privilege roles per identity)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="780" y="290" width="260" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="an39" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.azure_active_directory;" vertex="1" parent="a1">
+          <mxGeometry x="1006" y="296" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="an40" value="Log Analytics Workspace&#10;Container console/system logs&#10;(30-day retention)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#FFFFFF;strokeColor=#0078D4;fontColor=#222222;" vertex="1" parent="a1">
+          <mxGeometry x="780" y="400" width="260" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="an41" value="" style="sketch=0;outlineConnect=0;fontColor=#232F3E;gradientColor=none;fillColor=#0078D4;strokeColor=none;dashed=0;verticalLabelPosition=bottom;verticalAlign=top;align=center;html=1;fontSize=9;fontStyle=0;aspect=fixed;shape=mxgraph.azure7.log_analytics_workspaces;" vertex="1" parent="a1">
+          <mxGeometry x="1006" y="406" width="28" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="an42" value="SonarQube Server&#10;(user-provided)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;" vertex="1" parent="a1">
+          <mxGeometry x="1120" y="290" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="an43" value="GitHub&#10;(source repo, fix branch push)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;" vertex="1" parent="a1">
+          <mxGeometry x="1120" y="360" width="220" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="an44" value="LLM Vendor APIs&#10;Google · OpenAI · Anthropic · Mistral&#10;Groq · DeepSeek · OpenRouter" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;" vertex="1" parent="a1">
+          <mxGeometry x="1120" y="430" width="220" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="an45" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="a1" source="an19" target="an42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an46" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="a1" source="an21" target="an42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an47" value="" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="a1" source="an23" target="an42">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an48" value="fetch source,&#10;push fix branch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="a1" source="an19" target="an43">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an49" value="code analysis &amp; fix&#10;generation (via LiteLlm)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;strokeColor=#999999;fontSize=10;" edge="1" parent="a1" source="an19" target="an44">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="an50" value="Known gotchas (found the hard way this project): Container Apps Jobs' begin_start REPLACES the whole container definition, so the&#10;per-run env override must be merged with the job's baked-in vars, not just swapped in · log_analytics_workspace_id only takes effect at&#10;environment CREATION time, not via update on an existing one · &quot;Container Apps Contributor&quot; does NOT cover Container Apps JOBS — needs&#10;the separate &quot;Container Apps Jobs Operator&quot; role too" style="text;html=1;align=left;verticalAlign=top;fontSize=10.5;fontColor=#8a4b00;fontStyle=2;fillColor=#FFF8E1;strokeColor=#B8860B;rounded=1;spacing=8;" vertex="1" parent="a1">
+          <mxGeometry x="20" y="625" width="1660" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="an51" value="Cloud-agnostic facade: storage.py · secrets.py · job_runner.py · run_status.py — picked by CLOUD_PROVIDER env var" style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="a1">
+          <mxGeometry x="60" y="710" width="980" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="an52" value="Tech Stack" style="rounded=1;whiteSpace=wrap;html=1;verticalAlign=top;fontSize=15;fontStyle=1;fillColor=#FFF8E1;strokeColor=#B8860B;arcSize=4;" vertex="1" parent="a1">
+          <mxGeometry x="60" y="745" width="1620" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="an53" value="Frontend: React 18 + Vite   ·   Backend: FastAPI (Python)   ·   Agent Core: Python + Google ADK (LiteLlm for non-Google vendors)   ·   IaC: OpenTofu (one root per cloud per environment)   ·   CI/CD: GitHub Actions, reusable workflows + composite actions, manual trigger only" style="text;html=1;align=left;verticalAlign=middle;fontSize=11.5;fontColor=#333333;" vertex="1" parent="a1">
+          <mxGeometry x="80" y="780" width="1580" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="an54" value="Legend:  solid arrow = call/data flow · dashed box = external system, not owned by this repo" style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="a1">
+          <mxGeometry x="20" y="825" width="1660" height="25" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="page-agents" name="The 3 Agents">
+    <mxGraphModel dx="1700" dy="1250" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1700" pageHeight="1250" math="0" shadow="0">
+      <root>
+        <mxCell id="gt0" />
+        <mxCell id="gt1" parent="gt0" />
+        <mxCell id="gtn2" value="Sonar Remediation Agent — How Each of the 3 Agents Works" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fontColor=#222222;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="10" width="1660" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn3" value="All three share the same engine (setup · checkpoint · outer-loop · push, in core/ and sonar/) — only what each agent fetches, generates, and verifies per file is agent-specific." style="text;html=1;align=center;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="42" width="1660" height="22" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn4" value="Tech-Debt Agent&#10;Fixes Security, Reliability &amp; Maintainability findings" style="rounded=1;whiteSpace=wrap;html=1;fontSize=15;fontStyle=1;fillColor=#4285F4;strokeColor=none;fontColor=#FFFFFF;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="80" width="520" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn5" value="Coverage Agent&#10;Writes JUnit tests for uncovered code" style="rounded=1;whiteSpace=wrap;html=1;fontSize=15;fontStyle=1;fillColor=#34A853;strokeColor=none;fontColor=#FFFFFF;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="80" width="520" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn6" value="Duplicate Agent&#10;Extracts duplicated code into shared helpers" style="rounded=1;whiteSpace=wrap;html=1;fontSize=15;fontStyle=1;fillColor=#9333EA;strokeColor=none;fontColor=#FFFFFF;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="80" width="520" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn7" value="1. Setup&#10;Clone/checkout the repo, auto-detect the build tool (Maven/Gradle) and Java version, validate the SonarQube connection, create a fresh working branch ({project}_agent_&lt;timestamp&gt;)." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="150" width="520" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn8" value="1. Setup&#10;Clone/checkout the repo, auto-detect the build tool (Maven/Gradle) and Java version, validate the SonarQube connection, create a fresh working branch ({project}_agent_&lt;timestamp&gt;)." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="150" width="520" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn9" value="1. Setup&#10;Clone/checkout the repo, auto-detect the build tool (Maven/Gradle) and Java version, validate the SonarQube connection, create a fresh working branch ({project}_agent_&lt;timestamp&gt;)." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="150" width="520" height="75" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn10" value="2. Baseline&#10;N/A — the final Sonar ratings themselves are this agent's before/after signal." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="235" width="520" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn11" value="2. Baseline&#10;Requires JaCoCo configured (fails fast with setup instructions if missing). Records the project's current test coverage %." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="235" width="520" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn12" value="2. Baseline&#10;Records the project's current duplicated-lines density % before touching anything." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="235" width="520" height="60" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn13" value="3. Fetch &amp; prioritize&#10;Pull Security/Reliability/Maintainability findings (Critical/High/Medium), sort by severity, split into an auto-fix queue and a manual-review queue." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="305" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn14" value="3. Fetch &amp; prioritize&#10;Pull the files with the lowest test coverage first (most impactful files fixed first)." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="305" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn15" value="3. Fetch &amp; prioritize&#10;Pull the files that contain duplicated code blocks, most-duplicated first." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="305" width="520" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn16" value="4. Generate a fix&#10;A handful of rules have one unambiguous fix applied mechanically first (no LLM needed). Everything else: ask the LLM for a diff against the existing file." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="385" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn17" value="4. Generate a test&#10;Ask the LLM to WRITE A NEW JUnit test file targeting the specific uncovered lines/branches (a new file, not a diff to existing source)." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="385" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn18" value="4. Generate a refactor&#10;Ask the LLM for a diff that extracts the duplicated logic into a clean, reusable helper method/class." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="385" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn19" value="5. Apply &amp; verify&#10;Apply the change, then quick compile check. Diff rejected or won't compile → retry as a full-file rewrite. Still failing → narrow single-issue retry. Still no good → flag the file for manual review and move on." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="480" width="520" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn20" value="5. Apply &amp; verify&#10;Apply the change, then compile AND run the new test. Diff rejected or won't compile → retry as a full-file rewrite. Still failing → narrow single-issue retry. Still no good → flag the file for manual review and move on." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="480" width="520" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn21" value="5. Apply &amp; verify&#10;Apply the change, then quick compile check. Diff rejected or won't compile → retry as a full-file rewrite. Still failing → narrow single-issue retry. Still no good → flag the file for manual review and move on." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="480" width="520" height="100" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn22" value="6. Checkpoint&#10;Every batch of files: commit, trigger a full SonarQube re-scan + full project build/test. A regression or new issue → bisect and revert just the offending file(s), not the whole batch." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="590" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn23" value="6. Checkpoint&#10;Every batch of files: commit, trigger a full SonarQube re-scan + full project build/test. A regression or new issue → bisect and revert just the offending file(s), not the whole batch." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="590" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn24" value="6. Checkpoint&#10;Every batch of files: commit, trigger a full SonarQube re-scan + full project build/test. A regression or new issue → bisect and revert just the offending file(s), not the whole batch." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="590" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn25" value="7. Repeat&#10;Fetch → fix → checkpoint again, until the queue is empty or the iteration cap (5) is hit." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="685" width="520" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn26" value="7. Repeat&#10;Fetch → fix → checkpoint again, until the queue is empty or the iteration cap (5) is hit." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="685" width="520" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn27" value="7. Repeat&#10;Fetch → fix → checkpoint again, until the queue is empty or the iteration cap (5) is hit." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="685" width="520" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn28" value="8. Maintainability top-up&#10;If the Maintainability debt ratio is still below an A after the main pass, one more targeted pass on the highest-debt-minutes Minor/Low smells." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="745" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn29" value="8. Quality gate&#10;Check whether the new test files (or the production files they touch) introduced any new Maintainability smells; fix those too, reusing the Tech-Debt agent's own fix engine." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="745" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn30" value="8. Quality gate&#10;Check whether the extracted helper itself introduced any new Maintainability smells; fix those too, reusing the Tech-Debt agent's own fix engine." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="745" width="520" height="85" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn31" value="9. Push &amp; report&#10;Push the branch to GitHub (skipped if nothing changed). Final report: Security/Reliability/Maintainability ratings, issues fixed, push result, duration, LLM tokens used." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#4285F4;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="840" width="520" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn32" value="9. Push &amp; report&#10;Push the branch to GitHub (skipped if nothing changed). Final report: coverage % before → after, tests added, push result, duration." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#34A853;" vertex="1" parent="gt1">
+          <mxGeometry x="570" y="840" width="520" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn33" value="9. Push &amp; report&#10;Push the branch to GitHub (skipped if nothing changed). Final report: duplication density % before → after, files refactored, push result, duration." style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;align=left;verticalAlign=top;spacing=8;fillColor=#FFFFFF;strokeColor=#9333EA;" vertex="1" parent="gt1">
+          <mxGeometry x="1120" y="840" width="520" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="gtn34" value="Shared engine (identical code across all three): sonar/setup.py · sonar/checkpoint.py · core/agents/fix_loop.py (LLM-call gate + retry ladder) · core/agents/outer_loop.py · core/agents/checkpoint.py · core/agents/report.py (push step). Agent-specific code: fetch/prioritize, the fix/test/refactor prompt, and the per-file verify step." style="text;html=1;align=left;verticalAlign=middle;fontSize=11;fontColor=#666666;fontStyle=2;" vertex="1" parent="gt1">
+          <mxGeometry x="20" y="950" width="1660" height="40" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
