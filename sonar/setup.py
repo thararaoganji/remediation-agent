@@ -9,7 +9,7 @@ from typing import AsyncGenerator
 
 from google.adk.agents import BaseAgent
 from google.adk.agents.invocation_context import InvocationContext
-from google.adk.events import Event
+from google.adk.events import Event, EventActions
 
 from core import state_schema as sk
 from core.agents._shared import _msg
@@ -120,6 +120,30 @@ class SetupStep(BaseAgent):
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_ITERATION, 0)
         s.setdefault(sk.MAINTAINABILITY_EXPANSION_BATCH_SIZE, 8)
         source_note = f" (based on `{source_branch}`)" if source_branch else ""
-        yield Event(author=self.name, content=_msg(
-            f"Checked out branch `{branch_name}`{source_note} — {java_note}. Fetching Sonar issues next."
-        ))
+        # actions.state_delta, not just the `s[...] =` writes above: ADK's
+        # session store only commits a step's direct ctx.session.state
+        # mutations for the REST OF THIS SAME execution (every later step
+        # in this run correctly sees BRANCH_NAME/SONAR_PROJECT_KEY that
+        # way, which is why the actual remediation/push always worked
+        # fine) -- but a caller OUTSIDE this run's execution that calls
+        # session_service.get_session() separately, like run_local.py's
+        # _maybe_report_branch() polling loop, gets a session rebuilt from
+        # the store's committed event history, which never reflects a
+        # mutation that wasn't echoed into some event's state_delta.
+        # Confirmed empirically (not just from ADK's own docs) by
+        # reproducing both paths in isolation: direct mutation alone never
+        # became visible via a fresh get_session() call, while adding it
+        # to state_delta did -- which is exactly why every run's Sonar
+        # dashboard/branch-ready notification silently never fired even
+        # though the branch itself was always created and pushed
+        # correctly.
+        yield Event(
+            author=self.name,
+            content=_msg(
+                f"Checked out branch `{branch_name}`{source_note} — {java_note}. Fetching Sonar issues next."
+            ),
+            actions=EventActions(state_delta={
+                sk.BRANCH_NAME: branch_name,
+                sk.SONAR_PROJECT_KEY: s[sk.SONAR_PROJECT_KEY],
+            }),
+        )
