@@ -45,6 +45,12 @@ def _azure():
     return CosmosStore
 
 
+def _local():
+    from .storage_local import MongoStore
+
+    return MongoStore
+
+
 # Values are loader functions, not classes directly -- keeps a provider's
 # SDK import lazy (only the one actually selected by CLOUD_PROVIDER ever
 # gets imported), same reasoning core/llm_config.py already applies to
@@ -52,6 +58,7 @@ def _azure():
 STORAGE_REGISTRY = {
     "gcp": _gcp,
     "azure": _azure,
+    "local": _local,
 }
 
 _instance: DocumentStore | None = None

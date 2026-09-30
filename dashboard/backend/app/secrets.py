@@ -36,9 +36,16 @@ def _azure():
     return KeyVaultStore
 
 
+def _local():
+    from .secrets_local import LocalSecretStore
+
+    return LocalSecretStore
+
+
 SECRET_REGISTRY = {
     "gcp": _gcp,
     "azure": _azure,
+    "local": _local,
 }
 
 _instance: SecretStore | None = None

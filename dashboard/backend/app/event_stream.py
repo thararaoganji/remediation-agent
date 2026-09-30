@@ -32,9 +32,16 @@ def _azure():
     return CosmosEventStreamer
 
 
+def _local():
+    from .event_stream_local import MongoEventStreamer
+
+    return MongoEventStreamer
+
+
 EVENT_STREAM_REGISTRY = {
     "gcp": _gcp,
     "azure": _azure,
+    "local": _local,
 }
 
 _instance: EventStreamer | None = None

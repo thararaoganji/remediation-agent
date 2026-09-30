@@ -24,3 +24,6 @@ requests==2.34.2
 google-cloud-firestore==2.31.0
 azure-cosmos==4.17.1
 azure-identity==1.25.3
+# Local-dev equivalent (core/tools/run_status_local.py, CLOUD_PROVIDER=local)
+# -- see docker-compose.yml.
+pymongo==4.18.2
