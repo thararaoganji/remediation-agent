@@ -15,5 +15,11 @@ azure-cosmos==4.17.1
 azure-identity==1.25.3
 azure-keyvault-secrets==4.11.2
 azure-mgmt-appcontainers==5.1.0
+# Local-dev-only equivalents (storage_local.py/secrets_local.py/
+# job_runner_local.py, CLOUD_PROVIDER=local) -- see docker-compose.yml.
+# Bundled in the same image as the GCP/Azure SDKs above, same "one image,
+# any provider, picked at runtime" reasoning.
+pymongo==4.18.2
+docker==7.2.0
 bcrypt==5.0.0
 itsdangerous==2.2.0

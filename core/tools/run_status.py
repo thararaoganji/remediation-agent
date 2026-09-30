@@ -46,9 +46,16 @@ def _azure():
     return CosmosRunStatusReporter
 
 
+def _local():
+    from .run_status_local import MongoRunStatusReporter
+
+    return MongoRunStatusReporter
+
+
 RUN_STATUS_REGISTRY = {
     "gcp": _gcp,
     "azure": _azure,
+    "local": _local,
 }
 
 _instance: RunStatusReporter | None = None

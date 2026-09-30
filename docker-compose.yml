@@ -1,0 +1,97 @@
+# Fully-local stack: dashboard + agents + a local NoSQL database, no GCP or
+# Azure account needed at all. CLOUD_PROVIDER=local picks storage_local.py/
+# secrets_local.py/job_runner_local.py/event_stream_local.py (dashboard) and
+# core/tools/run_status_local.py (agent) -- MongoDB stands in for
+# Firestore/Cosmos DB, and job_runner_local.py starts each run as a real
+# sibling container via the host's Docker socket (see its own docstring for
+# why that needs /var/run/docker.sock mounted into `backend`, not a nested
+# Docker daemon).
+#
+# Usage:
+#   docker compose build          # builds the agent image job_runner_local.py starts on demand
+#   docker compose up             # starts mongo + backend + frontend
+#   docker compose exec backend python create_admin.py --email you@example.com --password 'a-real-password'
+#   open http://localhost:5180
+#
+# See dashboard/README.md for the full walkthrough.
+
+services:
+  mongo:
+    image: mongo:7
+    volumes:
+      - mongo-data:/data/db
+    ports:
+      - "27017:27017"
+    networks:
+      - local-net
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Never started directly (no `depends_on` targets it, and nobody runs
+  # `docker compose up agent`) -- this block exists purely so `docker
+  # compose build` produces the sonar-remediation-agent-local:latest image
+  # job_runner_local.py starts fresh sibling containers from on every run.
+  agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sonar-remediation-agent-local:latest
+
+  backend:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - ./dashboard/backend:/app
+      # "Docker outside of Docker": lets this container ask the HOST's
+      # real Docker daemon to start a sibling agent container, rather than
+      # running a nested daemon inside it -- see job_runner_local.py.
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: sh -c "pip install --no-cache-dir -r requirements.txt && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
+    ports:
+      - "8010:8000"
+    environment:
+      CLOUD_PROVIDER: local
+      MONGO_URL: mongodb://mongo:27017
+      MONGO_DB: dashboard
+      # Local dev only -- fine to be static and committed here. Never reuse
+      # this for anything that isn't this docker-compose stack.
+      SESSION_SECRET_KEY: local-dev-only-not-a-real-secret-do-not-reuse
+      AGENT_IMAGE: sonar-remediation-agent-local:latest
+      DOCKER_NETWORK: sonar-remediation-local
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks:
+      - local-net
+
+  frontend:
+    image: node:20-slim
+    working_dir: /app
+    volumes:
+      - ./dashboard/frontend:/app
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
+    ports:
+      - "5180:5173"
+    environment:
+      # vite.config.js reads this to proxy /api/* at the backend
+      # CONTAINER's hostname instead of localhost:8000 (the default for
+      # the non-Docker dev workflow in dashboard/README.md).
+      VITE_API_PROXY_TARGET: http://backend:8000
+    depends_on:
+      - backend
+    networks:
+      - local-net
+
+volumes:
+  mongo-data:
+
+networks:
+  # Named explicitly (not left to compose's project-name-prefixed default)
+  # so job_runner_local.py's DOCKER_NETWORK default matches it exactly --
+  # the sibling containers it starts via the host's Docker socket need
+  # this exact name to land on the same network as `mongo`.
+  local-net:
+    name: sonar-remediation-local

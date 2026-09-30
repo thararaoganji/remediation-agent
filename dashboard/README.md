@@ -1,27 +1,57 @@
 # Running the dashboard locally
 
-Two pieces, both able to run on your own machine: `backend/` (FastAPI) and
-`frontend/` (React + Vite). Important nuance up front:
+Two ways to run this locally, depending on what you're testing:
 
-**Even running locally, the backend triggers real Cloud Run Job executions on
-GCP** — `POST /api/runs` calls the real Cloud Run Admin API
-(`app/cloud_run.py`), not a local subprocess. There is no "run the agent
-locally through the dashboard" path. Running the dashboard locally only means
-the *web app* (UI + API) runs on your machine; the actual remediation work it
-kicks off still runs on Cloud Run, same as `gcloud run jobs execute` would.
-See [../docs/GCP_DEPLOYMENT.md](../docs/GCP_DEPLOYMENT.md) for deploying
-those three jobs first.
+- **Fully local, no cloud account at all** (`docker compose up`, below) --
+  MongoDB stands in for Firestore/Cosmos DB, and "New Run" starts a real
+  sibling Docker container for the agent instead of a Cloud Run Job/
+  Container Apps Job. Good for dashboard/API development, or exercising a
+  real end-to-end run against a real SonarQube server + GitHub repo + LLM
+  key without touching GCP or Azure at all.
+- **Against real GCP** (the "Backend"/"Frontend" sections further down) --
+  the actual web app runs on your machine, but `POST /api/runs` calls the
+  real Cloud Run Admin API, so the remediation work itself still runs on
+  Cloud Run. Useful for testing against production-shaped infrastructure.
 
-To run the agent itself fully locally, with no cloud dependency at all, skip
+To run the agent itself directly with no dashboard involved at all, skip
 this directory entirely and use `run_local.py` at the repo root instead --
 see the main [README.md](../README.md)'s "Setup (macOS)" section.
 
-## Prerequisites for the dashboard backend
+## Fully local (Docker Compose, no cloud account needed)
+
+```bash
+docker compose build            # builds the agent image "New Run" starts sibling containers from
+docker compose up               # starts mongo + backend + frontend
+```
+
+Then, once (per fresh `mongo` volume):
+
+```bash
+docker compose exec backend python create_admin.py --email you@example.com --password 'a-real-password'
+```
+
+Open http://localhost:5180, log in, and add a Sonar server + GitHub
+credential + LLM API key from the Connections page like normal -- these are
+real connections (a real SonarQube server, a real GitHub repo, a real LLM
+key), just backed by a local MongoDB instead of Firestore/Cosmos DB. "New
+Run" spawns a real sibling container from the agent image on the same
+Docker network as `mongo`, exactly like Cloud Run Jobs/Container Apps Jobs
+do in production, just on your own machine -- confirmed end to end
+(login, connections, a real run reaching a real `git clone` attempt,
+status/events landing back in Mongo, the SSE stream, the built frontend
+proxying `/api/*` to the backend container) while building this.
+
+Needs the host's Docker socket, so it only works where that's available
+(a normal Docker Desktop/Docker Engine install; not inside another
+sandboxed container with no socket access). `docker compose down -v` wipes
+the Mongo volume for a clean slate; leave off `-v` to keep your data across
+restarts.
+
+## Prerequisites for the dashboard backend (real GCP)
 
 The backend needs a real GCP project for Firestore, Secret Manager, and
-Cloud Run Jobs -- there's no local emulator wired up (the Phase B plan notes
-a Firestore emulator as the intended *automated-test* setup; manual local
-running against real GCP is simpler for now and mirrors production).
+Cloud Run Jobs if you're not using the fully-local Docker Compose setup
+above.
 
 ```bash
 gcloud auth application-default login   # so google.cloud.* clients pick up your credentials

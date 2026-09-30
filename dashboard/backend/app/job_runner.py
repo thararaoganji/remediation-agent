@@ -43,9 +43,16 @@ def _azure():
     return ContainerAppsJobRunner
 
 
+def _local():
+    from .job_runner_local import LocalDockerJobRunner
+
+    return LocalDockerJobRunner
+
+
 JOB_RUNNER_REGISTRY = {
     "gcp": _gcp,
     "azure": _azure,
+    "local": _local,
 }
 
 _instance: JobRunner | None = None
