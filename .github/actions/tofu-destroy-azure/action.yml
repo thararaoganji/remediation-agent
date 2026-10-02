@@ -22,6 +22,25 @@ description: >-
   graph: there is no Azure RBAC grant to github_deployer that survives
   its resource group's deletion.
 
+  SECOND thing confirmed the hard way (a real run against sandbox,
+  2026-10-02): every azurerm_role_assignment this module manages ALSO
+  needs excluding, for a completely different reason than the identity
+  objects above -- Azure's built-in Contributor role, by design, excludes
+  Microsoft.Authorization/roleAssignments/delete, so github_deployer
+  can't delete role assignments even ones scoped to resources it CAN
+  fully destroy otherwise. Without this exclude, the real run failed
+  there with nine 403s and never even reached the resource group, Key
+  Vault, registry or managed identities -- Tofu aborts a destroy at the
+  first failed resource in dependency order, so those nine role
+  assignments being un-deletable blocked everything that depends on them
+  too. Once the resource group itself is destroyed, Azure cascades away
+  every role assignment scoped inside it on its own -- confirmed directly
+  against the Azure API after a manual cleanup -- so excluding them here
+  just stops Tofu from attempting (and failing at) a delete Azure was
+  always going to do for it anyway; the final step below syncs Tofu's own
+  state to match that reality afterward, so a future `tofu plan` doesn't
+  show phantom resources Tofu thinks still exist.
+
 inputs:
   environment:
     description: "sandbox | prod -- selects infra/environments/<environment>/azure and its state key."
@@ -65,6 +84,30 @@ runs:
           -backend-config="container_name=${{ inputs.tofu_state_container }}" \
           -backend-config="key=${{ inputs.environment }}.tfstate"
 
+    # Shared by plan/destroy/the post-destroy state cleanup below, so the
+    # three can never drift apart from each other. Space-joined on ONE
+    # line, not one -exclude per line: this gets interpolated directly
+    # into later steps' `run:` command lines, where a literal embedded
+    # newline would silently split it into separate, broken shell
+    # commands instead of one command's worth of flags.
+    - name: Compute exclude flags
+      id: excludes
+      shell: bash
+      run: |
+        flags="-exclude=module.azure.azuread_application.github_deployer"
+        flags="$flags -exclude=module.azure.azuread_service_principal.github_deployer"
+        flags="$flags -exclude=module.azure.azuread_application_federated_identity_credential.github"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.agent_acr_pull"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.agent_kv_read"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_acr_pull"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_container_apps"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_container_apps_jobs"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_kv_admin"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.github_deployer_acr_push"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.github_deployer_kv_admin"
+        flags="$flags -exclude=module.azure.azurerm_role_assignment.github_deployer_rg"
+        echo "flags=$flags" >> "$GITHUB_OUTPUT"
+
     - name: tofu plan -destroy
       shell: bash
       working-directory: infra/environments/${{ inputs.environment }}/azure
@@ -72,15 +115,37 @@ runs:
       # below for why this doesn't save/reuse a plan file.
       run: |
         tofu plan -destroy -input=false -lock-timeout=300s \
-          -exclude="module.azure.azuread_application.github_deployer" \
-          -exclude="module.azure.azuread_service_principal.github_deployer" \
-          -exclude="module.azure.azuread_application_federated_identity_credential.github"
+          ${{ steps.excludes.outputs.flags }}
 
     - name: tofu destroy
       shell: bash
       working-directory: infra/environments/${{ inputs.environment }}/azure
       run: |
         tofu destroy -input=false -lock-timeout=300s -auto-approve \
-          -exclude="module.azure.azuread_application.github_deployer" \
-          -exclude="module.azure.azuread_service_principal.github_deployer" \
-          -exclude="module.azure.azuread_application_federated_identity_credential.github"
+          ${{ steps.excludes.outputs.flags }}
+
+    - name: Sync state for the role assignments Azure already removed
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      # Only reached if the destroy step above succeeded -- if it failed,
+      # the resource group (and therefore its cascade-deletion of these
+      # role assignments) may not have actually happened, and blindly
+      # removing these from state then would orphan real resources from
+      # Tofu's tracking instead of just correcting stale bookkeeping.
+      # `|| true` per removal: a role assignment that's somehow already
+      # gone from state (e.g. a partial prior run already cleaned it up)
+      # must not fail this step.
+      run: |
+        for addr in \
+          "module.azure.azurerm_role_assignment.agent_acr_pull" \
+          "module.azure.azurerm_role_assignment.agent_kv_read" \
+          "module.azure.azurerm_role_assignment.dashboard_acr_pull" \
+          "module.azure.azurerm_role_assignment.dashboard_container_apps" \
+          "module.azure.azurerm_role_assignment.dashboard_container_apps_jobs" \
+          "module.azure.azurerm_role_assignment.dashboard_kv_admin" \
+          "module.azure.azurerm_role_assignment.github_deployer_acr_push" \
+          "module.azure.azurerm_role_assignment.github_deployer_kv_admin" \
+          "module.azure.azurerm_role_assignment.github_deployer_rg" \
+        ; do
+          tofu state rm "$addr" || true
+        done
