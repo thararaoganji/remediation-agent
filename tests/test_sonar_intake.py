@@ -129,3 +129,30 @@ def test_intake_step_turns_timeout_error_into_clean_stop_message(monkeypatch):
         _TimeoutPipeline(), {"source": "/tmp/x", sk.SOURCE_TYPE: "local"}, monkeypatch,
     )
     assert any("Analysis stopped:" in t and "did not finish within 600s" in t for t in _event_texts(events))
+
+
+def test_intake_step_stop_message_carries_error_message_for_run_local(monkeypatch):
+    """Regression: run_local.py's main loop (and therefore
+    core/tools/run_status.py's report_finished) decides success/failure by
+    checking event.error_message, not by parsing chat text -- a preflight
+    stop that only set .content (no .error_message) fell through to
+    run_local.py unconditionally reporting "succeeded" once the pipeline's
+    generator ended, even though the analysis never actually ran. Confirmed
+    live: a dashboard run that hit "Could not reach Sonar server" showed up
+    as "succeeded" with an empty report instead of "failed"."""
+    events = _run_intake_step(
+        _BoomPipeline(), {"source": "/tmp/x", sk.SOURCE_TYPE: "local"}, monkeypatch,
+    )
+    stop_events = [e for e in events if e.content and any(
+        "Analysis stopped" in (getattr(p, "text", None) or "") for p in (e.content.parts or [])
+    )]
+    assert stop_events, "expected an 'Analysis stopped' event"
+    assert stop_events[0].error_message == "boom: sonar scan failed"
+
+    # Guards the other direction: every OTHER event in this same run (the
+    # seed's own state-delta event, here) must NOT carry error_message, or
+    # run_local.py's main loop would wrongly treat an ordinary mid-run
+    # event as a run-ending failure.
+    other_events = [e for e in events if e not in stop_events]
+    assert other_events
+    assert all(e.error_message is None for e in other_events)
