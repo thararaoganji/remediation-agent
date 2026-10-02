@@ -417,6 +417,15 @@ def current_sha(working_dir: str) -> str:
     return _run(["git", "rev-parse", "HEAD"], cwd=working_dir).stdout.strip()
 
 
+def current_branch(working_dir: str) -> str:
+    """The branch actually checked out right now -- used by
+    sonar/adapters.py's project-key ${branch} placeholder resolution to
+    learn what a real CI-driven Sonar scan would substitute there, since
+    it's exactly the branch resolve_source() just checked out (whichever
+    source_branch was given, or the repo's own default branch)."""
+    return _run(["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=working_dir).stdout.strip()
+
+
 def revert_file(working_dir: str, file_path: str) -> None:
     _run(["git", "checkout", "--", file_path], cwd=working_dir)
 

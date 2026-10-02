@@ -4,13 +4,15 @@ import { useAuth } from '../AuthContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { EditIcon, GitBranchIcon, PlusIcon, TrashIcon } from '../components/icons.jsx'
 import Pagination from '../components/Pagination.jsx'
+import Toast from '../components/Toast.jsx'
 import { usePagination } from '../usePagination.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { useToast } from '../useToast.js'
 import { isHttpUrl, isNonEmpty } from '../validation.js'
 
 const PAGE_SIZE = 10
 
-function GithubCredentialRow({ credential, showOwner, onEdit, onChanged }) {
+function GithubCredentialRow({ credential, showOwner, onEdit, onChanged, showToast }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -21,10 +23,12 @@ function GithubCredentialRow({ credential, showOwner, onEdit, onChanged }) {
     try {
       await api.deleteGithubCredential(credential.id)
       onChanged()
+      showToast('success', `Deleted "${credential.name}".`)
     } catch (err) {
       setError(err.message)
       setBusy(false)
       setConfirming(false)
+      showToast('error', `Failed to delete "${credential.name}": ${err.message}`)
     }
   }
 
@@ -73,6 +77,7 @@ export default function GithubCredentialsPage() {
   const [form, setForm] = useState(BLANK_FORM)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
+  const { toast, showToast } = useToast()
 
   async function refreshGithubCredentials() {
     try {
@@ -140,8 +145,10 @@ export default function GithubCredentialsPage() {
       }
       setFormOpen(false)
       await refreshGithubCredentials()
+      showToast('success', isEdit ? 'GitHub credential updated.' : 'GitHub credential added.')
     } catch (err) {
       setFormError(err.message)
+      showToast('error', `Failed to ${isEdit ? 'update' : 'add'} GitHub credential: ${err.message}`)
     } finally {
       setSubmitting(false)
     }
@@ -217,7 +224,14 @@ export default function GithubCredentialsPage() {
           </thead>
           <tbody>
             {githubPagination.pageItems.map((c) => (
-              <GithubCredentialRow key={c.id} credential={c} showOwner={isAdmin} onEdit={openEdit} onChanged={refreshGithubCredentials} />
+              <GithubCredentialRow
+                key={c.id}
+                credential={c}
+                showOwner={isAdmin}
+                onEdit={openEdit}
+                onChanged={refreshGithubCredentials}
+                showToast={showToast}
+              />
             ))}
             {githubCredentials.length === 0 && !githubCredentialsError && (
               <tr>
@@ -230,6 +244,7 @@ export default function GithubCredentialsPage() {
         </table>
         <Pagination page={githubPagination.page} pageCount={githubPagination.pageCount} onPageChange={githubPagination.setPage} />
       </section>
+      <Toast toast={toast} />
     </div>
   )
 }

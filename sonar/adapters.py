@@ -21,6 +21,7 @@ from core.adapters.base import (  # noqa: F401 -- re-exported for convenience
     ToolNotAvailableError, detect_build_tool,
 )
 from core.adapters.base import _run, _combined_output  # noqa: F401 -- reused by run_sonar_scan
+from core.tools import git_tools
 
 
 class SonarConfigNotFoundError(Exception):
@@ -41,6 +42,38 @@ class SonarPreflightError(Exception):
     actually been analyzed there. Same "fail fast before any branch is
     created or issue fetched" contract as the other preflight exceptions."""
     pass
+
+
+_BRANCH_PLACEHOLDER_RE = re.compile(r"\$\{branch\}", re.IGNORECASE)
+
+
+def resolve_project_key_placeholders(raw_key: str, working_dir: str) -> str:
+    """Some projects template their Sonar project key with a `${branch}`
+    Maven/Gradle property (e.g. `expenses-portal:${branch}`), substituted
+    by their own CI at scan time (Jenkins' `${env.BRANCH_NAME}` etc.)
+    rather than one hardcoded key per branch. get_project_key() reads
+    pom.xml/build.gradle verbatim on purpose -- it has to match whatever a
+    real `mvn sonar:sonar`/`gradle sonar` invocation actually uses -- so it
+    returns that literal, unresolved template as-is. Querying Sonar with it
+    unresolved always 404s: confirmed live against a real project, "Project
+    key 'expenses-portal:${branch}' has no analysis on this Sonar server
+    yet". The value a real scan would substitute is just whatever branch is
+    currently checked out -- exactly git_tools.current_branch() -- so
+    that's the one placeholder resolved here. Any OTHER `${...}` is left
+    alone and reported clearly (SonarConfigNotFoundError) rather than
+    guessed at -- this agent has no way to know what a Jenkins/GitLab
+    environment variable or a custom Maven profile would have substituted."""
+    if "${" not in raw_key:
+        return raw_key
+    resolved = _BRANCH_PLACEHOLDER_RE.sub(lambda _: git_tools.current_branch(working_dir), raw_key)
+    if "${" in resolved:
+        raise SonarConfigNotFoundError(
+            f"Sonar project key {raw_key!r} from the build file still has an unresolved "
+            "placeholder after substituting ${branch} with the checked-out branch name -- this "
+            "agent can't know what your own CI would substitute there. Hardcode the real, literal "
+            "project key in the build file (matching what your CI actually scans under) and re-run."
+        )
+    return resolved
 
 
 _CE_TASK_ID_RE = re.compile(r"api/ce/task\?id=([\w-]+)")

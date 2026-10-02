@@ -86,8 +86,22 @@ unless you have a real path or repo.
 """
 
 
-def _model_msg(author: str, text: str) -> Event:
-    return Event(author=author, content=types.Content(role="model", parts=[types.Part(text=text)]))
+def _model_msg(author: str, text: str, error_message: str | None = None) -> Event:
+    # error_message, not just content: run_local.py's main loop (the
+    # dashboard/CLI consumer, as opposed to adk web's chat transcript)
+    # specifically checks event.error_message to decide whether a run
+    # finished successfully -- without it, a preflight stop like "Could
+    # not reach Sonar server" fell through to run_local.py's own
+    # end-of-loop code, which unconditionally reported "succeeded" with no
+    # final_report just because the pipeline's async generator ended
+    # without raising. Confirmed live: a dashboard-triggered run that hit
+    # this exact path showed up as "succeeded" with an empty report
+    # instead of "failed" with the real reason.
+    return Event(
+        author=author,
+        content=types.Content(role="model", parts=[types.Part(text=text)]),
+        error_message=error_message,
+    )
 
 
 def _accumulate_tokens(state: dict, event: Event) -> None:
@@ -285,6 +299,6 @@ def build_intake_step(
                 # pipeline -- this is the one place that turns that into a
                 # clean chat message instead of an unhandled exception
                 # reaching adk web's request handler.
-                yield _model_msg(self.name, f"Analysis stopped: {e}")
+                yield _model_msg(self.name, f"Analysis stopped: {e}", error_message=str(e))
 
     return _IntakeStep(sub_agents=[pipeline])

@@ -26,11 +26,17 @@ from google.genai import types
 
 from core import llm_config, state_schema as sk
 from core.adapters.base import ToolNotAvailableError, BuildToolNotDetectedError
-from core.tools import git_tools, run_status
+from core.tools import git_tools, local_secrets, run_status
 from sonar.adapters import SonarConfigNotFoundError, SonarPreflightError
 from sonar.tools import sonar_tools
 
 load_dotenv()
+
+# No-op unless CLOUD_PROVIDER=local and SONAR_SERVER_NAME is set -- see
+# local_secrets.py's docstring. Must run before REQUIRED below, since it's
+# what fills in LLM_VENDOR (and therefore which key llm_config.required_env_var()
+# demands) along with SONAR_TOKEN/GITHUB_TOKEN themselves.
+local_secrets.apply_to_environ()
 
 APP_NAME = "sonar_remediation"
 USER_ID = "local_dev"

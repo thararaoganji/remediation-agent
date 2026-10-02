@@ -5,8 +5,10 @@ import { useAuth } from '../AuthContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { CheckIcon, EditIcon, PlusIcon, SparkleIcon, TrashIcon } from '../components/icons.jsx'
 import Pagination from '../components/Pagination.jsx'
+import Toast from '../components/Toast.jsx'
 import { usePagination } from '../usePagination.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { useToast } from '../useToast.js'
 import { isNonEmpty } from '../validation.js'
 import { VENDOR_ICONS, VENDOR_LABELS } from '../vendors.jsx'
 
@@ -41,10 +43,11 @@ const VENDORS = [
 
 const CUSTOM_MODEL = '__custom__'
 
-function LlmConfigRow({ config, onEdit, onChanged }) {
+function LlmConfigRow({ config, onEdit, onChanged, showToast }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
+  const label = VENDOR_LABELS[config.vendor] || config.vendor
 
   async function handleDelete() {
     setBusy(true)
@@ -52,10 +55,12 @@ function LlmConfigRow({ config, onEdit, onChanged }) {
     try {
       await api.deleteLlmConfig(config.id)
       onChanged()
+      showToast('success', `Deleted the ${label} config.`)
     } catch (err) {
       setError(err.message)
       setBusy(false)
       setConfirming(false)
+      showToast('error', `Failed to delete the ${label} config: ${err.message}`)
     }
   }
 
@@ -65,8 +70,10 @@ function LlmConfigRow({ config, onEdit, onChanged }) {
     try {
       await api.activateLlmConfig(config.id)
       onChanged()
+      showToast('success', `${label} is now the active LLM config.`)
     } catch (err) {
       setError(err.message)
+      showToast('error', `Failed to activate ${label}: ${err.message}`)
     } finally {
       setBusy(false)
     }
@@ -79,7 +86,7 @@ function LlmConfigRow({ config, onEdit, onChanged }) {
       <td>
         <span className="vendor-label">
           {VendorIcon && <VendorIcon />}
-          <strong>{VENDOR_LABELS[config.vendor] || config.vendor}</strong>
+          <strong>{label}</strong>
         </span>
       </td>
       <td>{config.model}</td>
@@ -108,7 +115,7 @@ function LlmConfigRow({ config, onEdit, onChanged }) {
         <ConfirmDialog
           open={confirming}
           title="Delete LLM API key"
-          message={`Delete the ${VENDOR_LABELS[config.vendor] || config.vendor} config "${config.model}"?`}
+          message={`Delete the ${label} config "${config.model}"?`}
           busy={busy}
           onConfirm={handleDelete}
           onCancel={() => setConfirming(false)}
@@ -139,6 +146,7 @@ export default function LlmConfigsPage() {
   const [customModel, setCustomModel] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
+  const { toast, showToast } = useToast()
 
   async function refreshLlmConfigs() {
     try {
@@ -214,8 +222,10 @@ export default function LlmConfigsPage() {
       }
       setFormOpen(false)
       await refreshLlmConfigs()
+      showToast('success', isEdit ? 'LLM API key updated.' : 'LLM API key added.')
     } catch (err) {
       setFormError(err.message)
+      showToast('error', `Failed to ${isEdit ? 'update' : 'add'} LLM API key: ${err.message}`)
     } finally {
       setSubmitting(false)
     }
@@ -315,7 +325,7 @@ export default function LlmConfigsPage() {
           </thead>
           <tbody>
             {llmPagination.pageItems.map((c) => (
-              <LlmConfigRow key={c.id} config={c} onEdit={openEdit} onChanged={refreshLlmConfigs} />
+              <LlmConfigRow key={c.id} config={c} onEdit={openEdit} onChanged={refreshLlmConfigs} showToast={showToast} />
             ))}
             {llmConfigs.length === 0 && !llmConfigsError && (
               <tr>
@@ -328,6 +338,7 @@ export default function LlmConfigsPage() {
         </table>
         <Pagination page={llmPagination.page} pageCount={llmPagination.pageCount} onPageChange={llmPagination.setPage} />
       </section>
+      <Toast toast={toast} />
     </div>
   )
 }

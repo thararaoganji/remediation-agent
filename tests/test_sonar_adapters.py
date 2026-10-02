@@ -213,3 +213,35 @@ def test_gradle_get_project_key_build_file_present_but_no_key_raises(tmp_path):
     adapter = adapters.SonarJavaGradleAdapter()
     with pytest.raises(adapters.SonarConfigNotFoundError):
         adapter.get_project_key(str(tmp_path))
+
+
+# --- resolve_project_key_placeholders ---------------------------------------------
+#
+# Regression: a project key read verbatim from pom.xml/build.gradle can be a
+# template like "expenses-portal:${branch}", substituted by the project's own
+# CI at real scan time (Jenkins' ${env.BRANCH_NAME}, etc.) rather than one
+# hardcoded key per branch. Querying Sonar with that literal, unresolved
+# string always 404s -- confirmed live: "Project key
+# 'expenses-portal:${branch}' has no analysis on this Sonar server yet".
+
+def test_resolve_project_key_placeholders_passthrough_when_no_placeholder(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters.git_tools, "current_branch", lambda wd: pytest.fail("should not be called"))
+    assert adapters.resolve_project_key_placeholders("my-project", str(tmp_path)) == "my-project"
+
+
+def test_resolve_project_key_placeholders_substitutes_branch(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters.git_tools, "current_branch", lambda wd: "main")
+    result = adapters.resolve_project_key_placeholders("expenses-portal:${branch}", str(tmp_path))
+    assert result == "expenses-portal:main"
+
+
+def test_resolve_project_key_placeholders_case_insensitive(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters.git_tools, "current_branch", lambda wd: "develop")
+    result = adapters.resolve_project_key_placeholders("expenses-portal:${BRANCH}", str(tmp_path))
+    assert result == "expenses-portal:develop"
+
+
+def test_resolve_project_key_placeholders_unknown_placeholder_raises(tmp_path, monkeypatch):
+    monkeypatch.setattr(adapters.git_tools, "current_branch", lambda wd: "main")
+    with pytest.raises(adapters.SonarConfigNotFoundError, match="unresolved"):
+        adapters.resolve_project_key_placeholders("expenses-portal:${env.CUSTOM_VAR}", str(tmp_path))

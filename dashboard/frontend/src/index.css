@@ -557,6 +557,46 @@ button:disabled {
   font-weight: 500;
 }
 
+.toast-stack {
+  position: fixed;
+  bottom: 1.5rem;
+  right: 1.5rem;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(360px, calc(100vw - 2rem));
+}
+
+.toast {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: light-dark(#fff, #24252b);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+  border-left: 4px solid light-dark(#666, #999);
+  overflow-wrap: anywhere;
+  animation: toast-in 0.15s ease-out;
+}
+
+.toast-success {
+  border-left-color: #188038;
+}
+
+.toast-error {
+  border-left-color: #d93025;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 .section-note,
 .empty-note,
 .field-note {
@@ -690,6 +730,17 @@ button:disabled {
   max-width: 420px;
   width: 100%;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  /* Every page renders its ConfirmDialog inside the triggering row's own
+     <td> (not portaled to document.body) -- position: fixed visually
+     escapes the table, but it's still a DOM descendant, so it still
+     INHERITS white-space from it. .data-table td sets white-space: nowrap
+     (so normal cell content stays on one line), which was silently
+     overriding wrapping for the dialog's own text too -- confirmed live:
+     a long run `source` value rendered as one unbroken line straight past
+     the dialog's right edge instead of wrapping. Resetting it back to
+     normal here, at the dialog's own root, stops that inheritance
+     regardless of which ancestor happens to render it. */
+  white-space: normal;
 }
 
 .dialog-box h3 {
@@ -699,6 +750,12 @@ button:disabled {
 .dialog-box p {
   margin: 0 0 1.25rem;
   color: light-dark(#444, #ccc);
+  /* A long unbroken token (a GitHub URL, a local path) in the
+     interpolated message -- e.g. RunsListPage's delete confirmation --
+     doesn't wrap at the box's fixed max-width by default (overflow-wrap:
+     normal only breaks at existing whitespace/hyphens), so the dialog box
+     stretched past its own edges instead of wrapping the text. */
+  overflow-wrap: anywhere;
 }
 
 .dialog-actions {

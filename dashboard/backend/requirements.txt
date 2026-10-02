@@ -23,3 +23,7 @@ pymongo==4.18.2
 docker==7.2.0
 bcrypt==5.0.0
 itsdangerous==2.2.0
+# Already pulled in transitively by azure-identity, pinned explicitly here
+# too since secrets_local.py now imports it directly (Fernet, at-rest
+# encryption for locally-stored secret values).
+cryptography==50.0.2

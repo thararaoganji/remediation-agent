@@ -56,6 +56,19 @@ sandboxed container with no socket access). `docker compose down -v` wipes
 the Mongo volume for a clean slate; leave off `-v` to keep your data across
 restarts.
 
+### Running an agent directly, against secrets saved here
+
+"New Run" above goes through the backend (which spawns the sibling
+container itself). To run an agent directly with `docker compose run`
+instead -- no login, no SSE stream, nothing written back to the dashboard,
+just `run_local.py`'s own stdout -- see the main
+[README.md](../README.md)'s "Running against secrets already saved on the
+dashboard" section: set `CLOUD_PROVIDER=local` and `SONAR_SERVER_NAME` (and
+optionally `GITHUB_CREDENTIAL_NAME`) to the exact names shown on this
+Connections page, and `core/tools/local_secrets.py` resolves the actual
+Sonar token / GitHub token / active LLM key straight out of this same
+MongoDB -- no need to go hunting for them in `mongosh` by hand.
+
 ## Prerequisites for the dashboard backend (real GCP)
 
 The backend needs a real GCP project for Firestore, Secret Manager, and

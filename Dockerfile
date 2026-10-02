@@ -65,4 +65,17 @@ COPY . .
 # resolve_source() creates the dir itself, so no mkdir needed.
 ENV WORKSPACE_ROOT=/tmp/sonar_remediation_workspaces
 
+# The base image bakes in LANGUAGE=en_US:en as a glibc locale var, which
+# collides with run_local.py's own LANGUAGE (java/java-maven/java-gradle --
+# which build adapter to use) since both are just plain env vars with the
+# same name. REQUIRED's missing-key check only verifies it's non-empty, so
+# without this override a run that forgets to pass LANGUAGE explicitly
+# silently gets "en_US:en" as its language instead of failing loudly --
+# confirmed the hard way while testing core/tools/local_secrets.py. "java"
+# is the only language this app supports today anyway (see README.md's
+# Setup table), so it's a correct default, not just a quieter failure mode
+# -- `docker run -e LANGUAGE=...`/compose's `-e` still overrides this, same
+# as any other image-baked ENV default.
+ENV LANGUAGE=java
+
 ENTRYPOINT ["python3", "run_local.py"]

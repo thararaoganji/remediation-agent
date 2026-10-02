@@ -252,6 +252,35 @@ python run_local.py
 checked-out repo's `build.gradle`/`gradle.properties` or `pom.xml` so it
 always matches whatever key the Sonar plugin scans under.
 
+### Running against secrets already saved on the dashboard (no copy/paste)
+
+If you're using the fully-local Docker Compose stack
+(`dashboard/README.md`'s "Fully local" section) and already added a Sonar
+server / GitHub credential / LLM key via the Connections page, `run_local.py`
+can pull them straight out of that same MongoDB instead of needing its own
+copy of `SONAR_TOKEN`/`GITHUB_TOKEN`/`GOOGLE_API_KEY` in `.env` — set
+`CLOUD_PROVIDER=local` and `SONAR_SERVER_NAME` (the exact name shown on the
+Connections page) and `core/tools/local_secrets.py` resolves the rest
+(`SONAR_BASE_URL`/`SONAR_TOKEN`/`CE_EDITION`, the active LLM config's
+vendor/model/key, and `GITHUB_TOKEN` if `GITHUB_CREDENTIAL_NAME` is also
+set) before anything else runs:
+
+```bash
+docker compose run --rm \
+  -e CLOUD_PROVIDER=local \
+  -e SONAR_SERVER_NAME="My Sonar" \
+  -e GITHUB_CREDENTIAL_NAME="My GitHub" \
+  -e AGENT_TYPE=techdebt \
+  -e SOURCE_TYPE=github \
+  -e GITHUB_REPO=owner/repo \
+  agent
+```
+
+Any of these set explicitly (e.g. `-e SONAR_TOKEN=...`) still wins over
+whatever's in Mongo — this only fills in what's missing. No effect at all
+unless both `CLOUD_PROVIDER=local` and `SONAR_SERVER_NAME` are set, so a
+normal `.env`-based run is completely unaffected.
+
 **Java version is also not an `.env` setting** — `SetupStep` reads it from
 the checked-out project's own build file (`maven.compiler.release`/
 `source`/`target` or `java.version` in `pom.xml`; `sourceCompatibility`/

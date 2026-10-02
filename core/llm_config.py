@@ -44,6 +44,15 @@ def required_env_var() -> str:
     return _VENDOR_ENV_VAR[vendor]
 
 
+def env_var_for_vendor(vendor: str) -> str:
+    """Same lookup as required_env_var(), but for a vendor known up front
+    instead of read from LLM_VENDOR -- used by core/tools/local_secrets.py,
+    which learns the vendor from Mongo's active llm_configs doc before
+    LLM_VENDOR itself gets set."""
+    _check_known(vendor)
+    return _VENDOR_ENV_VAR[vendor]
+
+
 def build_llm_model(default_model: str):
     """Returns (vendor, model_for_llm_agent). `default_model` is what the
     caller would otherwise have hardcoded -- used as-is when LLM_MODEL
