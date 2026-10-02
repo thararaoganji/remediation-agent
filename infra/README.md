@@ -211,6 +211,44 @@ run against sandbox (2026-09-30) took Azure from 86% to ~30% of quota (24
 images deleted) and GCP from 26 to 22 images (4 deleted -- most of its 26
 were already within the keep-10 window).
 
+## Tearing sandbox down and spinning it back up
+
+Since everything already scales to zero (both dashboards, every agent
+job), the real idle cost here is already small -- see the architecture
+doc's cost estimate. Tearing sandbox down entirely is more about not
+leaving real resources running unused than about meaningful savings, and
+it's deliberately **sandbox-only**: `destroy-gcp.yml`/`destroy-azure.yml`
+don't even offer `prod` as a choice (prod carries real imported
+infrastructure -- see "GCP prod's import" below -- a typo'd environment
+pick here has no undo). Both also require typing `destroy-sandbox` into
+the trigger form itself, a second gate on top of the manual trigger,
+since this is meaningfully more destructive than a deploy or a registry
+cleanup.
+
+Both destroy workflows exclude the GitHub OIDC trust objects
+(`tofu-destroy-gcp`/`tofu-destroy-azure`'s own `-exclude` flags) so the
+exact same workflow credentials can still authenticate afterward -- but
+**what that authentication is actually worth to rebuild with differs by
+cloud**, confirmed by reading each module's real resource graph (not
+assumed):
+
+- **GCP**: `github_deployer`'s permissions
+  (`google_project_iam_member.github_deployer_roles`) are granted at the
+  **project** level, not scoped to anything the destroy removes -- they
+  survive completely untouched. Run `destroy-gcp.yml`, then
+  `deploy-gcp.yml` -- no manual step in between, full automation both
+  ways.
+- **Azure**: `github_deployer`'s only grants (Contributor on the resource
+  group, AcrPush on the registry) are scoped to resources the destroy
+  *does* remove -- including the resource group itself. After
+  `destroy-azure.yml`, `github_deployer` can still log in but can do
+  nothing else at all, not even create a replacement resource group.
+  `deploy-azure.yml` will fail on its very first `tofu apply` until
+  someone with real subscription permissions re-runs the resource-group +
+  Contributor-grant part of "Bootstrap order" (step 3/4) above -- the same
+  ABAC-constrained-Owner limitation the original bootstrap hit, not a bug
+  in either workflow.
+
 ## GCP prod's import
 
 Prod's GCP resources predate this repo's Tofu setup (they were created by

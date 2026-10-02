@@ -1,0 +1,38 @@
+# Manual-trigger-only, same reasoning and the same sandbox-only + typed-
+# confirmation safety gates as destroy-gcp.yml -- see its own comment.
+#
+# After this runs, deploy-azure.yml will FAIL on its first `tofu apply`
+# until someone with real subscription permissions re-bootstraps a
+# resource group + Contributor grant for github_deployer -- see
+# tofu-destroy-azure's own docstring and infra/README.md's "Bootstrap
+# order" (step 3/4) for exactly what to run. This is NOT a bug in this
+# workflow; it's the ABAC-constrained Owner account's own design working
+# as intended, same as it did for the original bootstrap.
+name: Destroy (Azure sandbox)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy-sandbox" to confirm -- this deletes real running Azure infrastructure.'
+        required: true
+
+jobs:
+  check-confirmation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation phrase
+        run: |
+          if [ "${{ inputs.confirm }}" != "destroy-sandbox" ]; then
+            echo "::error::Confirmation phrase did not match 'destroy-sandbox' -- aborting without touching anything."
+            exit 1
+          fi
+
+  destroy-sandbox:
+    needs: check-confirmation
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-destroy-azure.yml
+    with:
+      environment: sandbox

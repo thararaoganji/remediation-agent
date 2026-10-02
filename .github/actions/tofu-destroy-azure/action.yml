@@ -1,0 +1,86 @@
+name: Tofu destroy (Azure)
+description: >-
+  Destroys every Azure resource this Tofu root manages -- the resource
+  group and everything in it (Cosmos DB, Key Vault, Container Registry,
+  Container Apps environment/jobs/dashboard, Log Analytics, the managed
+  identities) -- EXCEPT the GitHub OIDC app registration/service
+  principal/federated credential (-exclude below), so the exact same
+  workflow credentials still AUTHENTICATE afterward.
+
+  Unlike GCP's equivalent, that's as far as it goes: github_deployer's
+  only Azure RBAC grants (Contributor on the resource group, AcrPush on
+  the registry) are scoped to resources THIS destroy removes, so once it
+  finishes, github_deployer can log in but can do nothing else at all --
+  not even create a replacement resource group. Re-running deploy-
+  azure.yml afterward WILL fail on the very first `tofu apply`, the same
+  way the original bootstrap did (infra/README.md's "Bootstrap order"):
+  someone with real subscription permissions needs to create a fresh
+  resource group and grant github_deployer Contributor on it (step 3/4 of
+  that section) before Tofu can do anything again. This is a property of
+  the ABAC-constrained Owner account documented there, not something this
+  action can route around -- confirmed by reading the actual resource
+  graph: there is no Azure RBAC grant to github_deployer that survives
+  its resource group's deletion.
+
+inputs:
+  environment:
+    description: "sandbox | prod -- selects infra/environments/<environment>/azure and its state key."
+    required: true
+  azure_client_id:
+    required: true
+  azure_tenant_id:
+    required: true
+  azure_subscription_id:
+    required: true
+  tofu_state_resource_group:
+    description: "Resource group holding the Azure Storage account used for Tofu state (not the environment's own resource group -- that one IS destroyed)."
+    required: true
+  tofu_state_storage_account:
+    required: true
+  tofu_state_container:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Auth to Azure (federated credential)
+      uses: azure/login@v3
+      with:
+        client-id: ${{ inputs.azure_client_id }}
+        tenant-id: ${{ inputs.azure_tenant_id }}
+        subscription-id: ${{ inputs.azure_subscription_id }}
+
+    - name: Install OpenTofu
+      uses: opentofu/setup-opentofu@v2
+      with:
+        tofu_version: "1.12.6"
+
+    - name: tofu init
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      run: |
+        tofu init -input=false \
+          -backend-config="resource_group_name=${{ inputs.tofu_state_resource_group }}" \
+          -backend-config="storage_account_name=${{ inputs.tofu_state_storage_account }}" \
+          -backend-config="container_name=${{ inputs.tofu_state_container }}" \
+          -backend-config="key=${{ inputs.environment }}.tfstate"
+
+    - name: tofu plan -destroy
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      # For log visibility before the real thing -- see tofu destroy
+      # below for why this doesn't save/reuse a plan file.
+      run: |
+        tofu plan -destroy -input=false -lock-timeout=300s \
+          -exclude="module.azure.azuread_application.github_deployer" \
+          -exclude="module.azure.azuread_service_principal.github_deployer" \
+          -exclude="module.azure.azuread_application_federated_identity_credential.github"
+
+    - name: tofu destroy
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/azure
+      run: |
+        tofu destroy -input=false -lock-timeout=300s -auto-approve \
+          -exclude="module.azure.azuread_application.github_deployer" \
+          -exclude="module.azure.azuread_service_principal.github_deployer" \
+          -exclude="module.azure.azuread_application_federated_identity_credential.github"
