@@ -4,13 +4,15 @@ import { useAuth } from '../AuthContext.jsx'
 import ConfirmDialog from '../components/ConfirmDialog.jsx'
 import { EditIcon, PlusIcon, SonarIcon, TrashIcon } from '../components/icons.jsx'
 import Pagination from '../components/Pagination.jsx'
+import Toast from '../components/Toast.jsx'
 import { usePagination } from '../usePagination.js'
 import { usePageTitle } from '../usePageTitle.js'
+import { useToast } from '../useToast.js'
 import { isHttpUrl, isNonEmpty } from '../validation.js'
 
 const PAGE_SIZE = 10
 
-function SonarServerRow({ server, showOwner, onEdit, onChanged }) {
+function SonarServerRow({ server, showOwner, onEdit, onChanged, showToast }) {
   const [confirming, setConfirming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
@@ -21,10 +23,12 @@ function SonarServerRow({ server, showOwner, onEdit, onChanged }) {
     try {
       await api.deleteSonarServer(server.id)
       onChanged()
+      showToast('success', `Deleted "${server.name}".`)
     } catch (err) {
       setError(err.message)
       setBusy(false)
       setConfirming(false)
+      showToast('error', `Failed to delete "${server.name}": ${err.message}`)
     }
   }
 
@@ -76,6 +80,7 @@ export default function SonarServersPage() {
   const [form, setForm] = useState(BLANK_FORM)
   const [submitting, setSubmitting] = useState(false)
   const [formError, setFormError] = useState(null)
+  const { toast, showToast } = useToast()
 
   async function refreshSonarServers() {
     try {
@@ -140,8 +145,10 @@ export default function SonarServersPage() {
       }
       setFormOpen(false)
       await refreshSonarServers()
+      showToast('success', isEdit ? 'Sonar server updated.' : 'Sonar server added.')
     } catch (err) {
       setFormError(err.message)
+      showToast('error', `Failed to ${isEdit ? 'update' : 'add'} Sonar server: ${err.message}`)
     } finally {
       setSubmitting(false)
     }
@@ -226,7 +233,14 @@ export default function SonarServersPage() {
           </thead>
           <tbody>
             {sonarPagination.pageItems.map((s) => (
-              <SonarServerRow key={s.id} server={s} showOwner={isAdmin} onEdit={openEdit} onChanged={refreshSonarServers} />
+              <SonarServerRow
+                key={s.id}
+                server={s}
+                showOwner={isAdmin}
+                onEdit={openEdit}
+                onChanged={refreshSonarServers}
+                showToast={showToast}
+              />
             ))}
             {sonarServers.length === 0 && !sonarServersError && (
               <tr>
@@ -239,6 +253,7 @@ export default function SonarServersPage() {
         </table>
         <Pagination page={sonarPagination.page} pageCount={sonarPagination.pageCount} onPageChange={sonarPagination.setPage} />
       </section>
+      <Toast toast={toast} />
     </div>
   )
 }
