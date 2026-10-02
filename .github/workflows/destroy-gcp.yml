@@ -1,0 +1,41 @@
+# Manual-trigger-only, like every other workflow here -- but deliberately
+# does NOT offer "prod" or "both" as a choice at all, unlike deploy-gcp.yml
+# /cleanup-gcp.yml: prod carries real imported infrastructure (see infra/
+# README.md's "GCP prod's import"), and a typo'd environment pick has no
+# undo. Sandbox only, full stop. The `confirm` input is a second,
+# type-it-yourself gate on top of the manual trigger itself, since this
+# is meaningfully more destructive than a deploy or a registry cleanup --
+# a wrong click deletes real running infrastructure, not just old images.
+#
+# After this runs, deploy-gcp.yml can be re-run with NO manual steps in
+# between -- see tofu-destroy-gcp's own docstring for why GCP's
+# github_deployer permissions survive this destroy completely intact,
+# unlike Azure's equivalent (destroy-azure.yml).
+name: Destroy (GCP sandbox)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "destroy-sandbox" to confirm -- this deletes real running GCP infrastructure.'
+        required: true
+
+jobs:
+  check-confirmation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify confirmation phrase
+        run: |
+          if [ "${{ inputs.confirm }}" != "destroy-sandbox" ]; then
+            echo "::error::Confirmation phrase did not match 'destroy-sandbox' -- aborting without touching anything."
+            exit 1
+          fi
+
+  destroy-sandbox:
+    needs: check-confirmation
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-destroy-gcp.yml
+    with:
+      environment: sandbox

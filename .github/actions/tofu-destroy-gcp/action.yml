@@ -1,0 +1,77 @@
+name: Tofu destroy (GCP)
+description: >-
+  Destroys every GCP resource this Tofu root manages -- Cloud Run service
+  + jobs, Firestore database, Secret Manager secrets, Artifact Registry
+  repo, the app's own service accounts -- EXCEPT the GitHub OIDC/Workload
+  Identity Federation scaffolding (-exclude below), so the exact same
+  workflow credentials still authenticate afterward.
+
+  Unlike Azure's equivalent (tofu-destroy-azure), this one really can be
+  followed by a clean, fully-automated `deploy-gcp.yml` run with no manual
+  step in between: github_deployer's permissions
+  (google_project_iam_member.github_deployer_roles) are granted at the
+  PROJECT level, not scoped to any of the resources being destroyed here,
+  so they survive this destroy completely untouched -- confirmed by
+  reading the module's own resource graph, not assumed. Azure's
+  equivalent grant is scoped to the resource group itself, which doesn't
+  have that property.
+
+inputs:
+  environment:
+    description: "sandbox | prod -- selects infra/environments/<environment>/gcp and its state prefix."
+    required: true
+  gcp_project_id:
+    required: true
+  gcp_wif_provider:
+    required: true
+  gcp_deploy_service_account:
+    required: true
+  tofu_state_bucket:
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Auth to GCP (Workload Identity Federation)
+      uses: google-github-actions/auth@v3
+      with:
+        project_id: ${{ inputs.gcp_project_id }}
+        workload_identity_provider: ${{ inputs.gcp_wif_provider }}
+        service_account: ${{ inputs.gcp_deploy_service_account }}
+
+    - name: Install OpenTofu
+      uses: opentofu/setup-opentofu@v2
+      with:
+        tofu_version: "1.12.6"
+
+    - name: tofu init
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/gcp
+      run: |
+        tofu init -input=false \
+          -backend-config="bucket=${{ inputs.tofu_state_bucket }}" \
+          -backend-config="prefix=${{ inputs.environment }}/gcp"
+
+    - name: tofu plan -destroy
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/gcp
+      # For log visibility before the real thing -- see tofu destroy
+      # below for why this doesn't save/reuse a plan file.
+      run: |
+        tofu plan -destroy -input=false -lock-timeout=300s \
+          -exclude="module.gcp.google_iam_workload_identity_pool.github" \
+          -exclude="module.gcp.google_iam_workload_identity_pool_provider.github" \
+          -exclude="module.gcp.google_service_account.github_deployer" \
+          -exclude="module.gcp.google_project_iam_member.github_deployer_roles" \
+          -exclude="module.gcp.google_service_account_iam_member.github_deployer_wif"
+
+    - name: tofu destroy
+      shell: bash
+      working-directory: infra/environments/${{ inputs.environment }}/gcp
+      run: |
+        tofu destroy -input=false -lock-timeout=300s -auto-approve \
+          -exclude="module.gcp.google_iam_workload_identity_pool.github" \
+          -exclude="module.gcp.google_iam_workload_identity_pool_provider.github" \
+          -exclude="module.gcp.google_service_account.github_deployer" \
+          -exclude="module.gcp.google_project_iam_member.github_deployer_roles" \
+          -exclude="module.gcp.google_service_account_iam_member.github_deployer_wif"

@@ -1,0 +1,30 @@
+# Thin wrapper around tofu-destroy-gcp -- same reusable-workflow-for-
+# `environment:` reasoning as reusable-deploy-gcp.yml.
+name: Reusable - Destroy GCP
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/tofu-destroy-gcp
+        with:
+          environment: ${{ inputs.environment }}
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_wif_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp_deploy_service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          tofu_state_bucket: ${{ vars.TOFU_STATE_BUCKET }}
