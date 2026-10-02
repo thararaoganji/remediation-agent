@@ -15,10 +15,8 @@ import re
 import tempfile
 import xml.etree.ElementTree as ET
 
-from core.adapters.base import (  # noqa: F401 -- re-exported for convenience
-    ADAPTER_REGISTRY as _CORE_ADAPTER_REGISTRY,
-    BuildResult, BuildToolNotDetectedError, JavaGradleAdapter, JavaMavenAdapter,
-    ToolNotAvailableError, detect_build_tool,
+from core.adapters.base import (
+    BuildToolNotDetectedError, JavaGradleAdapter, JavaMavenAdapter, detect_build_tool,
 )
 from core.adapters.base import _run, _combined_output  # noqa: F401 -- reused by run_sonar_scan
 from core.tools import git_tools

@@ -1,6 +1,6 @@
 """Report step -- Sonar-rating-specific (security/reliability/maintainability
-ratings). Push is generic and lives in core.agents.report; re-exported here
-for convenience so callers only need one import for both."""
+ratings). Push (committing and opening the PR) is generic and lives in
+core.agents.report instead -- pipeline.py imports it from there directly."""
 
 import time
 from typing import AsyncGenerator
@@ -11,7 +11,7 @@ from google.adk.events import Event, EventActions
 
 from core import state_schema as sk
 from core.agents._shared import _msg
-from core.agents.report import PushStep, _format_duration  # noqa: F401 -- re-exported
+from core.agents.report import _format_duration
 
 from sonar.tools import sonar_tools
 from .maintainability import _scanned_branch
