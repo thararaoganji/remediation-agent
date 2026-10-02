@@ -48,6 +48,17 @@ services:
       context: .
       dockerfile: Dockerfile
     image: sonar-remediation-agent-local:latest
+    # Without this, `docker compose run agent` lands on an isolated
+    # per-run network with no route to `mongo` at all -- confirmed the
+    # hard way (a plain `getent hosts mongo` inside the container failed
+    # outright) while wiring up core/tools/local_secrets.py, which needs
+    # to actually reach Mongo for CLOUD_PROVIDER=local +
+    # SONAR_SERVER_NAME-based runs. job_runner_local.py's sibling
+    # containers don't need this -- they're attached to DOCKER_NETWORK
+    # explicitly via the Docker SDK, bypassing this service definition
+    # entirely -- but a direct `docker compose run agent` does.
+    networks:
+      - local-net
 
   backend:
     image: python:3.12-slim
@@ -68,6 +79,14 @@ services:
       # Local dev only -- fine to be static and committed here. Never reuse
       # this for anything that isn't this docker-compose stack.
       SESSION_SECRET_KEY: local-dev-only-not-a-real-secret-do-not-reuse
+      # Encrypts every Sonar token/GitHub PAT/LLM key at rest in the
+      # `_secrets` collection (secrets_local.py) -- same "fine as a
+      # committed placeholder, override for anything you'd mind someone
+      # else reading off disk" deal as SESSION_SECRET_KEY above. Changing
+      # this after secrets already exist makes them permanently
+      # undecryptable under the new value -- re-add them via the
+      # Connections page rather than expecting an in-place migration.
+      LOCAL_SECRETS_ENCRYPTION_KEY: local-dev-only-not-a-real-key-do-not-reuse
       AGENT_IMAGE: sonar-remediation-agent-local:latest
       DOCKER_NETWORK: sonar-remediation-local
     depends_on:
