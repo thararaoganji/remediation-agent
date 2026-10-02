@@ -1,0 +1,34 @@
+# Thin wrapper around cleanup-azure-acr -- same reusable-workflow-for-
+# `environment:` reasoning as reusable-deploy-azure.yml.
+name: Reusable - Cleanup Azure Registry
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+      keep_count:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/cleanup-azure-acr
+        with:
+          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
+          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
+          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          resource_group: ${{ vars.AZURE_RESOURCE_GROUP }}
+          acr_name: ${{ vars.AZURE_ACR_NAME }}
+          keep_count: ${{ inputs.keep_count }}

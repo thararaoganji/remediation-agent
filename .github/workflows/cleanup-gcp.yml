@@ -1,0 +1,45 @@
+# Manual-trigger-only, same convention as deploy-gcp.yml -- nothing cleans
+# up automatically. Complementary to google_artifact_registry_repository
+# .repo's own cleanup_policies (infra/modules/gcp/main.tf), which GCP
+# already enforces automatically roughly daily -- run this when immediate
+# action is wanted instead of waiting for that sweep (storage pressure, a
+# one-off cleanup before that policy existed on an environment).
+name: Cleanup (GCP Registry)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment(s) to clean up"
+        required: true
+        type: choice
+        options:
+          - both
+          - sandbox
+          - prod
+        default: sandbox
+      keep_count:
+        description: "How many most-recent image versions per image to keep, beyond whatever's currently deployed"
+        required: true
+        default: "10"
+
+jobs:
+  cleanup-sandbox:
+    if: inputs.environment == 'both' || inputs.environment == 'sandbox'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-cleanup-gcp.yml
+    with:
+      environment: sandbox
+      keep_count: ${{ inputs.keep_count }}
+
+  cleanup-prod:
+    if: inputs.environment == 'both' || inputs.environment == 'prod'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-cleanup-gcp.yml
+    with:
+      environment: prod
+      keep_count: ${{ inputs.keep_count }}

@@ -1,0 +1,112 @@
+name: Cleanup Azure Container Registry
+description: >-
+  Deletes old SHA-tagged images from Azure Container Registry, keeping the
+  currently-deployed tag plus the most recent N others per repo. Exists
+  because ACR's Basic tier (this repo's SKU, chosen for cost -- see
+  infra/README.md) has NO native retention/cleanup policy at all -- that's
+  a Premium-only feature -- while every deploy pushes a new tag and nothing
+  ever prunes the old ones. Confirmed the hard way: sandbox's registry hit
+  86% of Basic's hard 10 GiB storage quota after a few days of active
+  deploys, with no automatic relief coming. GCP's Artifact Registry has the
+  opposite problem solved natively (see google_artifact_registry_repository
+  .repo's cleanup_policies in infra/modules/gcp/main.tf) -- Azure has no
+  equivalent, so this composite action IS the retention policy here,
+  re-run by cleanup-azure.yml whenever storage pressure (or just hygiene)
+  calls for it.
+
+inputs:
+  azure_client_id:
+    required: true
+  azure_tenant_id:
+    required: true
+  azure_subscription_id:
+    required: true
+  resource_group:
+    description: "The environment's own resource group (for reading currently-deployed tags) -- NOT the Tofu state resource group."
+    required: true
+  acr_name:
+    required: true
+  keep_count:
+    description: "How many most-recent tags per repo to keep, beyond whatever's currently deployed."
+    required: false
+    default: "5"
+
+runs:
+  using: composite
+  steps:
+    - name: Auth to Azure (federated credential)
+      uses: azure/login@v3
+      with:
+        client-id: ${{ inputs.azure_client_id }}
+        tenant-id: ${{ inputs.azure_tenant_id }}
+        subscription-id: ${{ inputs.azure_subscription_id }}
+
+    - name: Purge old images, keeping what's deployed + the N most recent
+      shell: bash
+      env:
+        RESOURCE_GROUP: ${{ inputs.resource_group }}
+        ACR_NAME: ${{ inputs.acr_name }}
+        KEEP_COUNT: ${{ inputs.keep_count }}
+      run: |
+        set -euo pipefail
+
+        # Currently-deployed tags are the one thing this must never delete,
+        # regardless of how old or how far outside the "most recent N" they
+        # are -- read them live rather than trusting any cached/assumed
+        # value, exactly the same reasoning job_runner_azure.py's own
+        # env-merge fix (PR #20) already established for this repo: never
+        # silently lose track of what's actually live.
+        echo "Reading currently-deployed image tags..."
+        deployed_tags=()
+        dashboard_image=$(az containerapp show --name sonar-dashboard --resource-group "$RESOURCE_GROUP" \
+          --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo "")
+        if [ -n "$dashboard_image" ]; then
+          deployed_tags+=("${dashboard_image##*:}")
+        fi
+        for job in techdebt coverage duplicate; do
+          job_image=$(az containerapp job show --name "sonar-remediation-${job}-job" --resource-group "$RESOURCE_GROUP" \
+            --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo "")
+          if [ -n "$job_image" ]; then
+            deployed_tags+=("${job_image##*:}")
+          fi
+        done
+        echo "Currently deployed tag(s): ${deployed_tags[*]:-none found}"
+
+        total_deleted=0
+        for repo in sonar-dashboard sonar-remediation-agent; do
+          echo ""
+          echo "=== $repo ==="
+          # Newest first -- the first KEEP_COUNT lines are the "most
+          # recent N" this always keeps regardless of deployment status.
+          all_tags=$(az acr repository show-tags --name "$ACR_NAME" --repository "$repo" \
+            --orderby time_desc --output tsv 2>/dev/null || echo "")
+          if [ -z "$all_tags" ]; then
+            echo "No tags found, skipping."
+            continue
+          fi
+          recent_tags=$(echo "$all_tags" | head -n "$KEEP_COUNT")
+
+          deleted_this_repo=0
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            keep=false
+            for d in "${deployed_tags[@]:-}"; do
+              [ "$tag" = "$d" ] && keep=true && break
+            done
+            if echo "$recent_tags" | grep -qx "$tag"; then
+              keep=true
+            fi
+            if [ "$keep" = true ]; then
+              continue
+            fi
+            echo "Deleting $repo:$tag"
+            az acr repository delete --name "$ACR_NAME" --image "$repo:$tag" --yes --output none
+            deleted_this_repo=$((deleted_this_repo + 1))
+          done <<< "$all_tags"
+          echo "$repo: deleted $deleted_this_repo image(s)"
+          total_deleted=$((total_deleted + deleted_this_repo))
+        done
+
+        echo ""
+        echo "Total images deleted: $total_deleted"
+        az acr show-usage --name "$ACR_NAME" --output table

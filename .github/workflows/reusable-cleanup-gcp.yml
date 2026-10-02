@@ -1,0 +1,37 @@
+# Thin wrapper around cleanup-gcp-registry -- same reason reusable-deploy-
+# gcp.yml exists rather than inlining its steps: the job's own
+# `environment:` (from the `environment` input) is what makes `vars.*`
+# resolve to that environment's own project/service-account/etc., and
+# GitHub's schema for a job that calls a reusable workflow via `uses:`
+# doesn't accept `environment:` alongside it.
+name: Reusable - Cleanup GCP Registry
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+      keep_count:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: ./.github/actions/cleanup-gcp-registry
+        with:
+          gcp_project_id: ${{ vars.GCP_PROJECT_ID }}
+          gcp_wif_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          gcp_deploy_service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+          gcp_region: ${{ vars.GCP_REGION }}
+          keep_count: ${{ inputs.keep_count }}

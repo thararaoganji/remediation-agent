@@ -23,6 +23,34 @@ resource "google_artifact_registry_repository" "repo" {
   repository_id = "sonar-remediation-repo"
   format        = "DOCKER"
   labels        = { environment = var.environment }
+
+  # Every deploy pushes a new SHA-tagged image and nothing ever pruned the
+  # old ones -- confirmed the hard way: 26 images accumulated in sandbox
+  # alone within a few days of active work. GCP has no hard storage quota
+  # the way Azure Container Registry's Basic tier does, but this is still
+  # unbounded, billed storage growth for images nothing will ever deploy
+  # again. GCP evaluates cleanup_policies automatically (roughly daily),
+  # no apply/workflow needed to keep it enforced going forward.
+  #
+  # KEEP always wins over DELETE for a version matching both -- so the 10
+  # most recent versions of EITHER image (dashboard or agent) are never
+  # touched by the age-based policy below, regardless of how old they get,
+  # which is what keeps a rollback target available even after a long gap
+  # between deploys.
+  cleanup_policies {
+    id     = "keep-most-recent"
+    action = "KEEP"
+    most_recent_versions {
+      keep_count = 10
+    }
+  }
+  cleanup_policies {
+    id     = "delete-older-than-30-days"
+    action = "DELETE"
+    condition {
+      older_than = "2592000s" # 30 days
+    }
+  }
 }
 
 # --- Dashboard service account + IAM -----------------------------------------
