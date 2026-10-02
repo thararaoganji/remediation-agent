@@ -30,11 +30,20 @@ services:
       timeout: 5s
       retries: 10
 
-  # Never started directly (no `depends_on` targets it, and nobody runs
-  # `docker compose up agent`) -- this block exists purely so `docker
-  # compose build` produces the sonar-remediation-agent-local:latest image
-  # job_runner_local.py starts fresh sibling containers from on every run.
+  # This block exists purely so `docker compose build` produces the
+  # sonar-remediation-agent-local:latest image job_runner_local.py starts
+  # fresh sibling containers from on every run -- it's never meant to run
+  # as a standing container itself (no .env, no RUN_ID, nothing run_local
+  # .py needs). `profiles:` is required for that, not just leaving off
+  # `depends_on`: confirmed the hard way -- plain `docker compose up`
+  # starts EVERY service with no profile by default regardless of whether
+  # anything depends on it, so without this it started right alongside
+  # mongo/backend/frontend and immediately crash-looped on run_local.py's
+  # own "Missing required .env keys" check. A profile nobody passes with
+  # `--profile` keeps `docker compose up`/`up -d` from ever starting it,
+  # while `docker compose build` (no profile filtering) still builds it.
   agent:
+    profiles: ["build-only"]
     build:
       context: .
       dockerfile: Dockerfile

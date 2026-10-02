@@ -20,9 +20,18 @@ see the main [README.md](../README.md)'s "Setup (macOS)" section.
 ## Fully local (Docker Compose, no cloud account needed)
 
 ```bash
-docker compose build            # builds the agent image "New Run" starts sibling containers from
-docker compose up               # starts mongo + backend + frontend
+docker compose build agent      # builds the agent image "New Run" starts sibling containers from
+docker compose up               # starts mongo + backend + frontend (the `agent` service itself never starts -- it's profile-gated, build-only)
 ```
+
+Name `agent` explicitly -- it's deliberately gated behind a `profiles:` entry in
+docker-compose.yml so a plain `docker compose up` never starts it as a standing
+container (confirmed the hard way: without that gate it started right alongside
+everything else and immediately crash-looped on run_local.py's own "Missing
+required .env keys" check, since it has none of the per-run env job_runner_local.py
+actually gives it). A bare `docker compose build` also skips it for the same
+reason -- `docker compose build agent` (or `docker compose --profile build-only
+build`) is what actually builds it.
 
 Then, once (per fresh `mongo` volume):
 
