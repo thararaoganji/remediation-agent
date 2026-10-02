@@ -157,10 +157,18 @@ core/                      -- tool-agnostic fix-loop engine, shared by every
 │                             Veracode/Coverity/SBOM/Black Duck could plug into
 │                             the same engine later)
 ├── state_schema.py          -- all session.state keys, one place
-├── adapters/base.py          -- LanguageAdapter interface, Maven + Gradle impls
+├── llm_config.py             -- which LLM vendor/model an agent calls, and its env var
+├── adapters/
+│   ├── base.py                 -- LanguageAdapter interface, Maven + Gradle impls
+│   └── jdk_provisioning.py     -- downloads the exact JDK a target project declares
 ├── tools/
 │   ├── git_tools.py            -- local/GitHub source resolution, branch, commit
-│   └── patch_tools.py          -- apply_diff, JUnit failure parsing
+│   ├── patch_tools.py          -- apply_diff, JUnit failure parsing
+│   ├── local_secrets.py        -- resolves a direct run's secrets from the dashboard's
+│   │                             own Mongo, by name (CLOUD_PROVIDER=local only)
+│   └── run_status.py           -- optional live status for the web dashboard; one
+│                                  provider module per cloud (_gcp/_azure/_local),
+│                                  picked by CLOUD_PROVIDER, no-op if unset
 └── agents/
     ├── fix_loop.py             -- the LLM-call gate, per-file loop, diff/NO_SAFE_FIX helpers
     ├── checkpoint.py           -- full build verify + bisect-revert
@@ -189,6 +197,20 @@ agent_duplicate/           -- Sonar Duplication Agent (extract duplicated blocks
 
 run_local.py               -- entry point: loads .env, seeds session state, runs AGENT_TYPE's agent
 .env.example               -- copy to .env and fill in
+Dockerfile                 -- the image run_local.py runs in -- Cloud Run Jobs/Container
+                              Apps Jobs/docker-compose's `agent` service all build this same image
+
+dashboard/                 -- web UI + API for picking a Sonar server/GitHub repo/LLM
+│                             key and triggering a run, instead of hand-editing .env --
+│                             see dashboard/README.md (includes the fully-local, no
+│                             cloud account, Docker Compose + Mongo setup)
+docker-compose.yml         -- the fully-local stack dashboard/README.md's "Fully local" walks through
+
+infra/                     -- OpenTofu: both clouds, sandbox + prod -- see infra/README.md
+docs/                      -- GCP deployment walkthrough, architecture diagram, slide decks
+deploy/gcp/                -- scripts for the standalone SonarQube Compute Engine VM
+                              (start/stop, its own docker-compose.yml) -- see
+                              docs/GCP_DEPLOYMENT.md
 ```
 
 Run one agent directly with `adk run agent_techdebt` (or `agent_coverage` /
@@ -338,11 +360,29 @@ access for the clone; pushing the fix branch needs `Contents: Read & write`.
 
 ## Deployment
 
-See [docs/GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md): SonarQube on a Compute
-Engine VM, the agent as a Cloud Run **Job** (run-to-completion, not a
-service), secrets in Secret Manager, and CI/CD via
-`.github/workflows/deploy-gcp.yml` (Workload Identity Federation, no
-long-lived keys). GCP resources are named `sonar-remediation-*`.
+Three ways to run this, depending on what you need:
+
+- **Fully local, no cloud account at all** -- `docker compose up` (see
+  [dashboard/README.md](dashboard/README.md)'s "Fully local" section).
+  MongoDB stands in for Firestore/Cosmos DB, and a real sibling Docker
+  container stands in for a Cloud Run Job/Container Apps Job. Good for
+  dashboard/agent development or a real end-to-end run against a real
+  Sonar server without touching GCP or Azure.
+- **Real cloud infra, either GCP or Azure** -- see
+  [infra/README.md](infra/README.md) (OpenTofu, `sandbox`/`prod`
+  environments, both clouds structurally identical: the agent as a
+  Cloud Run **Job**/Container Apps **Job** -- run-to-completion, not a
+  service -- secrets in Secret Manager/Key Vault, CI/CD via
+  `.github/workflows/deploy-gcp.yml`/`deploy-azure.yml` with Workload
+  Identity Federation/OIDC, no long-lived keys). Resources are named
+  `sonar-remediation-*`.
+- **The older, manual GCP walkthrough** -- see
+  [docs/GCP_DEPLOYMENT.md](docs/GCP_DEPLOYMENT.md): SonarQube on a
+  standalone Compute Engine VM ([deploy/gcp/](deploy/gcp/)) plus the
+  same Cloud Run Job shape, click-by-click rather than via Tofu --
+  useful for understanding what the Tofu module actually provisions,
+  or if you want to set up SonarQube itself outside this repo's Tofu
+  (which doesn't manage SonarQube itself on either cloud).
 
 ---
 
@@ -359,6 +399,11 @@ orchestration classes (`tests/test_orchestration.py`,
 `tests/test_multi_agent.py`) driven through a real `Runner` with mocked
 adapters and a stubbed `fix_llm_agent`. No network or live LLM calls, so
 it's fast and hermetic.
+
+This covers the agent pipeline only. The dashboard backend has its own,
+separate suite (`cd dashboard/backend && pytest` — see
+[dashboard/README.md](dashboard/README.md), everything mocked, no real
+cloud/Mongo needed either).
 
 ---
 
