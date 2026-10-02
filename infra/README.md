@@ -180,6 +180,37 @@ this repo is private. Until/unless that changes, the manual trigger
 itself is the only real gate -- there's no second approval click on top
 of it.
 
+## Registry cleanup
+
+Every deploy pushes a new SHA-tagged image and nothing deletes the old
+ones on its own. Confirmed the hard way (2026-09-30): sandbox's Azure
+Container Registry -- Basic tier, chosen for cost -- hit 86% of its hard
+10 GiB storage quota after a few days of active deploys, since Basic has
+no native retention policy at all (that's a Premium-only ACR feature).
+GCP's Artifact Registry has no such hard quota, but was still carrying 26
+unpruned images in the same environment.
+
+- **GCP**: `google_artifact_registry_repository.repo`'s own
+  `cleanup_policies` (`infra/modules/gcp/main.tf`) keep the 10 most recent
+  versions of each image plus whatever's currently deployed, and delete
+  anything else older than 30 days -- enforced by GCP automatically
+  (roughly daily), no workflow needed once applied. `.github/workflows/
+  cleanup-gcp.yml` (manual trigger) exists for when immediate action beats
+  waiting for that sweep.
+- **Azure**: no native equivalent exists on Basic tier, so
+  `.github/workflows/cleanup-azure.yml` (manual trigger,
+  `.github/actions/cleanup-azure-acr`) **is** the retention policy here --
+  it needs to actually be run periodically, not just exist. Both
+  workflows always read the live currently-deployed tag from the
+  dashboard/jobs before deciding what to delete, so a real rollback target
+  is never at risk even if it's older than the keep-count window.
+
+Run either from the Actions tab, pick `sandbox`/`prod`/`both` and how many
+recent versions to keep (defaults: 10 for GCP, 5 for Azure). First real
+run against sandbox (2026-09-30) took Azure from 86% to ~30% of quota (24
+images deleted) and GCP from 26 to 22 images (4 deleted -- most of its 26
+were already within the keep-10 window).
+
 ## GCP prod's import
 
 Prod's GCP resources predate this repo's Tofu setup (they were created by

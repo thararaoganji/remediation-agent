@@ -1,0 +1,110 @@
+name: Cleanup GCP Artifact Registry
+description: >-
+  Deletes old SHA-tagged images from Artifact Registry right now, keeping
+  the currently-deployed tag plus the most recent N others per image.
+  Complementary to google_artifact_registry_repository.repo's own
+  cleanup_policies (infra/modules/gcp/main.tf), which GCP already
+  enforces automatically on roughly a daily cycle -- that policy is the
+  real long-term fix and needs no workflow to keep working. This action
+  exists for when "wait for the next automatic sweep" isn't good enough:
+  immediate storage pressure, or a one-off cleanup before that policy
+  existed/was applied to an environment.
+
+inputs:
+  gcp_project_id:
+    required: true
+  gcp_wif_provider:
+    required: true
+  gcp_deploy_service_account:
+    required: true
+  gcp_region:
+    required: true
+  keep_count:
+    description: "How many most-recent versions per image to keep, beyond whatever's currently deployed."
+    required: false
+    default: "10"
+
+runs:
+  using: composite
+  steps:
+    - name: Auth to GCP (Workload Identity Federation)
+      uses: google-github-actions/auth@v3
+      with:
+        project_id: ${{ inputs.gcp_project_id }}
+        workload_identity_provider: ${{ inputs.gcp_wif_provider }}
+        service_account: ${{ inputs.gcp_deploy_service_account }}
+
+    - uses: google-github-actions/setup-gcloud@v3
+
+    - name: Purge old images, keeping what's deployed + the N most recent
+      shell: bash
+      env:
+        PROJECT_ID: ${{ inputs.gcp_project_id }}
+        REGION: ${{ inputs.gcp_region }}
+        KEEP_COUNT: ${{ inputs.keep_count }}
+      run: |
+        set -euo pipefail
+
+        REPO_BASE="${REGION}-docker.pkg.dev/${PROJECT_ID}/sonar-remediation-repo"
+
+        # Same "read what's actually live, never trust an assumption"
+        # reasoning as the Azure cleanup action -- see its own comment.
+        echo "Reading currently-deployed image digests..."
+        deployed_images=()
+        dashboard_image=$(gcloud run services describe sonar-dashboard --project "$PROJECT_ID" --region "$REGION" \
+          --format="value(spec.template.spec.containers[0].image)" 2>/dev/null || echo "")
+        [ -n "$dashboard_image" ] && deployed_images+=("$dashboard_image")
+        for job in techdebt coverage duplicate; do
+          job_image=$(gcloud run jobs describe "sonar-remediation-${job}-job" --project "$PROJECT_ID" --region "$REGION" \
+            --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || echo "")
+          [ -n "$job_image" ] && deployed_images+=("$job_image")
+        done
+        echo "Currently deployed image(s): ${deployed_images[*]:-none found}"
+
+        total_deleted=0
+        for image_name in sonar-dashboard sonar-remediation-agent; do
+          echo ""
+          echo "=== $image_name ==="
+          package="${REPO_BASE}/${image_name}"
+
+          # Newest first, one digest per line -- include-tags so a
+          # digest's tag (what deployed_images actually names) is visible
+          # alongside it.
+          all_digests=$(gcloud artifacts docker images list "$package" \
+            --include-tags --sort-by="~CREATE_TIME" \
+            --format="csv[no-heading](version,tags)" 2>/dev/null || echo "")
+          if [ -z "$all_digests" ]; then
+            echo "No images found, skipping."
+            continue
+          fi
+          recent_digests=$(echo "$all_digests" | head -n "$KEEP_COUNT" | cut -d, -f1)
+
+          deleted_this_image=0
+          line_num=0
+          while IFS=, read -r digest tags; do
+            [ -z "$digest" ] && continue
+            line_num=$((line_num + 1))
+            full_ref="${package}@${digest}"
+            keep=false
+            for d in "${deployed_images[@]:-}"; do
+              [[ "$d" == *"$digest"* ]] && keep=true && break
+              # deployed_images names a TAG (e.g. ...:abc123), not a
+              # digest -- also match by tag membership.
+              [[ ",$tags," == *",${d##*:},"* ]] && keep=true && break
+            done
+            if echo "$recent_digests" | grep -qx "$digest"; then
+              keep=true
+            fi
+            if [ "$keep" = true ]; then
+              continue
+            fi
+            echo "Deleting $full_ref (tags: ${tags:-none})"
+            gcloud artifacts docker images delete "$full_ref" --project "$PROJECT_ID" --quiet --delete-tags
+            deleted_this_image=$((deleted_this_image + 1))
+          done <<< "$all_digests"
+          echo "$image_name: deleted $deleted_this_image image(s)"
+          total_deleted=$((total_deleted + deleted_this_image))
+        done
+
+        echo ""
+        echo "Total images deleted: $total_deleted"
