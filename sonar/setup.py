@@ -15,7 +15,7 @@ from core import state_schema as sk
 from core.agents._shared import _msg
 from core.tools import git_tools
 
-from .adapters import SonarPreflightError, get_adapter
+from .adapters import SonarPreflightError, get_adapter, resolve_project_key_placeholders
 from .tools import sonar_tools
 
 
@@ -63,7 +63,9 @@ class SetupStep(BaseAgent):
         # / `mvn sonar:sonar` is whatever's configured in build.gradle/
         # pom.xml -- a mismatched .env value would fetch/report against one
         # project key while the scan itself analyzes under another.
-        s[sk.SONAR_PROJECT_KEY] = adapter.get_project_key(working_dir)
+        s[sk.SONAR_PROJECT_KEY] = resolve_project_key_placeholders(
+            adapter.get_project_key(working_dir), working_dir
+        )
 
         # SonarPreflightError deliberately NOT caught here -- same "fail
         # fast before any branch is created or issue fetched" contract as
