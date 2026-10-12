@@ -1,0 +1,39 @@
+# Manual-trigger-only: deploys the Dashboard to GCP.
+# Supports selecting sandbox, prod, or both environments.
+name: Deploy Dashboard (GCP)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Which environment(s) to deploy"
+        required: true
+        type: choice
+        options:
+          - both
+          - sandbox
+          - prod
+        default: sandbox
+
+jobs:
+  deploy-sandbox:
+    if: inputs.environment == 'both' || inputs.environment == 'sandbox'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-deploy-dashboard-gcp.yml
+    with:
+      environment: sandbox
+
+  deploy-prod:
+    needs: deploy-sandbox
+    if: |
+      always() &&
+      (needs.deploy-sandbox.result == 'success' || needs.deploy-sandbox.result == 'skipped') &&
+      (inputs.environment == 'both' || inputs.environment == 'prod')
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-deploy-dashboard-gcp.yml
+    with:
+      environment: prod

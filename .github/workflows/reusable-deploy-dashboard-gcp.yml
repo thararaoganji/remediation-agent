@@ -1,0 +1,94 @@
+# Reusable workflow to build and deploy the Dashboard to GCP.
+# Builds the dashboard image, queries GCP for the currently-deployed agent image
+# (so the agent is unaffected), and runs OpenTofu to update the Cloud Run dashboard service.
+name: Reusable - Deploy Dashboard GCP
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Auth to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: Configure Docker for GCP Artifact Registry
+        run: gcloud auth configure-docker "${{ vars.GCP_REGION }}-docker.pkg.dev" --quiet
+
+      - name: Build and push dashboard image
+        id: image
+        run: |
+          SHA="${{ github.sha }}"
+          REPO="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/sonar-remediation-repo"
+          DASHBOARD_IMG="${REPO}/sonar-dashboard:${SHA}"
+          echo "tag=${DASHBOARD_IMG}" >> "$GITHUB_OUTPUT"
+
+          docker build -f dashboard/Dockerfile -t "${DASHBOARD_IMG}" .
+          docker push "${DASHBOARD_IMG}"
+
+      - name: Resolve live agent image
+        id: live-agent
+        run: |
+          REPO="${{ vars.GCP_REGION }}-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/sonar-remediation-repo"
+          DEFAULT_AGENT="${REPO}/sonar-remediation-agent:latest"
+
+          LIVE_AGENT=$(gcloud run jobs describe "sonar-remediation-techdebt-job" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --format="value(spec.template.spec.template.spec.containers[0].image)" 2>/dev/null || echo "")
+
+          if [ -n "$LIVE_AGENT" ]; then
+            echo "Resolved live agent image: $LIVE_AGENT"
+            echo "image=${LIVE_AGENT}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No live agent job found; falling back to default: $DEFAULT_AGENT"
+            echo "image=${DEFAULT_AGENT}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.12.6"
+
+      - name: tofu init
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/gcp
+        run: |
+          tofu init -input=false \
+            -backend-config="bucket=${{ vars.TOFU_STATE_BUCKET }}" \
+            -backend-config="prefix=${{ inputs.environment }}/gcp"
+
+      - name: tofu plan
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/gcp
+        run: |
+          tofu plan -input=false -lock-timeout=300s \
+            -var="gcp_dashboard_image=${{ steps.image.outputs.tag }}" \
+            -var="gcp_agent_image=${{ steps.live-agent.outputs.image }}"
+
+      - name: tofu apply
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/gcp
+        run: |
+          tofu apply -input=false -lock-timeout=300s -auto-approve \
+            -var="gcp_dashboard_image=${{ steps.image.outputs.tag }}" \
+            -var="gcp_agent_image=${{ steps.live-agent.outputs.image }}"

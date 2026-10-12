@@ -18,11 +18,29 @@ terraform {
 data "azurerm_client_config" "current" {}
 
 locals {
-  rg_name = "sonar-remediation-${var.environment}-rg"
-  # ACR names: globally unique, alphanumeric only, no hyphens.
-  acr_name = "sonarremediation${var.environment}acr"
-  # Key Vault names: globally unique, 3-24 chars, alphanumeric + hyphens.
-  kv_name = "sonar-remed-${var.environment}-kv"
+  use_standard_prefixes = var.environment == "sb" || startswith(var.environment, "sb")
+
+  # Resource Group (e.g. rg-sb-sonar-remediation)
+  rg_name = local.use_standard_prefixes ? "rg-${var.environment}-sonar-remediation" : "sonar-remediation-${var.environment}-rg"
+
+  # ACR names: globally unique, alphanumeric only, no hyphens (e.g. acrsbsonarremediation)
+  acr_name = local.use_standard_prefixes ? "acr${var.environment}sonarremediation" : "sonarremediation${var.environment}acr"
+
+  # Key Vault names: globally unique, 3-24 chars (e.g. kv-sb-sonar-remed)
+  kv_name = local.use_standard_prefixes ? "kv-${var.environment}-sonar-remed" : "sonar-remed-${var.environment}-kv"
+
+  # Cosmos DB: lowercase alphanumeric + hyphens, 3-44 chars (e.g. cosmos-sb-sonar-remediation)
+  cosmos_name = local.use_standard_prefixes ? "cosmos-${var.environment}-sonar-remediation" : "sonar-remediation-${var.environment}-cosmos"
+
+  # Log Analytics Workspace (e.g. log-sb-sonar-remediation)
+  logs_name = local.use_standard_prefixes ? "log-${var.environment}-sonar-remediation" : "sonar-remediation-${var.environment}-logs"
+
+  # Container App Environment (e.g. cae-sb-sonar-remediation)
+  cae_name = local.use_standard_prefixes ? "cae-${var.environment}-sonar-remediation" : "sonar-remediation-${var.environment}-env"
+
+  # Managed Identities (e.g. id-sb-sonar-agent, id-sb-sonar-dashboard)
+  agent_identity_name     = local.use_standard_prefixes ? "id-${var.environment}-sonar-agent" : "sonar-agent-identity"
+  dashboard_identity_name = local.use_standard_prefixes ? "id-${var.environment}-sonar-dashboard" : "sonar-dashboard-identity"
 }
 
 resource "azurerm_resource_group" "main" {
@@ -48,7 +66,7 @@ resource "azurerm_container_registry" "acr" {
 # /run_id instead.
 
 resource "azurerm_cosmosdb_account" "main" {
-  name                = "sonar-remediation-${var.environment}-cosmos"
+  name                = local.cosmos_name
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   offer_type          = "Standard"
@@ -129,14 +147,14 @@ resource "azurerm_key_vault_secret" "session_secret" {
 # --- Managed identities (least-privilege split, mirrors the GCP SAs) ---------
 
 resource "azurerm_user_assigned_identity" "agent" {
-  name                = "sonar-agent-identity"
+  name                = local.agent_identity_name
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   tags                = { environment = var.environment }
 }
 
 resource "azurerm_user_assigned_identity" "dashboard" {
-  name                = "sonar-dashboard-identity"
+  name                = local.dashboard_identity_name
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   tags                = { environment = var.environment }
@@ -246,7 +264,7 @@ resource "azurerm_role_assignment" "dashboard_acr_pull" {
 # run by hand -- after that, state and reality agree and `tofu plan`
 # stays clean going forward.
 resource "azurerm_log_analytics_workspace" "main" {
-  name                = "sonar-remediation-${var.environment}-logs"
+  name                = local.logs_name
   resource_group_name = azurerm_resource_group.main.name
   location            = azurerm_resource_group.main.location
   sku                 = "PerGB2018"
@@ -255,7 +273,7 @@ resource "azurerm_log_analytics_workspace" "main" {
 }
 
 resource "azurerm_container_app_environment" "main" {
-  name                       = "sonar-remediation-${var.environment}-env"
+  name                       = local.cae_name
   resource_group_name        = azurerm_resource_group.main.name
   location                   = azurerm_resource_group.main.location
   log_analytics_workspace_id = azurerm_log_analytics_workspace.main.id

@@ -5,7 +5,7 @@ variable "azure_subscription_id" {
 
 variable "azure_location" {
   type    = string
-  default = "eastus"
+  default = "centralindia"
 }
 
 variable "azure_github_repo" {

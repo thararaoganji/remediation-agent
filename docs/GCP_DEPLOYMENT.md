@@ -392,10 +392,10 @@ production.
 
 ## 4. Continuous deployment via GitHub Actions
 
-`.github/workflows/deploy-gcp.yml` builds this repo's own agent image (one
-image, shared by all three agents) on every push to `main` (that touches any
-of the three agents' code) and rolls it out to all three Cloud Run Jobs
-created in §2.3. It authenticates via **Workload Identity Federation** —
+`.github/workflows/deploy-agent-gcp.yml` and
+`deploy-dashboard-gcp.yml` deploy this repo's agent image (one image, shared
+by all three agents) and dashboard image independently to GCP. They authenticate via
+**Workload Identity Federation** —
 GitHub's own OIDC token is exchanged for short-lived GCP credentials, so
 there's no long-lived service-account key sitting in GitHub secrets to leak
 or rotate.

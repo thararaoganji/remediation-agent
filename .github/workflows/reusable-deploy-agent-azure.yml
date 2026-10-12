@@ -1,0 +1,92 @@
+# Reusable workflow to build and deploy the Remediation Agents to Azure.
+# Builds the agent image, queries Azure for the currently-deployed dashboard image
+# (so the dashboard is unaffected), and runs OpenTofu to update the Container Apps Jobs.
+name: Reusable - Deploy Agent Azure
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "sandbox | prod"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Auth to Azure (federated credential)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "${{ vars.AZURE_ACR_NAME }}"
+
+      - name: Build and push agent image
+        id: image
+        run: |
+          SHA="${{ github.sha }}"
+          REPO="${{ vars.AZURE_ACR_NAME }}.azurecr.io"
+          AGENT_IMG="${REPO}/sonar-remediation-agent:${SHA}"
+          echo "tag=${AGENT_IMG}" >> "$GITHUB_OUTPUT"
+
+          docker build -f Dockerfile -t "${AGENT_IMG}" .
+          docker push "${AGENT_IMG}"
+
+      - name: Resolve live dashboard image
+        id: live-dashboard
+        run: |
+          RG="sonar-remediation-${{ inputs.environment }}-rg"
+          DEFAULT_DASHBOARD="${{ vars.AZURE_ACR_NAME }}.azurecr.io/sonar-dashboard:latest"
+
+          LIVE_DASHBOARD=$(az containerapp show --name "sonar-dashboard" --resource-group "$RG" \
+            --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo "")
+
+          if [ -n "$LIVE_DASHBOARD" ]; then
+            echo "Resolved live dashboard image: $LIVE_DASHBOARD"
+            echo "image=${LIVE_DASHBOARD}" >> "$GITHUB_OUTPUT"
+          else
+            echo "No live dashboard container app found; falling back to default: $DEFAULT_DASHBOARD"
+            echo "image=${DEFAULT_DASHBOARD}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.12.6"
+
+      - name: tofu init
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          tofu init -input=false \
+            -backend-config="resource_group_name=${{ vars.TOFU_STATE_AZURE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TOFU_STATE_AZURE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TOFU_STATE_AZURE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.environment }}.tfstate"
+
+      - name: tofu plan
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          tofu plan -input=false -lock-timeout=300s \
+            -var="azure_dashboard_image=${{ steps.live-dashboard.outputs.image }}" \
+            -var="azure_agent_image=${{ steps.image.outputs.tag }}"
+
+      - name: tofu apply
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          tofu apply -input=false -lock-timeout=300s -auto-approve \
+            -var="azure_dashboard_image=${{ steps.live-dashboard.outputs.image }}" \
+            -var="azure_agent_image=${{ steps.image.outputs.tag }}"

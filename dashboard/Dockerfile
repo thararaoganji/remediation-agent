@@ -8,7 +8,7 @@
 FROM node:20-slim AS frontend-build
 WORKDIR /frontend
 COPY dashboard/frontend/package.json dashboard/frontend/package-lock.json ./
-RUN npm ci
+RUN npm config set strict-ssl false && npm ci --include=dev
 COPY dashboard/frontend/ ./
 RUN npm run build
 
