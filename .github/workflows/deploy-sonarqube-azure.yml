@@ -67,7 +67,7 @@ jobs:
         run: |
           echo "RESOURCE_GROUP=sonarqube-${{ inputs.environment }}-rg" >> "$GITHUB_ENV"
           echo "VM_NAME=sonarqube-${{ inputs.environment }}-vm" >> "$GITHUB_ENV"
-          echo "LOCATION=${{ vars.AZURE_LOCATION || 'eastus' }}" >> "$GITHUB_ENV"
+          echo "LOCATION=${{ vars.AZURE_LOCATION || 'centralindia' }}" >> "$GITHUB_ENV"
 
       # --- DESTROY ACTION ---
       - name: Destroy SonarQube Resource Group

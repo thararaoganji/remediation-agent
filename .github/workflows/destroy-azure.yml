@@ -1,20 +1,20 @@
-# Manual-trigger-only, same reasoning and the same sandbox-only + typed-
-# confirmation safety gates as destroy-gcp.yml -- see its own comment.
-#
-# After this runs, deploy-azure.yml will FAIL on its first `tofu apply`
-# until someone with real subscription permissions re-bootstraps a
-# resource group + Contributor grant for github_deployer -- see
-# tofu-destroy-azure's own docstring and infra/README.md's "Bootstrap
-# order" (step 3/4) for exactly what to run. This is NOT a bug in this
-# workflow; it's the ABAC-constrained Owner account's own design working
-# as intended, same as it did for the original bootstrap.
-name: Destroy (Azure sandbox)
+# Manual-trigger-only, non-prod only + typed-confirmation safety gates.
+# Supports destroying either 'sb' or 'sandbox' environments.
+name: Destroy (Azure non-prod)
 
 on:
   workflow_dispatch:
     inputs:
+      environment:
+        description: "Environment to destroy"
+        required: true
+        type: choice
+        options:
+          - sb
+          - sandbox
+        default: sb
       confirm:
-        description: 'Type "destroy-sandbox" to confirm -- this deletes real running Azure infrastructure.'
+        description: 'Type "destroy-sb" or "destroy-sandbox" matching your selected environment.'
         required: true
 
 jobs:
@@ -23,16 +23,90 @@ jobs:
     steps:
       - name: Verify confirmation phrase
         run: |
-          if [ "${{ inputs.confirm }}" != "destroy-sandbox" ]; then
-            echo "::error::Confirmation phrase did not match 'destroy-sandbox' -- aborting without touching anything."
+          EXPECTED="destroy-${{ inputs.environment }}"
+          if [ "${{ inputs.confirm }}" != "$EXPECTED" ]; then
+            echo "::error::Confirmation phrase did not match '$EXPECTED' -- aborting without touching anything."
             exit 1
           fi
 
-  destroy-sandbox:
+  destroy:
     needs: check-confirmation
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-destroy-azure.yml
-    with:
-      environment: sandbox
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Auth to Azure (federated credential)
+        uses: azure/login@v3
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.12.6"
+
+      - name: tofu init
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          tofu init -input=false \
+            -backend-config="resource_group_name=${{ vars.TOFU_STATE_AZURE_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TOFU_STATE_AZURE_STORAGE_ACCOUNT }}" \
+            -backend-config="container_name=${{ vars.TOFU_STATE_AZURE_CONTAINER }}" \
+            -backend-config="key=${{ inputs.environment }}.tfstate"
+
+      - name: Compute exclude flags
+        id: excludes
+        shell: bash
+        run: |
+          flags="-exclude=module.azure.azuread_application.github_deployer"
+          flags="$flags -exclude=module.azure.azuread_service_principal.github_deployer"
+          flags="$flags -exclude=module.azure.azuread_application_federated_identity_credential.github"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.agent_acr_pull"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.agent_kv_read"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_acr_pull"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_container_apps"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_container_apps_jobs"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.dashboard_kv_admin"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.github_deployer_acr_push"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.github_deployer_kv_admin"
+          flags="$flags -exclude=module.azure.azurerm_role_assignment.github_deployer_rg"
+          echo "flags=$flags" >> "$GITHUB_OUTPUT"
+
+      - name: tofu plan -destroy
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          tofu plan -destroy -input=false -lock-timeout=300s \
+            ${{ steps.excludes.outputs.flags }}
+
+      - name: tofu destroy
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          tofu destroy -input=false -lock-timeout=300s -auto-approve \
+            ${{ steps.excludes.outputs.flags }}
+
+      - name: Sync state for the role assignments Azure already removed
+        shell: bash
+        working-directory: infra/environments/${{ inputs.environment }}/azure
+        run: |
+          for addr in \
+            "module.azure.azurerm_role_assignment.agent_acr_pull" \
+            "module.azure.azurerm_role_assignment.agent_kv_read" \
+            "module.azure.azurerm_role_assignment.dashboard_acr_pull" \
+            "module.azure.azurerm_role_assignment.dashboard_container_apps" \
+            "module.azure.azurerm_role_assignment.dashboard_container_apps_jobs" \
+            "module.azure.azurerm_role_assignment.dashboard_kv_admin" \
+            "module.azure.azurerm_role_assignment.github_deployer_acr_push" \
+            "module.azure.azurerm_role_assignment.github_deployer_kv_admin" \
+            "module.azure.azurerm_role_assignment.github_deployer_rg" \
+          ; do
+            tofu state rm "$addr" || true
+          done

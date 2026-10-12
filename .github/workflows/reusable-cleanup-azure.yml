@@ -1,5 +1,5 @@
-# Thin wrapper around cleanup-azure-acr -- same reusable-workflow-for-
-# `environment:` reasoning as reusable-deploy-azure.yml.
+# Reusable workflow to purge old images from Azure Container Registry,
+# keeping the currently deployed tag plus the N most recent tags.
 name: Reusable - Cleanup Azure Registry
 
 on:
@@ -24,11 +24,71 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: ./.github/actions/cleanup-azure-acr
+      - name: Auth to Azure (federated credential)
+        uses: azure/login@v3
         with:
-          azure_client_id: ${{ vars.AZURE_CLIENT_ID }}
-          azure_tenant_id: ${{ vars.AZURE_TENANT_ID }}
-          azure_subscription_id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-          resource_group: ${{ vars.AZURE_RESOURCE_GROUP }}
-          acr_name: ${{ vars.AZURE_ACR_NAME }}
-          keep_count: ${{ inputs.keep_count }}
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Purge old images, keeping what's deployed + the N most recent
+        shell: bash
+        env:
+          RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+          ACR_NAME: ${{ vars.AZURE_ACR_NAME }}
+          KEEP_COUNT: ${{ inputs.keep_count }}
+        run: |
+          set -euo pipefail
+
+          echo "Reading currently-deployed image tags..."
+          deployed_tags=()
+          dashboard_image=$(az containerapp show --name sonar-dashboard --resource-group "$RESOURCE_GROUP" \
+            --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo "")
+          if [ -n "$dashboard_image" ]; then
+            deployed_tags+=("${dashboard_image##*:}")
+          fi
+          for job in techdebt coverage duplicate; do
+            job_image=$(az containerapp job show --name "sonar-remediation-${job}-job" --resource-group "$RESOURCE_GROUP" \
+              --query "properties.template.containers[0].image" -o tsv 2>/dev/null || echo "")
+            if [ -n "$job_image" ]; then
+              deployed_tags+=("${job_image##*:}")
+            fi
+          done
+          echo "Currently deployed tag(s): ${deployed_tags[*]:-none found}"
+
+          total_deleted=0
+          for repo in sonar-dashboard sonar-remediation-agent; do
+            echo ""
+            echo "=== $repo ==="
+            all_tags=$(az acr repository show-tags --name "$ACR_NAME" --repository "$repo" \
+              --orderby time_desc --output tsv 2>/dev/null || echo "")
+            if [ -z "$all_tags" ]; then
+              echo "No tags found, skipping."
+              continue
+            fi
+            recent_tags=$(echo "$all_tags" | head -n "$KEEP_COUNT")
+
+            deleted_this_repo=0
+            while IFS= read -r tag; do
+              [ -z "$tag" ] && continue
+              keep=false
+              for d in "${deployed_tags[@]:-}"; do
+                [ "$tag" = "$d" ] && keep=true && break
+              done
+              if echo "$recent_tags" | grep -qx "$tag"; then
+                keep=true
+              fi
+              if [ "$keep" = true ]; then
+                continue
+              fi
+              echo "Deleting $repo:$tag"
+              az acr repository delete --name "$ACR_NAME" --image "$repo:$tag" --yes --output none
+              deleted_this_repo=$((deleted_this_repo + 1))
+            done <<< "$all_tags"
+            echo "$repo: deleted $deleted_this_repo image(s)"
+            total_deleted=$((total_deleted + deleted_this_repo))
+          done
+
+          echo ""
+          echo "Total images deleted: $total_deleted"
+          az acr show-usage --name "$ACR_NAME" --output table

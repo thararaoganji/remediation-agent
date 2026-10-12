@@ -1,3 +1,5 @@
+import { createPortal } from 'react-dom'
+
 // In-app replacement for window.confirm() -- styled consistently with the
 // rest of the app instead of a native browser popup. Purely presentational;
 // the caller owns the open/busy/error state (same pattern every page here
@@ -5,7 +7,7 @@
 export default function ConfirmDialog({ open, title, message, confirmLabel = 'Delete', busy, onConfirm, onCancel }) {
   if (!open) return null
 
-  return (
+  return createPortal(
     <div className="dialog-overlay" onClick={onCancel}>
       <div className="dialog-box" onClick={(e) => e.stopPropagation()}>
         {title && <h3>{title}</h3>}
@@ -19,6 +21,7 @@ export default function ConfirmDialog({ open, title, message, confirmLabel = 'De
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

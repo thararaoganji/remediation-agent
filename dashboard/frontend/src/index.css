@@ -687,18 +687,26 @@ button:disabled {
   background: light-dark(#fff, #24252b);
   border-radius: 10px;
   padding: 1.25rem;
-  max-width: 420px;
+  max-width: 440px;
   width: 100%;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.25);
+  text-align: left;
+  white-space: normal;
 }
 
 .dialog-box h3 {
   margin: 0 0 0.5rem;
+  text-align: left;
+  white-space: normal;
 }
 
 .dialog-box p {
   margin: 0 0 1.25rem;
   color: light-dark(#444, #ccc);
+  text-align: left;
+  white-space: normal;
+  line-height: 1.5;
+  overflow-wrap: break-word;
 }
 
 .dialog-actions {

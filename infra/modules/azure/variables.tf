@@ -4,14 +4,14 @@ variable "subscription_id" {
 
 variable "location" {
   type    = string
-  default = "eastus"
+  default = "centralindia"
 }
 
 variable "environment" {
   type = string
   validation {
-    condition     = contains(["sandbox", "prod"], var.environment)
-    error_message = "environment must be \"sandbox\" or \"prod\"."
+    condition     = contains(["sandbox", "prod", "sb"], var.environment)
+    error_message = "environment must be \"sandbox\", \"prod\", or \"sb\"."
   }
 }
 

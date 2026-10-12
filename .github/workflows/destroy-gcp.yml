@@ -1,16 +1,10 @@
-# Manual-trigger-only, like every other workflow here -- but deliberately
-# does NOT offer "prod" or "both" as a choice at all, unlike deploy-gcp.yml
-# /cleanup-gcp.yml: prod carries real imported infrastructure (see infra/
-# README.md's "GCP prod's import"), and a typo'd environment pick has no
-# undo. Sandbox only, full stop. The `confirm` input is a second,
-# type-it-yourself gate on top of the manual trigger itself, since this
-# is meaningfully more destructive than a deploy or a registry cleanup --
-# a wrong click deletes real running infrastructure, not just old images.
+# Manual-trigger-only, sandbox-only + typed-confirmation safety gates.
 #
-# After this runs, deploy-gcp.yml can be re-run with NO manual steps in
-# between -- see tofu-destroy-gcp's own docstring for why GCP's
-# github_deployer permissions survive this destroy completely intact,
-# unlike Azure's equivalent (destroy-azure.yml).
+# Destroys all GCP sandbox resources (Cloud Run service + jobs, Firestore,
+# Secret Manager secrets, Artifact Registry) EXCEPT the Workload Identity
+# Federation scaffolding and GitHub deployer service account/IAM roles.
+#
+# Re-running deployment afterward succeeds with NO manual bootstrap steps.
 name: Destroy (GCP sandbox)
 
 on:
@@ -33,9 +27,52 @@ jobs:
 
   destroy-sandbox:
     needs: check-confirmation
+    runs-on: ubuntu-latest
+    environment: sandbox
     permissions:
       contents: read
       id-token: write
-    uses: ./.github/workflows/reusable-destroy-gcp.yml
-    with:
-      environment: sandbox
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Auth to GCP (Workload Identity Federation)
+        uses: google-github-actions/auth@v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - name: Install OpenTofu
+        uses: opentofu/setup-opentofu@v2
+        with:
+          tofu_version: "1.12.6"
+
+      - name: tofu init
+        shell: bash
+        working-directory: infra/environments/sandbox/gcp
+        run: |
+          tofu init -input=false \
+            -backend-config="bucket=${{ vars.TOFU_STATE_BUCKET }}" \
+            -backend-config="prefix=sandbox/gcp"
+
+      - name: tofu plan -destroy
+        shell: bash
+        working-directory: infra/environments/sandbox/gcp
+        run: |
+          tofu plan -destroy -input=false -lock-timeout=300s \
+            -exclude="module.gcp.google_iam_workload_identity_pool.github" \
+            -exclude="module.gcp.google_iam_workload_identity_pool_provider.github" \
+            -exclude="module.gcp.google_service_account.github_deployer" \
+            -exclude="module.gcp.google_project_iam_member.github_deployer_roles" \
+            -exclude="module.gcp.google_service_account_iam_member.github_deployer_wif"
+
+      - name: tofu destroy
+        shell: bash
+        working-directory: infra/environments/sandbox/gcp
+        run: |
+          tofu destroy -input=false -lock-timeout=300s -auto-approve \
+            -exclude="module.gcp.google_iam_workload_identity_pool.github" \
+            -exclude="module.gcp.google_iam_workload_identity_pool_provider.github" \
+            -exclude="module.gcp.google_service_account.github_deployer" \
+            -exclude="module.gcp.google_project_iam_member.github_deployer_roles" \
+            -exclude="module.gcp.google_service_account_iam_member.github_deployer_wif"

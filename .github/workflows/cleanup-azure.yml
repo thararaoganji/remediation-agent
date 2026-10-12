@@ -1,10 +1,4 @@
-# Manual-trigger-only, same convention as deploy-azure.yml -- nothing
-# cleans up automatically. This is the REAL ongoing fix for Azure, not
-# just a convenience: Container Registry's Basic tier (this repo's SKU)
-# has no native retention/cleanup policy at all -- that's Premium-only --
-# so nothing else ever prunes old images. Run this periodically, or
-# whenever `az acr show-usage` starts looking uncomfortably close to
-# Basic's 10 GiB limit.
+# Manual-trigger-only: prunes old images from Azure Container Registry.
 name: Cleanup (Azure Registry)
 
 on:
@@ -15,16 +9,27 @@ on:
         required: true
         type: choice
         options:
-          - both
+          - sb
           - sandbox
           - prod
-        default: sandbox
+          - both
+        default: sb
       keep_count:
         description: "How many most-recent image tags per repo to keep, beyond whatever's currently deployed"
         required: true
         default: "5"
 
 jobs:
+  cleanup-sb:
+    if: inputs.environment == 'sb'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/reusable-cleanup-azure.yml
+    with:
+      environment: sb
+      keep_count: ${{ inputs.keep_count }}
+
   cleanup-sandbox:
     if: inputs.environment == 'both' || inputs.environment == 'sandbox'
     permissions:
